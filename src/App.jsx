@@ -166,11 +166,11 @@ export default function App() {
     return tableSort.dir === 'asc' ? <ArrowUp className="w-3 h-3 ml-1 text-indigo-600 inline" /> : <ArrowDown className="w-3 h-3 ml-1 text-indigo-600 inline" />;
   };
 
-  // Função para tratar números brasileiros com vírgula e milhar
+  // Função para tratar números brasileiros (incluindo inputs manuais)
   const parseNumBR = (v) => {
     if (typeof v === 'number') return v;
     if (!v) return 0;
-    let str = s(v).trim();
+    let str = s(v?.result || v).trim();
     if (str.includes('.') && str.includes(',')) {
       if (str.indexOf('.') < str.indexOf(',')) str = str.replace(/\./g, '').replace(',', '.');
       else str = str.replace(/,/g, '');
@@ -227,7 +227,8 @@ export default function App() {
       setProdutoEncontrado(produto);
       const list = (produto.materiais || []).map(m => {
         const est = estoqueDb[m.codigoMP] || { saldo_disponivel: 0, descricao: 'Não catalogado' };
-        const qtdBase = Number((m.quantidade * quantidadeProduzir).toFixed(4));
+        // Agora aceita decimais multiplicando de forma correta
+        const qtdBase = Number((m.quantidade * parseNumBR(quantidadeProduzir)).toFixed(4));
         return { ...m, saldoDisponivel: est.saldo_disponivel, descricao: est.descricao, quantidadeTotal: qtdBase, quantidadeOriginal: qtdBase, quantidadeRetornada: 0, rateiosExtras: [] };
       });
       setItensRemessa(list); setItensOriginaisBOM(list);
@@ -249,7 +250,8 @@ export default function App() {
       }
       const { error: errIns } = await supabase.from('remessas').insert([{
         id: `REM-${Date.now()}`, produto_acabado: s(produtoEncontrado.codigo_pa), descricao_produto: s(produtoEncontrado.descricao),
-        quantidade_op: Number(quantidadeProduzir), projeto: s(projeto).toUpperCase(), cliente: s(cliente).toUpperCase(),
+        quantidade_op: parseNumBR(quantidadeProduzir), // Gravando a fração
+        projeto: s(projeto).toUpperCase(), cliente: s(cliente).toUpperCase(),
         observacao: s(servFinal), obs_expedicao: s(obsExpedicao), itens: itensRemessa, itens_removidos: removidos,
         status: 'PENDENTE_EXPEDICAO', criado_por: s(usuarioLogado?.nome || 'PCP'), pecas_recebidas: 0
       }]);
@@ -258,6 +260,7 @@ export default function App() {
     } catch (e) { setErro("Erro no envio: " + e.message); setIsLoading(false); }
   };
 
+  // 4. Funções da Expedição
   const concluirExpedicao = async () => {
     if (!templateBuffer) return setErro("Modelo SGQ ausente.");
     if (!formExpedicao.transporte || !formExpedicao.destinatario) return setErro("Preencha Transporte e Destinatário.");
@@ -281,9 +284,10 @@ export default function App() {
   };
 
   const processarRetornoParcial = async () => {
-    const pecasDevolvidas = Number(qtdPecasRetornando);
+    const pecasDevolvidas = parseNumBR(qtdPecasRetornando); // Permite retorno parcial fracionado
     const rem = remessaParaRetorno;
     if(!rem) return;
+
     const pecasJaRecebidas = Number(rem.pecas_recebidas || 0);
     const saldoPendente = Number(rem.quantidade_op) - pecasJaRecebidas;
 
@@ -490,12 +494,13 @@ export default function App() {
             <h2 className="text-3xl font-black text-slate-800 tracking-tight uppercase">Nova Ordem de Remessa</h2>
             <div className="bg-white rounded-3xl p-8 border-2 border-slate-100 shadow-sm">
               <form onSubmit={buscarProduto} className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
-                <div className="space-y-1"><label className="text-[10px] font-black text-slate-400 uppercase ml-2">Cód Produto PA</label><input placeholder="Ex: 100200" className="w-full bg-slate-50 border-2 border-slate-100 rounded-xl px-4 py-3 font-black uppercase text-slate-700 outline-none focus:border-indigo-300 shadow-sm transition-all" value={codigoBusca} onChange={e => setCodigoBusca(e.target.value)} /></div>
-                <div className="space-y-1"><label className="text-[10px] font-black text-slate-400 uppercase ml-2">Qtd Produção</label><input type="number" className="w-full bg-slate-50 border-2 border-slate-100 rounded-xl px-4 py-3 font-black text-slate-700 outline-none focus:border-indigo-300 shadow-sm transition-all" value={quantidadeProduzir} onChange={e => setQuantidadeProduzir(parseInt(e.target.value)||1)} /></div>
-                <div className="space-y-1"><label className="text-[10px] font-black text-slate-400 uppercase ml-2">Projeto (BR)</label><input placeholder="BR-..." className="w-full bg-slate-50 border-2 border-slate-100 rounded-xl px-4 py-3 font-black text-slate-700 outline-none focus:border-indigo-300 shadow-sm transition-all" value={projeto} onChange={e => setProjeto(e.target.value)} /></div>
+                <div className="space-y-1"><label className="text-[10px] font-black text-slate-400 uppercase ml-2">Cód Produto PA</label><input placeholder="Ex: 100200" className="w-full bg-slate-50 border-2 border-slate-100 rounded-xl px-4 py-3 font-black uppercase text-slate-700 outline-none focus:border-indigo-300 shadow-sm" value={codigoBusca} onChange={e => setCodigoBusca(e.target.value)} /></div>
                 
+                {/* ALTERADO: TIPO TEXT PARA PERMITIR VÍRGULA NO FRONT-END */}
+                <div className="space-y-1"><label className="text-[10px] font-black text-slate-400 uppercase ml-2">Qtd Produção</label><input type="text" placeholder="Ex: 0,5 ou 1.5" className="w-full bg-slate-50 border-2 border-slate-100 rounded-xl px-4 py-3 font-black text-slate-700 outline-none focus:border-indigo-300 shadow-sm" value={quantidadeProduzir} onChange={e => setQuantidadeProduzir(e.target.value)} /></div>
+                
+                <div className="space-y-1"><label className="text-[10px] font-black text-slate-400 uppercase ml-2">Projeto (BR)</label><input placeholder="BR-..." className="w-full bg-slate-50 border-2 border-slate-100 rounded-xl px-4 py-3 font-black text-slate-700 outline-none focus:border-indigo-300 shadow-sm" value={projeto} onChange={e => setProjeto(e.target.value)} /></div>
                 <div className="space-y-1 md:col-span-2 lg:col-span-1"><label className="text-[10px] font-black text-indigo-600 uppercase ml-2 flex items-center"><Building2 className="w-3 h-3 mr-1"/> Nome do Cliente</label><input placeholder="Cliente Final" className="w-full bg-slate-50 border-2 border-slate-100 rounded-xl px-4 py-3 font-black text-slate-700 outline-none focus:border-indigo-300 shadow-sm" value={cliente} onChange={e => setCliente(e.target.value)} /></div>
-
                 <div className={`space-y-1 ${observacao === 'Outros' ? 'lg:col-span-1' : 'lg:col-span-2'}`}>
                   <label className="text-[10px] font-black text-indigo-600 uppercase ml-2 flex items-center"><Construction className="w-3 h-3 mr-1"/> Serviço p/ PCP</label>
                   <select className="w-full bg-indigo-50 border-2 border-indigo-100 rounded-xl px-4 py-3 font-black text-indigo-900 outline-none focus:border-indigo-400 shadow-sm" value={observacao} onChange={e => setObservacao(e.target.value)}>
@@ -505,7 +510,6 @@ export default function App() {
                 {observacao === 'Outros' && (
                   <div className="space-y-1 lg:col-span-1 animate-in slide-in-from-left-2"><label className="text-[10px] font-black text-amber-600 uppercase ml-2 flex items-center"><Edit3 className="w-3 h-3 mr-1"/> Especifique</label><input placeholder="Serviço" className="w-full bg-amber-50 border-2 border-amber-200 rounded-xl px-4 py-3 font-black text-amber-900 outline-none shadow-sm" value={outrosTexto} onChange={e => setOutrosTexto(e.target.value)} /></div>
                 )}
-                
                 <div className="space-y-1 lg:col-span-3"><label className="text-[10px] font-black text-slate-400 uppercase ml-2 flex items-center"><Info className="w-3 h-3 mr-1"/> Nota PCP p/ Logística</label><input placeholder="Instruções..." className="w-full bg-slate-50 border-2 border-slate-100 rounded-xl px-4 py-3 font-bold text-slate-700 outline-none focus:border-indigo-300 shadow-sm" value={obsExpedicao} onChange={e => setObsExpedicao(e.target.value)} /></div>
                 <button type="submit" className="lg:col-span-3 bg-slate-900 text-white font-black py-4 rounded-xl hover:bg-black transition-all shadow-xl uppercase tracking-wider text-sm mt-2">Buscar BOM</button>
               </form>
@@ -553,15 +557,15 @@ export default function App() {
                     <tr className="bg-slate-50/50">
                       <th className="px-5 py-2"></th>
                       <th className="px-5 py-2">
-                        <input list="dl-h-proj" className="w-full bg-white border border-slate-200 rounded px-2 py-1 font-bold text-slate-600 outline-none focus:border-indigo-300" placeholder="Procurar/Selecionar..." value={filtrosHistorico.projeto} onChange={e => setFiltrosHistorico({...filtrosHistorico, projeto: e.target.value})} />
+                        <input list="dl-h-proj" className="w-full bg-white border border-slate-200 rounded px-2 py-1 font-bold text-slate-600 outline-none focus:border-indigo-300" placeholder="Procurar..." value={filtrosHistorico.projeto} onChange={e => setFiltrosHistorico({...filtrosHistorico, projeto: e.target.value})} />
                         <datalist id="dl-h-proj">{optionsH.projeto.map(o => <option key={o} value={o} />)}</datalist>
                       </th>
                       <th className="px-5 py-2">
-                        <input list="dl-h-cli" className="w-full bg-white border border-slate-200 rounded px-2 py-1 font-bold text-slate-600 outline-none focus:border-indigo-300" placeholder="Procurar/Selecionar..." value={filtrosHistorico.cliente} onChange={e => setFiltrosHistorico({...filtrosHistorico, cliente: e.target.value})} />
+                        <input list="dl-h-cli" className="w-full bg-white border border-slate-200 rounded px-2 py-1 font-bold text-slate-600 outline-none focus:border-indigo-300" placeholder="Procurar..." value={filtrosHistorico.cliente} onChange={e => setFiltrosHistorico({...filtrosHistorico, cliente: e.target.value})} />
                         <datalist id="dl-h-cli">{optionsH.cliente.map(o => <option key={o} value={o} />)}</datalist>
                       </th>
                       <th className="px-5 py-2">
-                        <input list="dl-h-pa" className="w-full bg-white border border-slate-200 rounded px-2 py-1 font-bold text-slate-600 outline-none focus:border-indigo-300" placeholder="Procurar/Selecionar..." value={filtrosHistorico.pa} onChange={e => setFiltrosHistorico({...filtrosHistorico, pa: e.target.value})} />
+                        <input list="dl-h-pa" className="w-full bg-white border border-slate-200 rounded px-2 py-1 font-bold text-slate-600 outline-none focus:border-indigo-300" placeholder="Procurar..." value={filtrosHistorico.pa} onChange={e => setFiltrosHistorico({...filtrosHistorico, pa: e.target.value})} />
                         <datalist id="dl-h-pa">{optionsH.pa.map(o => <option key={o} value={o} />)}</datalist>
                       </th>
                       <th className="px-5 py-2 pr-8 text-center"><select className="w-full bg-white border border-slate-200 rounded px-2 py-1 font-bold text-slate-600" value={filtrosHistorico.status} onChange={e => setFiltrosHistorico({...filtrosHistorico, status: e.target.value})}><option value="">Todos</option><option value="PENDENTE_EXPEDICAO">Fila</option><option value="ENVIADO">Enviado</option><option value="RETORNADO">Concluído</option></select></th>
@@ -602,15 +606,15 @@ export default function App() {
                 <tr className="bg-slate-50/50">
                   <th className="px-5 py-2"></th>
                   <th className="px-5 py-2">
-                    <input list="dl-c-proj" className="w-full bg-white border border-slate-200 rounded px-2 py-1 font-bold text-slate-600 outline-none focus:border-indigo-300" placeholder="Procurar/Selecionar..." value={filtrosControle.projeto} onChange={e => setFiltrosControle({...filtrosControle, projeto: e.target.value})} />
+                    <input list="dl-c-proj" className="w-full bg-white border border-slate-200 rounded px-2 py-1 font-bold text-slate-600 outline-none focus:border-indigo-300" placeholder="Procurar..." value={filtrosControle.projeto} onChange={e => setFiltrosControle({...filtrosControle, projeto: e.target.value})} />
                     <datalist id="dl-c-proj">{optionsC.projeto.map(o => <option key={o} value={o} />)}</datalist>
                   </th>
                   <th className="px-5 py-2">
-                    <input list="dl-c-pa" className="w-full bg-white border border-slate-200 rounded px-2 py-1 font-bold text-slate-600 outline-none focus:border-indigo-300" placeholder="Procurar/Selecionar..." value={filtrosControle.pa} onChange={e => setFiltrosControle({...filtrosControle, pa: e.target.value})} />
+                    <input list="dl-c-pa" className="w-full bg-white border border-slate-200 rounded px-2 py-1 font-bold text-slate-600 outline-none focus:border-indigo-300" placeholder="Procurar..." value={filtrosControle.pa} onChange={e => setFiltrosControle({...filtrosControle, pa: e.target.value})} />
                     <datalist id="dl-c-pa">{optionsC.pa.map(o => <option key={o} value={o} />)}</datalist>
                   </th>
                   <th className="px-5 py-2">
-                    <input list="dl-c-mp" className="w-full bg-white border border-slate-200 rounded px-2 py-1 font-bold text-slate-600 outline-none focus:border-indigo-300" placeholder="Procurar/Selecionar..." value={filtrosControle.mp} onChange={e => setFiltrosControle({...filtrosControle, mp: e.target.value})} />
+                    <input list="dl-c-mp" className="w-full bg-white border border-slate-200 rounded px-2 py-1 font-bold text-slate-600 outline-none focus:border-indigo-300" placeholder="Procurar..." value={filtrosControle.mp} onChange={e => setFiltrosControle({...filtrosControle, mp: e.target.value})} />
                     <datalist id="dl-c-mp">{optionsC.mp.map(o => <option key={o} value={o} />)}</datalist>
                   </th>
                   <th className="px-5 py-2"></th>
@@ -660,15 +664,15 @@ export default function App() {
                   <tr className="bg-slate-50/50">
                     <th className="px-5 py-2"></th>
                     <th className="px-5 py-2">
-                      <input list="dl-a-proj" className="w-full bg-white border border-slate-200 rounded px-2 py-1 font-bold text-slate-600 outline-none focus:border-indigo-300" placeholder="Procurar/Selecionar..." value={filtrosAuditoria.projeto} onChange={e => setFiltrosAuditoria({...filtrosAuditoria, projeto: e.target.value})} />
+                      <input list="dl-a-proj" className="w-full bg-white border border-slate-200 rounded px-2 py-1 font-bold text-slate-600 outline-none focus:border-indigo-300" placeholder="Procurar..." value={filtrosAuditoria.projeto} onChange={e => setFiltrosAuditoria({...filtrosAuditoria, projeto: e.target.value})} />
                       <datalist id="dl-a-proj">{optionsC.projeto.map(o => <option key={o} value={o} />)}</datalist>
                     </th>
                     <th className="px-5 py-2">
-                      <input list="dl-a-pa" className="w-full bg-white border border-slate-200 rounded px-2 py-1 font-bold text-slate-600 outline-none focus:border-indigo-300" placeholder="Procurar/Selecionar..." value={filtrosAuditoria.pa} onChange={e => setFiltrosAuditoria({...filtrosAuditoria, pa: e.target.value})} />
+                      <input list="dl-a-pa" className="w-full bg-white border border-slate-200 rounded px-2 py-1 font-bold text-slate-600 outline-none focus:border-indigo-300" placeholder="Procurar..." value={filtrosAuditoria.pa} onChange={e => setFiltrosAuditoria({...filtrosAuditoria, pa: e.target.value})} />
                       <datalist id="dl-a-pa">{optionsC.pa.map(o => <option key={o} value={o} />)}</datalist>
                     </th>
                     <th className="px-5 py-2">
-                      <input list="dl-a-mp" className="w-full bg-white border border-slate-200 rounded px-2 py-1 font-bold text-slate-600 outline-none focus:border-indigo-300" placeholder="Procurar/Selecionar..." value={filtrosAuditoria.mp} onChange={e => setFiltrosAuditoria({...filtrosAuditoria, mp: e.target.value})} />
+                      <input list="dl-a-mp" className="w-full bg-white border border-slate-200 rounded px-2 py-1 font-bold text-slate-600 outline-none focus:border-indigo-300" placeholder="Procurar..." value={filtrosAuditoria.mp} onChange={e => setFiltrosAuditoria({...filtrosAuditoria, mp: e.target.value})} />
                       <datalist id="dl-a-mp">{optionsC.mp.map(o => <option key={o} value={o} />)}</datalist>
                     </th>
                     <th className="px-5 py-2 pr-8 text-center"><select className="w-full bg-white border border-slate-200 rounded px-2 py-1 font-bold text-slate-600 outline-none" value={filtrosAuditoria.status} onChange={e => setFiltrosAuditoria({...filtrosAuditoria, status: e.target.value})}><option value="">Status</option><option value="PENDENTE">Pendente</option><option value="RESOLVIDO">Regularizado</option></select></th>
@@ -728,15 +732,15 @@ export default function App() {
                            <div className="space-y-1"><label className="text-[10px] font-black text-slate-400 uppercase ml-2 flex items-center"><PackageOpen className="w-3 h-3 mr-1"/> Transportadora</label><input placeholder="Nome Empresa" className="w-full bg-slate-50 border-2 border-slate-100 rounded-xl px-4 py-4 font-black outline-none focus:border-amber-400 shadow-sm" value={formExpedicao.transportadora} onChange={e => setFormExpedicao({...formExpedicao, transportadora: e.target.value})} /></div>
                         </div>
                         <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-                           <div className="space-y-1"><label className="text-[10px] font-black text-slate-400 uppercase ml-2 flex items-center"><Boxes className="w-3 h-3 mr-1"/> Volumes</label><input type="number" className="w-full bg-slate-50 border-2 border-slate-100 rounded-xl px-4 py-4 font-black outline-none focus:border-amber-400 shadow-sm" value={formExpedicao.quantidade} onChange={e => setFormExpedicao({...formExpedicao, quantidade: e.target.value})} /></div>
-                           <div className="space-y-1"><label className="text-[10px] font-black text-slate-400 uppercase ml-2 flex items-center"><Weight className="w-3 h-3 mr-1"/> Peso Total</label><input className="w-full bg-slate-50 border-2 border-slate-100 rounded-xl px-4 py-4 font-black outline-none focus:border-amber-400 shadow-sm" value={formExpedicao.pesoTotal} onChange={e => setFormExpedicao({...formExpedicao, pesoTotal: e.target.value})} /></div>
+                           <div className="space-y-1"><label className="text-[10px] font-black text-slate-400 uppercase ml-2 flex items-center"><Boxes className="w-3 h-3 mr-1"/> Volumes</label><input type="number" className="w-full bg-slate-50 border-2 border-slate-100 rounded-xl px-4 py-4 font-black outline-none shadow-sm" value={formExpedicao.quantidade} onChange={e => setFormExpedicao({...formExpedicao, quantidade: e.target.value})} /></div>
+                           <div className="space-y-1"><label className="text-[10px] font-black text-slate-400 uppercase ml-2 flex items-center"><Weight className="w-3 h-3 mr-1"/> Peso Total</label><input className="w-full bg-slate-50 border-2 border-slate-100 rounded-xl px-4 py-4 font-black outline-none shadow-sm" value={formExpedicao.pesoTotal} onChange={e => setFormExpedicao({...formExpedicao, pesoTotal: e.target.value})} /></div>
                            <div className="space-y-1"><label className="text-[10px] font-black text-slate-400 uppercase ml-2 flex items-center"><Calendar className="w-3 h-3 mr-1"/> Data Saída</label><input type="date" className="w-full bg-slate-50 border-2 border-slate-100 rounded-xl px-4 py-4 font-black outline-none focus:border-amber-400 shadow-sm" value={formExpedicao.dataSaida} onChange={e => setFormExpedicao({...formExpedicao, dataSaida: e.target.value})} /></div>
                         </div>
                         <div className="space-y-1"><label className="text-[10px] font-black text-amber-600 uppercase ml-2 flex items-center"><MapPin className="w-3 h-3 mr-1"/> Destinatário Final</label><input placeholder="Destino" className="w-full bg-amber-50 border-2 border-amber-100 rounded-xl px-4 py-4 font-black outline-none focus:border-amber-400 shadow-sm" value={formExpedicao.destinatario} onChange={e => setFormExpedicao({...formExpedicao, destinatario: e.target.value})} /></div>
                      </div>
                      <button onClick={concluirExpedicao} className="w-full bg-slate-900 text-white font-black py-6 rounded-[2rem] shadow-2xl hover:bg-black transition-all text-lg flex items-center justify-center gap-4 hover:-translate-y-1 shadow-indigo-100"><FileSpreadsheet className="w-7 h-7" /> Gerar Planilha SGQ & Finalizar</button>
                   </div>
-                ) : ( <div className="h-full flex items-center justify-center font-black text-slate-100 uppercase tracking-[0.4em] flex-col p-10 text-center"><Truck className="w-32 h-32 mb-8 opacity-5"/><p className="text-xl">Selecione uma remessa</p></div> )}
+                ) : ( <div className="h-full flex items-center justify-center font-black text-slate-100 uppercase tracking-[0.4em] flex-col p-10 text-center"><Truck className="w-32 h-32 mb-8 opacity-5"/><p className="text-xl px-10">Aguardando Seleção de Remessa</p></div> )}
              </div>
           </div>
         )}
@@ -786,12 +790,10 @@ export default function App() {
                  <div className="p-10 grid grid-cols-1 md:grid-cols-2 gap-10 overflow-y-auto custom-scrollbar">
                     <div className="space-y-6">
                        <div className="bg-indigo-50 border-2 border-indigo-100 rounded-3xl p-10 shadow-inner text-center">
-                          <label className="text-[11px] font-black text-indigo-900 uppercase block mb-6 tracking-widest">Qtd de peças recebidas agora:</label>
-                          <input type="number" step="1" className="w-full bg-white border-2 border-indigo-200 rounded-3xl px-6 py-8 font-black text-7xl text-indigo-700 text-center outline-none focus:ring-8 focus:ring-indigo-100 transition-all shadow-xl" value={qtdPecasRetornando} onChange={e => {
-                             let v = e.target.value === '' ? '' : Number(e.target.value);
-                             const max = Number(remessaParaRetorno.quantidade_op) - Number(remessaParaRetorno.pecas_recebidas || 0);
-                             if(v > max) v = max; if(v < 0) v = 0;
-                             setQtdPecasRetornando(v);
+                          <label className="text-[11px] font-black text-indigo-900 uppercase block mb-6 tracking-widest">Qtd de peças (PA) a receber agora:</label>
+                          <input type="text" className="w-full bg-white border-2 border-indigo-200 rounded-3xl px-6 py-8 font-black text-7xl text-indigo-700 text-center outline-none focus:ring-8 focus:ring-indigo-100 transition-all shadow-xl" value={qtdPecasRetornando} onChange={e => {
+                             // Permite escrever vírgula antes de processar
+                             setQtdPecasRetornando(e.target.value);
                           }} />
                           <div className="mt-8 flex justify-center gap-10">
                             <div className="text-center"><p className="text-[10px] font-black text-slate-400 uppercase">Original</p><p className="text-xl font-black text-slate-700">{String(remessaParaRetorno.quantidade_op)} Pçs</p></div>
@@ -803,7 +805,8 @@ export default function App() {
                       <div className="p-5 bg-slate-50 border-b font-black text-[10px] text-slate-500 uppercase tracking-widest flex items-center justify-between"><span>Crédito de Stock (Matéria-Prima)</span><Calculator className="w-4 h-4 opacity-30"/></div>
                       <table className="w-full text-left text-[11px]"><thead className="bg-slate-100 border-b"><tr><th className="p-4">Material MP</th><th className="p-4 text-center">Entrada no Stock</th></tr></thead><tbody className="divide-y divide-slate-50">
                        {(Array.isArray(remessaParaRetorno.itens) ? remessaParaRetorno.itens : []).map((it, idx) => {
-                          const ratio = Number(qtdPecasRetornando || 0) / Number(remessaParaRetorno.quantidade_op);
+                          const valDigitado = parseNumBR(qtdPecasRetornando);
+                          const ratio = valDigitado / Number(remessaParaRetorno.quantidade_op);
                           const calc = Number((it.quantidadeTotal * ratio).toFixed(4));
                           return (<tr key={idx} className="hover:bg-slate-50 transition-colors"><td className="p-4 font-bold uppercase text-slate-700">{s(it.codigoMP)}</td><td className="p-4 text-center font-black text-emerald-600 text-sm">+{calc} {s(it.um)}</td></tr>);
                        })}
@@ -861,7 +864,7 @@ export default function App() {
             </div>
           </div>
         )}
-        
+
         {abaAtiva === 'GESTAO_USUARIOS' && isAdmin && (
            <div className="max-w-6xl mx-auto space-y-8 animate-in fade-in">
               <h2 className="text-3xl font-black text-slate-800 uppercase tracking-tighter">Administração de Acessos</h2>
@@ -896,7 +899,6 @@ export default function App() {
               </div>
            </div>
         )}
-
       </div>
     </div>
   );
