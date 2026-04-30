@@ -525,7 +525,14 @@ export default function App() {
                       <td className="p-4 text-center"><button onClick={() => setItensRemessa(prev => prev.filter((_, idx) => idx !== i))} className="text-slate-300 hover:text-red-500"><Trash2 className="w-4 h-4 mx-auto" /></button></td>
                       <td className="p-4 font-black text-slate-700 uppercase tracking-tighter">{s(it.codigoMP)}</td>
                       <td className="p-4 text-slate-500 font-medium truncate max-w-[200px]">{s(it.descricao)}</td>
-                      <td className="p-4 text-center font-black text-indigo-600">{String(it.quantidadeTotal)} {s(it.um)}</td>
+                      <td className="p-4 text-center font-black text-indigo-600">
+                        {ITENS_RATEIO.includes(s(it.codigoMP)) ? (
+                          <div className="flex items-center justify-center gap-2">
+                             <input readOnly value={it.quantidadeTotal} className="w-16 bg-slate-100 border-2 border-slate-200 rounded-lg text-center font-black text-slate-600 py-1" />
+                             <button type="button" onClick={() => { setIdxItemRateio(i); setModalRateioAberto(true); }} className={`p-2 rounded-lg transition-all ${it.rateiosExtras?.length > 0 ? 'bg-emerald-100 text-emerald-600 shadow-sm' : 'bg-indigo-100 text-indigo-600 hover:bg-indigo-200'}`} title="Rateio / Ajustar Qtd"><PieChart className="w-4 h-4" /></button>
+                          </div>
+                        ) : (<span>{String(it.quantidadeTotal)} {s(it.um)}</span>)}
+                      </td>
                       <td className={`p-4 text-center font-black ${it.saldoDisponivel < it.quantidadeTotal ? 'text-red-500' : 'text-emerald-500'}`}>{String(it.saldoDisponivel)}</td>
                     </tr>
                   ))}
