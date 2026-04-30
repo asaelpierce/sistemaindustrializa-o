@@ -752,7 +752,7 @@ export default function App() {
           </div>
         )}
 
-        {/* RETORNO DE PEÇAS E MODAL (INCLUÍDOS NO FLOW CORRETO) */}
+        {/* RETORNO DE PEÇAS */}
         {abaAtiva === 'FORNECEDORES' && (
            <div className="max-w-5xl mx-auto space-y-6 w-full animate-in fade-in">
               <div className="flex justify-between items-end mb-6">
@@ -784,6 +784,7 @@ export default function App() {
            </div>
         )}
 
+        {/* MODAL DE ENTRADA (RETORNO) */}
         {remessaParaRetorno && (
            <div className="fixed inset-0 bg-slate-900/80 backdrop-blur-md z-[100] flex items-center justify-center p-4">
               <div className="bg-white rounded-[2.5rem] w-full max-w-4xl shadow-2xl animate-in zoom-in-95 overflow-hidden flex flex-col max-h-[90vh]">
@@ -906,6 +907,43 @@ export default function App() {
               </div>
            </div>
         )}
+
+        {/* MODAL DE RATEIO GLOBAL (AGORA VISÍVEL PARA O APLICATIVO INTEIRO) */}
+        {modalRateioAberto && idxItemRateio !== null && (
+           <div className="fixed inset-0 bg-slate-900/80 backdrop-blur-md z-[100] flex items-center justify-center p-4">
+              <div className="bg-white rounded-[2.5rem] w-full max-w-2xl shadow-2xl animate-in zoom-in-95 overflow-hidden flex flex-col">
+                 <div className="p-8 border-b bg-slate-50 flex justify-between items-center">
+                    <div><span className="bg-indigo-600 text-white text-[9px] font-black px-3 py-1 rounded-full uppercase">Rateio Adicional de Envio</span><h2 className="text-2xl font-black text-slate-800 mt-2 uppercase tracking-tighter">MP: {s(itensRemessa[idxItemRateio]?.codigoMP)}</h2></div>
+                    <button onClick={() => setModalRateioAberto(false)} className="text-slate-400 font-black text-2xl hover:text-red-500 transition-all">&times;</button>
+                 </div>
+                 <div className="p-8 bg-white space-y-6">
+                    <div className="flex gap-4 items-end">
+                       <div className="flex-1"><label className="text-[10px] font-black text-slate-400 uppercase">Projeto Destino</label><input placeholder="BR-..." className="w-full bg-slate-50 border-2 border-slate-100 rounded-xl px-4 py-3 font-black text-slate-700 outline-none shadow-sm" value={novoRateio.projeto} onChange={e => setNovoRateio({...novoRateio, projeto: e.target.value.toUpperCase()})} /></div>
+                       <div className="flex-1"><label className="text-[10px] font-black text-slate-400 uppercase">PA Destino</label><input placeholder="PA-..." className="w-full bg-slate-50 border-2 border-slate-100 rounded-xl px-4 py-3 font-black text-slate-700 outline-none shadow-sm" value={novoRateio.codigoPA} onChange={e => setNovoRateio({...novoRateio, codigoPA: e.target.value.toUpperCase()})} /></div>
+                       <div className="w-24"><label className="text-[10px] font-black text-slate-400 uppercase">Qtd</label><input type="number" className="w-full bg-slate-50 border-2 border-slate-100 rounded-xl px-4 py-3 font-black text-slate-700 outline-none shadow-sm" value={novoRateio.quantidade} onChange={e => setNovoRateio({...novoRateio, quantidade: e.target.value})} /></div>
+                       <button onClick={() => {
+                          if(!novoRateio.projeto || !novoRateio.codigoPA || !novoRateio.quantidade) return;
+                          const n = [...itensRemessa]; if(!n[idxItemRateio].rateiosExtras) n[idxItemRateio].rateiosExtras = [];
+                          n[idxItemRateio].rateiosExtras.push({ projeto: novoRateio.projeto, codigoPA: novoRateio.codigoPA, quantidade: Number(novoRateio.quantidade) });
+                          n[idxItemRateio].quantidadeTotal = n[idxItemRateio].quantidadeOriginal + n[idxItemRateio].rateiosExtras.reduce((acc, c) => acc + c.quantidade, 0);
+                          setItensRemessa(n); setNovoRateio({ projeto: '', codigoPA: '', quantidade: '' });
+                       }} className="bg-indigo-600 text-white px-6 py-3 rounded-xl font-black uppercase text-xs hover:bg-indigo-700 shadow-md transition-all">Add</button>
+                    </div>
+                    <div className="border-2 border-slate-100 rounded-2xl overflow-hidden shadow-sm"><table className="w-full text-left text-xs"><thead className="bg-slate-50 border-b"><tr><th className="p-3 pl-5 text-slate-500 uppercase tracking-widest text-[9px]">Destino</th><th className="p-3 text-slate-500 uppercase tracking-widest text-[9px]">PA</th><th className="p-3 text-center text-slate-500 uppercase tracking-widest text-[9px]">Quantidade</th><th className="p-3 text-center text-slate-500 uppercase tracking-widest text-[9px]">Ação</th></tr></thead><tbody>
+                       <tr className="bg-indigo-50/50 text-indigo-900 font-bold"><td className="p-3 pl-5">{s(projeto || 'Ficha Padrão')}</td><td className="p-3">{s(produtoEncontrado?.codigo_pa)}</td><td className="p-3 text-center">{String(itensRemessa[idxItemRateio]?.quantidadeOriginal)}</td><td className="p-3 text-center"><Lock className="w-3 h-3 mx-auto text-indigo-300" /></td></tr>
+                       {(itensRemessa[idxItemRateio]?.rateiosExtras || []).map((r, ri) => (
+                          <tr key={ri} className="border-t border-slate-50">
+                            <td className="p-3 pl-5 font-black text-slate-700">{s(r.projeto)}</td><td className="p-3 font-black text-slate-700">{s(r.codigoPA)}</td><td className="p-3 text-center font-bold text-emerald-600">+{String(r.quantidade)}</td>
+                            <td className="p-3 text-center"><button onClick={() => { const n = [...itensRemessa]; n[idxItemRateio].rateiosExtras.splice(ri, 1); n[idxItemRateio].quantidadeTotal = n[idxItemRateio].quantidadeOriginal + n[idxItemRateio].rateiosExtras.reduce((acc, c) => acc + c.quantidade, 0); setItensRemessa(n); }} className="text-slate-300 hover:text-red-500 transition-all p-1 hover:bg-red-50 rounded"><Trash2 className="w-4 h-4 mx-auto"/></button></td>
+                          </tr>
+                       ))}
+                    </tbody></table></div>
+                 </div>
+                 <div className="p-8 bg-slate-50 border-t flex justify-between items-center"><span className="font-black text-slate-500 uppercase text-xs tracking-widest">Total p/ SGQ: <span className="text-indigo-600 text-2xl ml-2">{String(itensRemessa[idxItemRateio]?.quantidadeTotal)}</span></span><button onClick={() => setModalRateioAberto(false)} className="bg-slate-900 text-white px-8 py-3 rounded-xl font-black uppercase text-xs hover:bg-black shadow-lg transition-all">Gravar Rateio</button></div>
+              </div>
+           </div>
+        )}
+
       </div>
     </div>
   );
