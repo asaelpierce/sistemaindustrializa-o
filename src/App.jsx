@@ -52,6 +52,7 @@ export const Tooltip = () => null;
 export const Legend = () => null;
 export const Cell = () => null;
 export const LabelList = () => null;
+export const Pie = () => null;
 
 export function BarChart(props) { return <CartesianChart {...props} />; }
 export function LineChart(props) { return <CartesianChart {...props} />; }
@@ -825,14 +826,17 @@ export default function App() {
     // -> LÓGICA DE REGISTRO DE MATERIAIS ALTERADOS <-
     const alterados = itensRemessa.filter(it => {
        const desc = s(it.descricao).toUpperCase();
-       const isEd = desc.includes('BORRACHA') || desc.includes('CHEMITAC') || desc.includes('COLA');
+       const isEd = desc.includes('BORRACHA') || desc.includes('CHEMITAC') || desc.includes('COLA') || ITENS_RATEIO.includes(s(it.codigoMP));
        return isEd && it.quantidadeTotal !== it.quantidadeOriginal;
     });
 
     let notaFinalExpedicao = obsExpedicao;
     if (alterados.length > 0) {
-       const notaAjuste = `[Ajuste Manual PCP: ${alterados.map(a => `${a.codigoMP} de ${a.quantidadeOriginal} para ${a.quantidadeTotal}`).join(', ')}]`;
-       notaFinalExpedicao = notaFinalExpedicao ? `${notaFinalExpedicao} | ${notaAjuste}` : notaAjuste;
+       const notaAjuste = `[Ajuste PCP: ${alterados.map(a => {
+           const diff = a.quantidadeTotal - a.quantidadeOriginal;
+           return `${a.codigoMP} (${diff > 0 ? '+' : ''}${fmtDec(diff, a.um)})`;
+       }).join(' | ')}]`;
+       notaFinalExpedicao = notaFinalExpedicao ? `${notaFinalExpedicao} - ${notaAjuste}` : notaAjuste;
     }
     // ----------------------------------------------
 
@@ -1316,49 +1320,82 @@ DADOS REAIS DA EMPRESA: ${dadosSistema}`;
                  </button>
               )}
 
-              {/* Gráficos Recharts */}
+              {/* Gráficos Padrão (Tailwind Nativos) */}
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
                  
-                 <div className="bg-zinc-950 p-6 md:p-8 rounded-[2rem] shadow-xl border border-zinc-800 flex flex-col min-h-[600px]">
+                 <div className="bg-zinc-950 p-6 md:p-8 rounded-[2rem] shadow-xl border border-zinc-800 flex flex-col min-h-[450px]">
                     <div className="mb-6">
                        <h3 className="text-base md:text-lg font-black text-white uppercase tracking-widest">Balanço de Materiais (Top 5 MPs)</h3>
-                       <p className="text-xs font-bold text-yellow-500 mt-1 uppercase">Saída (Falta) vs Retorno (Recuperado) em {dashboardData.mpsChart[0]?.enviado ? 'KG/UN' : '-'}</p>
+                       <p className="text-xs font-bold text-yellow-500 mt-1 uppercase">Saída (Falta) vs Retorno (Recuperado)</p>
                     </div>
-                    <div className="flex-1 min-h-0 w-full">
-                       <ResponsiveContainer width="100%" height="100%">
-                          <BarChart data={dashboardData.mpsChart} margin={{top:30, right:10, left:-20, bottom: 80}}>
-                             <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#27272a" />
-                             <XAxis dataKey="nome" axisLine={false} tickLine={false} tick={{fontSize: 10, fontWeight: 'bold', fill: '#a1a1aa'}} angle={-45} textAnchor="end" interval={0} />
-                             <YAxis axisLine={false} tickLine={false} tick={{fontSize: 10, fill: '#a1a1aa', fontWeight: 'bold'}} dx={-10} />
-                             <Tooltip cursor={{fill: 'rgba(255,255,255,0.05)'}} contentStyle={{backgroundColor: '#18181b', border: '1px solid #3f3f46', borderRadius: '12px', color: '#fff'}} />
-                             <Legend wrapperStyle={{fontSize: '11px', fontWeight: 'bold', paddingBottom: '20px'}} verticalAlign="top" />
-                             <Bar dataKey="enviado" name="Enviado Físico" fill="#eab308" radius={[4, 4, 0, 0]} maxBarSize={60}>
-                                <LabelList dataKey="enviado" position="top" fill="#e4e4e7" fontSize={11} fontWeight="black" formatter={(v) => fmtDec(v)} />
-                             </Bar>
-                             <Bar dataKey="retornado" name="Retornado Físico" fill="#10b981" radius={[4, 4, 0, 0]} maxBarSize={60}>
-                                <LabelList dataKey="retornado" position="top" fill="#e4e4e7" fontSize={11} fontWeight="black" formatter={(v) => fmtDec(v)} />
-                             </Bar>
-                          </BarChart>
-                       </ResponsiveContainer>
+                    <div className="flex-1 flex items-end gap-2 md:gap-4 mt-4 pt-4 relative">
+                       {/* Linhas de Grade de Fundo */}
+                       <div className="absolute inset-0 flex flex-col justify-between pb-8 z-0 pointer-events-none">
+                          {[...Array(5)].map((_, i) => <div key={i} className="w-full border-b border-zinc-800/50"></div>)}
+                       </div>
+                       
+                       {dashboardData.mpsChart.length === 0 ? (
+                           <div className="w-full h-full flex items-center justify-center text-zinc-600 font-black uppercase tracking-widest text-xs z-10">Sem Dados Registrados</div>
+                       ) : (
+                           dashboardData.mpsChart.map((mp, i) => {
+                               const maxVal = Math.max(...dashboardData.mpsChart.flatMap(m => [m.enviado, m.retornado]), 1);
+                               const hEnv = `${(mp.enviado / maxVal) * 100}%`;
+                               const hRet = `${(mp.retornado / maxVal) * 100}%`;
+                               return (
+                                   <div key={i} className="flex-1 flex flex-col items-center justify-end h-full gap-3 z-10 group">
+                                       <div className="w-full flex items-end justify-center gap-1 h-full relative">
+                                           <div style={{height: hEnv}} className="w-full max-w-[3rem] bg-yellow-500 rounded-t border-t-2 border-yellow-400 relative flex justify-center hover:opacity-80 transition-all cursor-pointer">
+                                              <span className="absolute -top-6 text-[10px] font-black text-yellow-400 opacity-0 group-hover:opacity-100 transition-opacity bg-zinc-900 px-2 py-0.5 rounded shadow-lg">{fmtDec(mp.enviado)}</span>
+                                           </div>
+                                           <div style={{height: hRet}} className="w-full max-w-[3rem] bg-emerald-500 rounded-t border-t-2 border-emerald-400 relative flex justify-center hover:opacity-80 transition-all cursor-pointer">
+                                              <span className="absolute -top-6 text-[10px] font-black text-emerald-400 opacity-0 group-hover:opacity-100 transition-opacity bg-zinc-900 px-2 py-0.5 rounded shadow-lg">{fmtDec(mp.retornado)}</span>
+                                           </div>
+                                       </div>
+                                       <span className="text-[9px] md:text-[10px] font-bold text-zinc-400 text-center uppercase w-full px-1 leading-tight h-8 flex items-start justify-center overflow-hidden" title={mp.nome}>{s(mp.nome).split('-')[0]}</span>
+                                   </div>
+                               );
+                           })
+                       )}
+                    </div>
+                    <div className="flex justify-center gap-6 mt-4 pt-4 border-t border-zinc-800">
+                       <div className="flex items-center gap-2"><div className="w-3 h-3 bg-yellow-500 rounded-sm"></div><span className="text-[10px] font-black text-zinc-400 uppercase tracking-widest">Enviado Físico</span></div>
+                       <div className="flex items-center gap-2"><div className="w-3 h-3 bg-emerald-500 rounded-sm"></div><span className="text-[10px] font-black text-zinc-400 uppercase tracking-widest">Retornado (Baixa)</span></div>
                     </div>
                  </div>
 
-                 <div className="bg-white p-6 md:p-8 rounded-[2rem] shadow-sm border border-zinc-200 flex flex-col min-h-[600px]">
-                    <div className="mb-6">
-                       <h3 className="text-base md:text-lg font-black text-zinc-800 uppercase tracking-widest">Alvos de Produção (Top 5 PAs)</h3>
-                       <p className="text-xs font-bold text-zinc-500 mt-1 uppercase">Volume Bruto Acumulado Solicitado ao Mercado</p>
-                    </div>
-                    <div className="flex-1 min-h-0 w-full">
-                       <ResponsiveContainer width="100%" height="100%">
-                          <RechartsPieChart>
-                             <Pie data={dashboardData.pasChart} cx="50%" cy="50%" innerRadius={100} outerRadius={160} dataKey="value" stroke="none" label={({name, percent}) => `${name} (${(percent*100).toFixed(0)}%)`}>
-                                {dashboardData.pasChart.map((entry, index) => <Cell key={`cell-${index}`} fill={CHART_COLORS[index % CHART_COLORS.length]} />)}
-                             </Pie>
-                             <Tooltip contentStyle={{borderRadius:'12px', border:'none', boxShadow:'0 10px 15px -3px rgba(0,0,0,0.1)'}} />
-                             <Legend verticalAlign="bottom" height={36} wrapperStyle={{fontSize: '11px', fontWeight: 'bold'}} />
-                          </RechartsPieChart>
-                       </ResponsiveContainer>
-                    </div>
+                 <div className="bg-white p-6 md:p-8 rounded-[2rem] shadow-sm border border-zinc-200 flex flex-col min-h-[450px]">
+                     <div className="mb-8">
+                         <h3 className="text-base md:text-lg font-black text-zinc-800 uppercase tracking-widest">Alvos de Produção (Top 5 PAs)</h3>
+                         <p className="text-xs font-bold text-zinc-500 mt-1 uppercase">Volume Bruto Acumulado Solicitado ao Mercado</p>
+                     </div>
+                     <div className="flex-1 flex flex-col justify-center gap-6">
+                         {dashboardData.pasChart.length === 0 ? (
+                             <div className="w-full h-full flex items-center justify-center text-zinc-400 font-black uppercase tracking-widest text-xs">Sem Dados Registrados</div>
+                         ) : (
+                             dashboardData.pasChart.map((pa, i) => {
+                                 const total = dashboardData.pasChart.reduce((acc, curr) => acc + curr.value, 0) || 1;
+                                 const pct = `${(pa.value / total) * 100}%`;
+                                 const color = CHART_COLORS[i % CHART_COLORS.length];
+                                 return (
+                                     <div key={i} className="w-full group">
+                                         <div className="flex justify-between items-end mb-2">
+                                             <div className="flex items-center gap-3">
+                                                <div className="w-3 h-3 rounded-sm" style={{backgroundColor: color}}></div>
+                                                <span className="text-sm font-black text-zinc-700 uppercase truncate max-w-[200px]" title={pa.name}>{pa.name}</span>
+                                             </div>
+                                             <div className="text-right">
+                                                <span className="text-sm font-black" style={{color}}>{fmtDec(pa.value)} PÇS</span>
+                                                <span className="text-[10px] font-bold text-zinc-400 ml-2">({(pa.value / total * 100).toFixed(1)}%)</span>
+                                             </div>
+                                         </div>
+                                         <div className="w-full h-3 bg-zinc-100 rounded-full overflow-hidden">
+                                             <div style={{width: pct, backgroundColor: color}} className="h-full rounded-full transition-all duration-1000 group-hover:opacity-80"></div>
+                                         </div>
+                                     </div>
+                                 );
+                             })
+                         )}
+                     </div>
                  </div>
 
               </div>
@@ -1587,8 +1624,9 @@ DADOS REAIS DA EMPRESA: ${dadosSistema}`;
                 </thead><tbody className="divide-y divide-zinc-50">
                   {itensRemessa.map((it, i) => {
                     const descUpper = s(it.descricao).toUpperCase();
-                    const isEditable = descUpper.includes('BORRACHA') || descUpper.includes('CHEMITAC') || descUpper.includes('COLA');
-                    const isAltered = isEditable && it.quantidadeTotal !== it.quantidadeOriginal;
+                    const isEditable = descUpper.includes('BORRACHA') || descUpper.includes('CHEMITAC') || descUpper.includes('COLA') || ITENS_RATEIO.includes(s(it.codigoMP));
+                    const diffAjuste = it.quantidadeTotal - it.quantidadeOriginal;
+                    const isAltered = isEditable && diffAjuste !== 0;
 
                     return (
                     <tr key={i} className={it.saldoDisponivel < it.quantidadeTotal ? 'bg-red-50/50' : 'hover:bg-zinc-50'}>
@@ -1596,30 +1634,34 @@ DADOS REAIS DA EMPRESA: ${dadosSistema}`;
                       <td className="p-4 font-black text-zinc-900 uppercase tracking-tighter">{s(it.codigoMP)}</td>
                       <td className="p-4 font-bold text-zinc-600 truncate max-w-[200px]">{s(it.descricao)}</td>
                       <td className="p-4 text-center font-black text-zinc-900">
-                        {ITENS_RATEIO.includes(s(it.codigoMP)) ? (
-                          <div className="flex items-center justify-center gap-2">
+                        <div className="flex items-center justify-center gap-2">
+                           {isEditable ? (
+                              <div className="flex flex-col items-center justify-center gap-1">
+                                 <input
+                                    type="number"
+                                    step="0.0001"
+                                    className={`w-24 px-2 py-1 text-center rounded border font-black outline-none focus:border-yellow-500 transition-colors ${isAltered ? 'bg-yellow-100 border-yellow-400 text-yellow-900' : 'bg-white border-zinc-300'}`}
+                                    value={it.quantidadeTotal}
+                                    onChange={(e) => {
+                                       const val = e.target.value === '' ? '' : parseFloat(e.target.value);
+                                       const n = [...itensRemessa];
+                                       n[i].quantidadeTotal = val === '' ? 0 : val;
+                                       setItensRemessa(n);
+                                    }}
+                                 />
+                                 {isAltered && (
+                                    <span className={`text-[9px] uppercase font-black ${diffAjuste > 0 ? 'text-blue-600' : 'text-red-600'}`}>
+                                       {diffAjuste > 0 ? '+' : ''}{fmtDec(diffAjuste)} {it.um}
+                                    </span>
+                                 )}
+                              </div>
+                           ) : (
                              <span className="bg-zinc-100 border border-zinc-200 px-3 py-1 rounded-lg shadow-sm">{fmtDec(it.quantidadeTotal, it.um)}</span>
-                             <button type="button" onClick={() => { setIdxItemRateio(i); setModalRateioAberto(true); }} className={`p-1.5 rounded-lg transition-all ${it.rateiosExtras?.length > 0 ? 'bg-indigo-100 text-indigo-600 shadow-sm' : 'bg-zinc-100 text-zinc-500 hover:bg-zinc-200'}`} title="Rateio / Ajustar Qtd"><PieChartIcon className="w-4 h-4" /></button>
-                          </div>
-                        ) : isEditable ? (
-                           <div className="flex flex-col items-center justify-center gap-1">
-                              <input
-                                 type="number"
-                                 step="0.0001"
-                                 className={`w-24 px-2 py-1 text-center rounded border font-black outline-none focus:border-yellow-500 transition-colors ${isAltered ? 'bg-yellow-100 border-yellow-400 text-yellow-900' : 'bg-white border-zinc-300'}`}
-                                 value={it.quantidadeTotal}
-                                 onChange={(e) => {
-                                    const val = e.target.value === '' ? '' : parseFloat(e.target.value);
-                                    const n = [...itensRemessa];
-                                    n[i].quantidadeTotal = val === '' ? 0 : val;
-                                    setItensRemessa(n);
-                                 }}
-                              />
-                              {isAltered && <span className="text-[8px] text-yellow-600 uppercase font-black">Alterado</span>}
-                           </div>
-                        ) : (
-                          <span className="bg-zinc-100 border border-zinc-200 px-3 py-1 rounded-lg shadow-sm">{fmtDec(it.quantidadeTotal, it.um)}</span>
-                        )}
+                           )}
+                           {ITENS_RATEIO.includes(s(it.codigoMP)) && (
+                              <button type="button" onClick={() => { setIdxItemRateio(i); setModalRateioAberto(true); }} className={`p-1.5 rounded-lg transition-all ${it.rateiosExtras?.length > 0 ? 'bg-indigo-100 text-indigo-600 shadow-sm' : 'bg-zinc-100 text-zinc-500 hover:bg-zinc-200'}`} title="Rateio / Ajustar Qtd"><PieChartIcon className="w-4 h-4" /></button>
+                           )}
+                        </div>
                       </td>
                       <td className={`p-4 text-center font-black pr-6 ${it.saldoDisponivel < it.quantidadeTotal ? 'text-red-600' : 'text-emerald-600'}`}>{fmtDec(it.saldoDisponivel, it.um)}</td>
                     </tr>
