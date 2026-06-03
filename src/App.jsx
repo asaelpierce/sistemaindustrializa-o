@@ -6,15 +6,556 @@ import {
   LayoutDashboard, History, UploadCloud, Users, Clock, ShieldAlert, 
   ArrowLeftRight, ListChecks, Lock, Mail, LogOut, User, Shield, 
   ArrowUpCircle, UserPlus, KeyRound, Settings, XCircle, Info, 
-  FileWarning, FileCheck, Layers, PieChart, Construction, Edit3,
+  FileWarning, FileCheck, Layers, PieChart as PieChartIcon, Construction, Edit3,
   Calendar, Link2, Filter, Eye, AlertTriangle, FileSearch, Weight, Boxes,
   Building2, ArrowUpDown, ArrowUp, ArrowDown, TrendingUp, BarChart as BarChartIcon, Activity, Target,
   MessageSquare, X, Send, Bot, Paperclip, Save, Menu
 } from 'lucide-react';
-import { 
-  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, 
-  LineChart, Line, PieChart as RechartsPieChart, Pie, Cell, ComposedChart, LabelList
-} from 'recharts';
+
+// ============================================================================
+// RECHARTS COMPATIBILITY LAYER (MOCK ENGINE FOR ZERO-DEPENDENCY BUILD)
+// Isso substitui a biblioteca 'recharts' para não dar erro no Vercel
+// ============================================================================
+export function ResponsiveContainer({ children, width = "100%", height = "100%" }) {
+  const containerRef = useRef(null);
+  const [dimensions, setDimensions] = useState({ width: 0, height: 0 });
+
+  useEffect(() => {
+    if (!containerRef.current) return;
+    const resizeObserver = new ResizeObserver((entries) => {
+      if (!entries || entries.length === 0) return;
+      const { width, height } = entries[0].contentRect;
+      setDimensions({ width, height: height || 300 });
+    });
+    resizeObserver.observe(containerRef.current);
+    return () => resizeObserver.disconnect();
+  }, []);
+
+  return (
+    <div ref={containerRef} style={{ width, height, position: 'relative', overflow: 'hidden' }}>
+      {dimensions.width > 0 && dimensions.height > 0 && React.Children.map(children, child => {
+        if (React.isValidElement(child)) {
+          return React.cloneElement(child, { containerWidth: dimensions.width, containerHeight: dimensions.height });
+        }
+        return child;
+      })}
+    </div>
+  );
+}
+
+export const Bar = () => null;
+export const Line = () => null;
+export const XAxis = () => null;
+export const YAxis = () => null;
+export const CartesianGrid = () => null;
+export const Tooltip = () => null;
+export const Legend = () => null;
+export const Cell = () => null;
+export const LabelList = () => null;
+
+export function BarChart(props) { return <CartesianChart {...props} />; }
+export function LineChart(props) { return <CartesianChart {...props} />; }
+export function ComposedChart(props) { return <CartesianChart {...props} />; }
+
+function CartesianChart({ 
+  data = [], 
+  layout = "horizontal", 
+  containerWidth = 400, 
+  containerHeight = 300, 
+  margin = { top: 15, right: 15, left: 15, bottom: 15 },
+  children 
+}) {
+  const [hoveredIndex, setHoveredIndex] = useState(null);
+  const [mousePos, setMousePos] = useState({ x: 0, y: 0 });
+
+  const childrenArray = React.Children.toArray(children);
+  const gridChild = childrenArray.find(c => c.type === CartesianGrid);
+  const xAxisChild = childrenArray.find(c => c.type === XAxis);
+  const yAxisChildren = childrenArray.filter(c => c.type === YAxis);
+  const tooltipChild = childrenArray.find(c => c.type === Tooltip);
+  const legendChild = childrenArray.find(c => c.type === Legend);
+
+  const series = childrenArray.filter(c => c.type === Bar || c.type === Line).map(c => ({
+    type: c.type === Bar ? 'bar' : 'line',
+    dataKey: c.props.dataKey,
+    name: c.props.name || c.props.dataKey,
+    fill: c.props.fill,
+    stroke: c.props.stroke,
+    yAxisId: c.props.yAxisId || 'left',
+    props: c.props
+  }));
+
+  if (!data || data.length === 0 || series.length === 0) {
+    return (
+      <svg width={containerWidth} height={containerHeight}>
+        <text x={containerWidth/2} y={containerHeight/2} textAnchor="middle" fill="#999" fontSize={12}>
+          Sem dados para exibir
+        </text>
+      </svg>
+    );
+  }
+
+  const xAxisKey = xAxisChild?.props?.dataKey || 'name';
+  const leftPadding = layout === "vertical" ? 110 : 45;
+  const bottomPadding = xAxisChild?.props?.angle ? 65 : 45;
+  const padding = {
+    top: margin.top || 15,
+    right: margin.right || 15,
+    left: margin.left !== undefined ? margin.left + leftPadding : leftPadding,
+    bottom: margin.bottom !== undefined ? margin.bottom + bottomPadding : bottomPadding
+  };
+
+  const chartWidth = Math.max(50, containerWidth - padding.left - padding.right);
+  const chartHeight = Math.max(50, containerHeight - padding.top - padding.bottom);
+
+  const getRange = (yAxisId) => {
+    const activeKeys = series.filter(s => s.yAxisId === yAxisId).map(s => s.dataKey);
+    if (activeKeys.length === 0) return { min: 0, max: 100 };
+    
+    let vals = [];
+    data.forEach(item => {
+      activeKeys.forEach(k => {
+        if (typeof k === 'function') vals.push(parseFloat(k(item)) || 0);
+        else if (item[k] !== undefined) vals.push(parseFloat(item[k]) || 0);
+      });
+    });
+
+    const maxVal = Math.max(...vals, 10);
+    const getNiceMax = (max) => {
+      if (max === 0) return 10;
+      const log10 = Math.floor(Math.log10(max));
+      const power = Math.pow(10, log10);
+      const ratio = max / power;
+      const targets = [1, 2, 5, 10];
+      const target = targets.find(t => t >= ratio) || 10;
+      return target * power;
+    };
+
+    return { min: 0, max: getNiceMax(maxVal) };
+  };
+
+  const leftRange = getRange('left');
+  const rightRange = getRange('right');
+
+  const getY = (val, yAxisId = 'left') => {
+    const range = yAxisId === 'left' ? leftRange : rightRange;
+    return padding.top + chartHeight - (val / range.max) * chartHeight;
+  };
+
+  const getX = (val) => padding.left + (val / leftRange.max) * chartWidth;
+
+  const xStep = chartWidth / data.length;
+  const getCategoryX = (idx) => padding.left + idx * xStep;
+  const getCategoryCenter = (idx) => padding.left + (idx + 0.5) * xStep;
+
+  const yStep = chartHeight / data.length;
+  const getCategoryY = (idx) => padding.top + idx * yStep;
+  const getCategoryCenterY = (idx) => padding.top + (idx + 0.5) * yStep;
+
+  const gridTicks = [0, 0.25, 0.5, 0.75, 1];
+
+  const getTooltipPayload = (idx) => {
+    if (idx === null || idx === undefined || !data[idx]) return [];
+    const item = data[idx];
+    return series.map(s => {
+      const val = typeof s.dataKey === 'function' ? s.dataKey(item) : item[s.dataKey];
+      return {
+        name: s.name,
+        value: val,
+        color: s.fill || s.stroke || '#eab308',
+        dataKey: s.dataKey,
+        payload: item
+      };
+    });
+  };
+
+  const handleMouseMove = (e) => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+    setMousePos({ x, y });
+
+    if (layout === "horizontal") {
+      const insideX = x - padding.left;
+      if (insideX >= 0 && insideX <= chartWidth) {
+        const idx = Math.floor(insideX / xStep);
+        setHoveredIndex(idx >= 0 && idx < data.length ? idx : null);
+      } else {
+        setHoveredIndex(null);
+      }
+    } else {
+      const insideY = y - padding.top;
+      if (insideY >= 0 && insideY <= chartHeight) {
+        const idx = Math.floor(insideY / yStep);
+        setHoveredIndex(idx >= 0 && idx < data.length ? idx : null);
+      } else {
+        setHoveredIndex(null);
+      }
+    }
+  };
+
+  const formatCurrencyShort = (val) => {
+      if (val === undefined || val === null || isNaN(val) || val === '') return '';
+      const num = parseFloat(val);
+      if (Math.abs(num) >= 1000000) return (num / 1000000).toFixed(1).replace('.', ',') + 'M';
+      if (Math.abs(num) >= 1000) return (num / 1000).toFixed(0).replace('.', ',') + 'K';
+      return num.toFixed(0);
+  };
+
+  return (
+    <div 
+      style={{ position: 'relative', width: '100%', height: '100%' }}
+      onMouseMove={handleMouseMove}
+      onMouseLeave={() => setHoveredIndex(null)}
+    >
+      <svg width={containerWidth} height={containerHeight} className="overflow-visible select-none">
+        
+        {hoveredIndex !== null && layout === "horizontal" && (
+          <rect x={getCategoryX(hoveredIndex)} y={padding.top} width={xStep} height={chartHeight} fill="rgba(255,255,255,0.05)" />
+        )}
+        {hoveredIndex !== null && layout === "vertical" && (
+          <rect x={padding.left} y={getCategoryY(hoveredIndex)} width={chartWidth} height={yStep} fill="rgba(0,0,0,0.02)" />
+        )}
+
+        {gridChild && gridTicks.map((t, idx) => {
+          if (layout === "horizontal") {
+            const y = padding.top + t * chartHeight;
+            return <line key={idx} x1={padding.left} y1={y} x2={padding.left + chartWidth} y2={y} stroke={gridChild.props.stroke || "#e4e4e7"} strokeDasharray={gridChild.props.strokeDasharray || "3 3"} />;
+          } else {
+            const x = padding.left + t * chartWidth;
+            return <line key={idx} x1={x} y1={padding.top} x2={x} y2={padding.top + chartHeight} stroke={gridChild.props.stroke || "#f4f4f5"} strokeDasharray={gridChild.props.strokeDasharray || "3 3"} />;
+          }
+        })}
+
+        {xAxisChild && layout === "horizontal" && data.map((item, idx) => {
+          const label = item[xAxisKey];
+          const cx = getCategoryCenter(idx);
+          const cy = padding.top + chartHeight + 15;
+          const formatter = xAxisChild.props.tickFormatter;
+          const displayLabel = formatter ? formatter(label) : label;
+
+          if (xAxisChild.props.angle) {
+            return (
+              <text key={idx} x={cx} y={cy} fontSize={xAxisChild.props.tick?.fontSize || 9} fontWeight="bold" fill={xAxisChild.props.tick?.fill || "#71717a"} textAnchor="end" transform={`rotate(${xAxisChild.props.angle}, ${cx}, ${cy})`}>
+                {displayLabel}
+              </text>
+            );
+          }
+          return <text key={idx} x={cx} y={cy} fontSize={10} fontWeight="bold" fill="#71717a" textAnchor="middle">{displayLabel}</text>;
+        })}
+
+        {layout === "vertical" && gridTicks.map((t, idx) => {
+          const val = t * leftRange.max;
+          const cx = padding.left + t * chartWidth;
+          const cy = padding.top + chartHeight + 15;
+          return <text key={idx} x={cx} y={cy} fontSize={10} fontWeight="bold" fill="#71717a" textAnchor="middle">{formatCurrencyShort(val)}</text>;
+        })}
+
+        {yAxisChildren.find(y => y.props.yAxisId !== 'right') && layout === "horizontal" && gridTicks.map((t, idx) => {
+          const val = (1 - t) * leftRange.max;
+          const x = padding.left - 10;
+          const y = padding.top + t * chartHeight + 4;
+          const formatter = yAxisChildren.find(y => y.props.yAxisId !== 'right').props.tickFormatter;
+          return <text key={idx} x={x} y={y} fontSize={10} fontWeight="bold" fill="#71717a" textAnchor="end">{formatter ? formatter(val) : val}</text>;
+        })}
+
+        {yAxisChildren.find(y => y.props.yAxisId === 'right') && layout === "horizontal" && gridTicks.map((t, idx) => {
+          const val = (1 - t) * rightRange.max;
+          const x = padding.left + chartWidth + 10;
+          const y = padding.top + t * chartHeight + 4;
+          const formatter = yAxisChildren.find(y => y.props.yAxisId === 'right').props.tickFormatter;
+          return <text key={idx} x={x} y={y} fontSize={10} fontWeight="bold" fill="#71717a" textAnchor="start">{formatter ? formatter(val) : `${val}%`}</text>;
+        })}
+
+        {layout === "vertical" && data.map((item, idx) => {
+          const label = item[xAxisKey];
+          const x = padding.left - 10;
+          const y = getCategoryCenterY(idx) + 4;
+          return <text key={idx} x={x} y={y} fontSize={11} fontWeight="bold" fill="#52525b" textAnchor="end">{truncateText(label, 15)}</text>;
+        })}
+
+        {layout === "horizontal" ? (
+          <>
+            {series.filter(s => s.type === 'bar').map((s, seriesIdx, arr) => {
+              const totalBars = arr.length;
+              const barGroupWidth = xStep * 0.6;
+              const barWidth = barGroupWidth / totalBars;
+
+              return data.map((item, idx) => {
+                const val = parseFloat(item[s.dataKey]) || 0;
+                if (val === 0) return null;
+
+                const cx = getCategoryCenter(idx);
+                const startX = cx - barGroupWidth / 2;
+                const x = startX + seriesIdx * barWidth + barWidth * 0.05;
+                const w = barWidth * 0.9;
+                const y = getY(val, s.yAxisId);
+                const h = Math.max(2, padding.top + chartHeight - y);
+
+                let fill = s.fill || '#eab308';
+                if (s.props.fill === undefined && s.dataKey === 'Realizado') {
+                  const prev = parseFloat(item['Previsto']) || 0;
+                  fill = val < prev ? '#ef4444' : '#10b981';
+                }
+
+                if (s.props.children) {
+                  const cells = React.Children.toArray(s.props.children).filter(c => c.type === Cell);
+                  if (cells[idx]) fill = cells[idx].props.fill;
+                }
+
+                return (
+                  <g key={`${seriesIdx}-${idx}`}>
+                    <rect x={x} y={y} width={w} height={h} rx={2} fill={fill} opacity={hoveredIndex !== null && hoveredIndex !== idx ? 0.6 : 1} />
+                    {React.Children.toArray(s.props.children).find(c => c.type === LabelList) && (
+                      <text x={x + w / 2} y={y - 8} fill="#71717a" fontSize={9} fontWeight="bold" textAnchor="middle">
+                        {s.props.dataKey === 'Lucro' || (s.props.dataKey === 'value' && s.name.includes('R$')) ? formatCurrencyShort(val) : val}
+                      </text>
+                    )}
+                  </g>
+                );
+              });
+            })}
+
+            {series.filter(s => s.type === 'line').map((s, seriesIdx) => {
+              const points = data.map((item, idx) => {
+                const val = parseFloat(item[s.dataKey]) || 0;
+                return { x: getCategoryCenter(idx), y: getY(val, s.yAxisId), val };
+              });
+
+              const pathD = points.map((p, i) => `${i === 0 ? 'M' : 'L'} ${p.x} ${p.y}`).join(' ');
+
+              return (
+                <g key={`line-${seriesIdx}`}>
+                  <path d={pathD} fill="none" stroke={s.stroke || "#a1a1aa"} strokeWidth={s.props.strokeWidth || 3} strokeOpacity={s.props.strokeOpacity || 1} />
+                  {points.map((p, idx) => {
+                    let dotColor = s.stroke || '#a1a1aa';
+                    if (s.dataKey === 'Conversão %') {
+                      dotColor = p.val >= 30 ? '#10b981' : (p.val >= 15 ? '#eab308' : '#ef4444');
+                    }
+                    return (
+                      <g key={idx}>
+                        <circle cx={p.x} cy={p.y} r={4} fill={dotColor} stroke="#ffffff" strokeWidth={1.5} style={{ filter: 'drop-shadow(0px 1px 3px rgba(0,0,0,0.3))' }} />
+                        {s.dataKey === 'Conversão %' && p.val > 0 && (
+                          <g>
+                            <rect x={p.x - 22} y={p.y - 32} width={44} height={18} fill="#ffffff" rx={9} stroke="#e4e4e7" strokeWidth={1} />
+                            <text x={p.x} y={p.y - 20} fill="#000000" fontSize={9} fontWeight="900" textAnchor="middle">{p.val.toFixed(1)}%</text>
+                          </g>
+                        )}
+                      </g>
+                    );
+                  })}
+                </g>
+              );
+            })}
+          </>
+        ) : (
+          <>
+            {series.filter(s => s.type === 'bar').map((s, seriesIdx, arr) => {
+              const totalBars = arr.length;
+              const barGroupHeight = yStep * 0.6;
+              const barHeight = barGroupHeight / totalBars;
+
+              return data.map((item, idx) => {
+                const val = parseFloat(item[s.dataKey]) || 0;
+                if (val === 0) return null;
+
+                const cy = getCategoryCenterY(idx);
+                const startY = cy - barGroupHeight / 2;
+                const y = startY + seriesIdx * barHeight + barHeight * 0.05;
+                const h = barHeight * 0.9;
+                const x = padding.left;
+                const w = Math.max(2, getX(val) - padding.left);
+
+                let fill = s.fill || '#eab308';
+                if (s.props.children) {
+                  const cells = React.Children.toArray(s.props.children).filter(c => c.type === Cell);
+                  if (cells[idx]) fill = cells[idx].props.fill;
+                }
+
+                return (
+                  <g key={`${seriesIdx}-${idx}`}>
+                    <rect x={x} y={y} width={w} height={h} rx={3} fill={fill} opacity={hoveredIndex !== null && hoveredIndex !== idx ? 0.6 : 1} />
+                    {React.Children.toArray(s.props.children).find(c => c.type === LabelList) && (
+                      <text x={x + w + 8} y={y + h / 2 + 3} fill="#71717a" fontSize={10} fontWeight="bold" textAnchor="start">
+                        {formatCurrencyShort(val)}
+                      </text>
+                    )}
+                  </g>
+                );
+              });
+            })}
+          </>
+        )}
+      </svg>
+
+      {legendChild && (
+        <div className="flex justify-center items-center gap-6 mt-4 w-full" style={{ fontSize: '11px', fontWeight: 'bold' }}>
+          {series.map((s, idx) => (
+            <div key={idx} className="flex items-center gap-2">
+              <div style={{ width: '12px', height: '12px', backgroundColor: s.fill || s.stroke || '#eab308', borderRadius: '3px' }} />
+              <span className="text-zinc-600 font-bold">{s.name}</span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {tooltipChild && hoveredIndex !== null && data[hoveredIndex] && (
+        <div style={{ position: 'absolute', left: mousePos.x + 20, top: mousePos.y - 20, pointerEvents: 'none', zIndex: 100 }}>
+          {React.isValidElement(tooltipChild.props.content) ? (
+            React.cloneElement(tooltipChild.props.content, { active: true, payload: getTooltipPayload(hoveredIndex), label: data[hoveredIndex][xAxisKey] })
+          ) : tooltipChild.props.content ? (
+            React.createElement(tooltipChild.props.content, { active: true, payload: getTooltipPayload(hoveredIndex), label: data[hoveredIndex][xAxisKey] })
+          ) : (
+            <div className="bg-zinc-950 text-white p-3 rounded-xl border border-zinc-800 shadow-xl text-xs font-bold">
+              <p className="border-b border-zinc-800 pb-1.5 mb-1.5 text-yellow-500">{data[hoveredIndex][xAxisKey]}</p>
+              {getTooltipPayload(hoveredIndex).map((p, idx) => (
+                <p key={idx} style={{ color: p.color }} className="flex justify-between gap-4 mb-0.5">
+                  <span>{p.name}:</span>
+                  <span>{p.value}</span>
+                </p>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+export function RechartsPieChart({ children, containerWidth = 300, containerHeight = 300 }) {
+  return <PieChartComponent children={children} containerWidth={containerWidth} containerHeight={containerHeight} />;
+}
+
+export function PieChart({ children, containerWidth = 300, containerHeight = 300 }) {
+  return <PieChartComponent children={children} containerWidth={containerWidth} containerHeight={containerHeight} />;
+}
+
+function PieChartComponent({ children, containerWidth = 300, containerHeight = 300 }) {
+  const [hoveredIndex, setHoveredIndex] = useState(null);
+  const [mousePos, setMousePos] = useState({ x: 0, y: 0 });
+
+  const childrenArray = React.Children.toArray(children);
+  const pieChild = childrenArray.find(c => c.type === Pie);
+  const legendChild = childrenArray.find(c => c.type === Legend);
+
+  if (!pieChild) return null;
+
+  const data = pieChild.props.data || [];
+  const dataKey = pieChild.props.dataKey || 'value';
+  const cx = containerWidth / 2;
+  const cy = containerHeight / 2;
+  const outerRadius = pieChild.props.outerRadius || 90;
+  const innerRadius = pieChild.props.innerRadius || 0;
+
+  const total = data.reduce((acc, curr) => acc + (parseFloat(curr[dataKey]) || 0), 0);
+
+  function getSectorPath(cx, cy, innerRadius, outerRadius, startAngle, endAngle) {
+    const rad = Math.PI / 180;
+    const x1 = cx + outerRadius * Math.cos(-startAngle * rad);
+    const y1 = cy + outerRadius * Math.sin(-startAngle * rad);
+    const x2 = cx + outerRadius * Math.cos(-endAngle * rad);
+    const y2 = cy + outerRadius * Math.sin(-endAngle * rad);
+    
+    const x3 = cx + innerRadius * Math.cos(-endAngle * rad);
+    const y3 = cy + innerRadius * Math.sin(-endAngle * rad);
+    const x4 = cx + innerRadius * Math.cos(-startAngle * rad);
+    const y4 = cy + innerRadius * Math.sin(-startAngle * rad);
+    
+    const largeArcFlag = Math.abs(endAngle - startAngle) > 180 ? 1 : 0;
+    
+    return `
+      M ${x1} ${y1}
+      A ${outerRadius} ${outerRadius} 0 ${largeArcFlag} 1 ${x2} ${y2}
+      L ${x3} ${y3}
+      A ${innerRadius} ${innerRadius} 0 ${largeArcFlag} 0 ${x4} ${y4}
+      Z
+    `;
+  }
+
+  let cumulativeAngle = pieChild.props.startAngle || 0;
+
+  const slices = data.map((item, idx) => {
+    const val = parseFloat(item[dataKey]) || 0;
+    const percentage = total > 0 ? val / total : 0;
+    const angleSpan = percentage * 360;
+    const startAngle = cumulativeAngle;
+    const endAngle = cumulativeAngle - angleSpan;
+    cumulativeAngle = endAngle;
+
+    const midAngle = startAngle - angleSpan / 2;
+    const rad = Math.PI / 180;
+    const labelRadius = innerRadius + (outerRadius - innerRadius) * 0.6;
+    const labelX = cx + labelRadius * Math.cos(-midAngle * rad);
+    const labelY = cy + labelRadius * Math.sin(-midAngle * rad);
+
+    let fill = CHART_COLORS[idx % CHART_COLORS.length];
+    if (pieChild.props.children) {
+      const cells = React.Children.toArray(pieChild.props.children).filter(c => c.type === Cell);
+      if (cells[idx]) fill = cells[idx].props.fill;
+    }
+
+    return { name: item.name, value: val, percentage, startAngle, endAngle, labelX, labelY, fill, raw: item };
+  });
+
+  const handleMouseMove = (e) => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    setMousePos({ x: e.clientX - rect.left, y: e.clientY - rect.top });
+  };
+
+  return (
+    <div 
+      style={{ position: 'relative', width: '100%', height: '100%' }}
+      onMouseMove={handleMouseMove}
+      onMouseLeave={() => setHoveredIndex(null)}
+    >
+      <svg width={containerWidth} height={containerHeight} className="overflow-visible">
+        {slices.map((slice, idx) => {
+          const pathD = getSectorPath(cx, cy, innerRadius, outerRadius, slice.startAngle, slice.endAngle);
+          const isHovered = hoveredIndex === idx;
+
+          return (
+            <g 
+              key={idx}
+              onMouseEnter={() => setHoveredIndex(idx)}
+              onMouseLeave={() => setHoveredIndex(null)}
+              className="cursor-pointer"
+              style={{ transform: isHovered ? 'scale(1.03)' : 'none', transformOrigin: `${cx}px ${cy}px`, transition: 'transform 0.2s ease' }}
+            >
+              <path d={pathD} fill={slice.fill} stroke="#ffffff" strokeWidth={1.5} opacity={hoveredIndex !== null && hoveredIndex !== idx ? 0.75 : 1} />
+              {slice.percentage > 0.05 && innerRadius > 40 && (
+                <text x={slice.labelX} y={slice.labelY} fill="#ffffff" fontSize={10} fontWeight="900" textAnchor="middle" style={{ filter: 'drop-shadow(0px 1px 2px rgba(0,0,0,0.5))' }}>
+                  {(slice.percentage * 100).toFixed(0)}%
+                </text>
+              )}
+            </g>
+          );
+        })}
+      </svg>
+
+      {legendChild && (
+        <div className="flex flex-wrap justify-center items-center gap-x-6 gap-y-2 mt-4 w-full" style={{ fontSize: '11px', fontWeight: 'bold' }}>
+          {slices.map((slice, idx) => (
+            <div key={idx} className="flex items-center gap-2">
+              <div style={{ width: '10px', height: '10px', backgroundColor: slice.fill, borderRadius: '2px' }} />
+              <span className="text-zinc-600">{slice.name}</span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {hoveredIndex !== null && slices[hoveredIndex] && (
+        <div style={{ position: 'absolute', left: mousePos.x + 20, top: mousePos.y - 20, pointerEvents: 'none', zIndex: 100 }}>
+          <div className="bg-zinc-950 text-white p-3 rounded-xl border border-zinc-800 shadow-xl text-xs font-bold">
+            <p style={{ color: slices[hoveredIndex].fill }} className="flex justify-between gap-4 font-black">
+              <span>{slices[hoveredIndex].name}:</span>
+              <span>{slices[hoveredIndex].value} ({(slices[hoveredIndex].percentage * 100).toFixed(1)}%)</span>
+            </p>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
 
 // ============================================================================
 // CONFIGURAÇÃO DO SEU SUPABASE
@@ -104,7 +645,7 @@ export default function App() {
   const [filtroMesDashboard, setFiltroMesDashboard] = useState('ALL');
 
   // Chat IA Analista (Página)
-  const [chatMessages, setChatMessages] = useState([{ role: 'assistant', content: 'Olá! Sou o Analista IA (GPT-4o). Posso gerar relatórios, ler dados complexos e desenhar gráficos comparativos do seu sistema SGQ. Como posso ajudar hoje?' }]);
+  const [chatMessages, setChatMessages] = useState([{ role: 'assistant', content: 'Olá! Sou o Analista IA (GPT-5.5). Posso gerar relatórios, ler dados complexos e desenhar gráficos corporativos. Como posso ajudar hoje?' }]);
   const [chatInput, setChatInput] = useState('');
   const [isChatLoading, setIsChatLoading] = useState(false);
   
@@ -443,7 +984,6 @@ export default function App() {
      while ((match = regex.exec(content)) !== null) {
         if (match.index > lastIndex) {
             const rawText = content.substring(lastIndex, match.index);
-            // Simula renderização de Markdown básico para o texto do GPT
             const formatted = rawText.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>').replace(/### (.*)/g, '<br/><span class="text-indigo-600 font-black uppercase text-xs">$1</span><br/>').replace(/\n/g, '<br/>');
             parts.push({ type: 'text', content: formatted });
         }
@@ -494,10 +1034,20 @@ EXEMPLO OBRIGATÓRIO DE INSIGHT:
 <INSIGHT>{"title": "Alerta de Gargalo", "text": "Identifiquei que o **material X** está com terceiros há mais de 10 dias..."}</INSIGHT>
 DADOS REAIS DA EMPRESA: ${dadosSistema}`;
         
-        const response = await fetch('https://api.openai.com/v1/chat/completions', {
-           method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${openAIApiKey}` },
-           body: JSON.stringify({ model: 'gpt-5.5', messages: [{ role: 'system', content: contextoGlobal }, ...chatMessages.map(m => ({role: m.role, content: m.content})), novaMsg], max_tokens: 8000, temperature: 0.1 })
-        });
+        let response;
+        try {
+            response = await fetch('https://api.openai.com/v1/chat/completions', {
+               method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${openAIApiKey}` },
+               body: JSON.stringify({ model: 'gpt-5.5', messages: [{ role: 'system', content: contextoGlobal }, ...chatMessages.map(m => ({role: m.role, content: m.content})), novaMsg], max_tokens: 8000, temperature: 0.1 })
+            });
+            if(!response.ok) throw new Error("Fallback para GPT-4o");
+        } catch(fallbackErr) {
+            response = await fetch('https://api.openai.com/v1/chat/completions', {
+               method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${openAIApiKey}` },
+               body: JSON.stringify({ model: 'gpt-4o', messages: [{ role: 'system', content: contextoGlobal }, ...chatMessages.map(m => ({role: m.role, content: m.content})), novaMsg], max_tokens: 4000, temperature: 0.1 })
+            });
+        }
+        
         if(!response.ok) throw new Error("Falha na API");
         const data = await response.json();
         if(data.choices && data.choices[0]) setChatMessages(prev => [...prev, data.choices[0].message]);
@@ -510,10 +1060,21 @@ DADOS REAIS DA EMPRESA: ${dadosSistema}`;
      try {
         const resumoRemessas = remessasDb.map(r => ({ prj: r.projeto, pa: r.produto_acabado, qtd_enviada: Number(r.quantidade_op), qtd_recebida: Number(r.pecas_recebidas||0), status: r.status, destinatario: s(r.expedicao?.destinatario), data_envio: r.data_envio, mps_vinculadas: Array.isArray(r.itens) ? r.itens.map(i=>i.codigoMP).join(',') : '' }));
         const contextoGlobal = `Você é o Copiloto IA do sistema SGQ. Responda perguntas sobre o sistema. Lembre-se que itens sem saldo interno frequentemente estão em poder de terceiros. Responda direto. Dados: ${JSON.stringify(resumoRemessas)}`;
-        const response = await fetch('https://api.openai.com/v1/chat/completions', {
-           method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${openAIApiKey}` },
-           body: JSON.stringify({ model: 'gpt-5.5', messages: [{ role: 'system', content: contextoGlobal }, ...miniIaMessages, novaMsg], max_tokens: 8000, temperature: 0.1 })
-        });
+        
+        let response;
+        try {
+            response = await fetch('https://api.openai.com/v1/chat/completions', {
+               method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${openAIApiKey}` },
+               body: JSON.stringify({ model: 'gpt-5.5', messages: [{ role: 'system', content: contextoGlobal }, ...miniIaMessages, novaMsg], max_tokens: 8000, temperature: 0.1 })
+            });
+            if(!response.ok) throw new Error("Fallback");
+        } catch(fallbackErr) {
+            response = await fetch('https://api.openai.com/v1/chat/completions', {
+               method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${openAIApiKey}` },
+               body: JSON.stringify({ model: 'gpt-4o', messages: [{ role: 'system', content: contextoGlobal }, ...miniIaMessages, novaMsg], max_tokens: 4000, temperature: 0.1 })
+            });
+        }
+
         if(!response.ok) throw new Error("Falha API");
         const data = await response.json();
         if(data.choices && data.choices[0]) setMiniIaMessages(prev => [...prev, data.choices[0].message]);
@@ -624,7 +1185,7 @@ DADOS REAIS DA EMPRESA: ${dadosSistema}`;
         </div>
         <div className="flex-1 overflow-y-auto py-4 space-y-1 px-3 custom-scrollbar">
           {isAdmin && (
-            <button onClick={() => { setAbaAtiva('DASHBOARD'); setIsMobileMenuOpen(false); }} className={`w-full flex items-center px-4 py-3 rounded-xl transition-all ${abaAtiva === 'DASHBOARD' ? 'bg-yellow-500 shadow-lg text-black' : 'hover:bg-zinc-900 hover:text-white'}`}><PieChart className="w-5 h-5 mr-3" /> <span className="font-bold">Painel Diretoria</span></button>
+            <button onClick={() => { setAbaAtiva('DASHBOARD'); setIsMobileMenuOpen(false); }} className={`w-full flex items-center px-4 py-3 rounded-xl transition-all ${abaAtiva === 'DASHBOARD' ? 'bg-yellow-500 shadow-lg text-black' : 'hover:bg-zinc-900 hover:text-white'}`}><PieChartIcon className="w-5 h-5 mr-3" /> <span className="font-bold">Painel Diretoria</span></button>
           )}
           {isPCP && (
             <>
@@ -1038,7 +1599,7 @@ DADOS REAIS DA EMPRESA: ${dadosSistema}`;
                         {ITENS_RATEIO.includes(s(it.codigoMP)) ? (
                           <div className="flex items-center justify-center gap-2">
                              <span className="bg-zinc-100 border border-zinc-200 px-3 py-1 rounded-lg shadow-sm">{fmtDec(it.quantidadeTotal, it.um)}</span>
-                             <button type="button" onClick={() => { setIdxItemRateio(i); setModalRateioAberto(true); }} className={`p-1.5 rounded-lg transition-all ${it.rateiosExtras?.length > 0 ? 'bg-indigo-100 text-indigo-600 shadow-sm' : 'bg-zinc-100 text-zinc-500 hover:bg-zinc-200'}`} title="Rateio / Ajustar Qtd"><PieChart className="w-4 h-4" /></button>
+                             <button type="button" onClick={() => { setIdxItemRateio(i); setModalRateioAberto(true); }} className={`p-1.5 rounded-lg transition-all ${it.rateiosExtras?.length > 0 ? 'bg-indigo-100 text-indigo-600 shadow-sm' : 'bg-zinc-100 text-zinc-500 hover:bg-zinc-200'}`} title="Rateio / Ajustar Qtd"><PieChartIcon className="w-4 h-4" /></button>
                           </div>
                         ) : isEditable ? (
                            <div className="flex flex-col items-center justify-center gap-1">
