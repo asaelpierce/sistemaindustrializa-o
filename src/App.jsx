@@ -613,16 +613,63 @@ export default function App(){
     if(!formExp.transporte||!formExp.destinatario)return addToast('Preencha Transporte e Destinatário.','error');
     setIsLoading(true);
     try{
-      const{error}=await supabase.from('remessas').update({status:'ENVIADO',data_envio:new Date().toISOString(),enviado_por:s(usuarioLogado?.nome),expedicao:formExp}).eq('id',remSel.id);if(error)throw error;
+      // 1. Atualizar status no banco
+      const{error}=await supabase.from('remessas').update({status:'ENVIADO',data_envio:new Date().toISOString(),enviado_por:s(usuarioLogado?.nome),expedicao:formExp}).eq('id',remSel.id);
+      if(error)throw error;
+
+      // 2. Gerar planilha SGQ
       const wb=new window.ExcelJS.Workbook();await wb.xlsx.load(templateBuf);const ws=wb.worksheets[0];
       ws.getCell('B4').value=s(remSel.projeto);ws.getCell('C4').value=s(remSel.cliente);
       ws.getCell('B6').value=s(formExp.transporte);ws.getCell('C6').value=s(formExp.transportadora);
       ws.getCell('B8').value=Number(formExp.quantidade);ws.getCell('C8').value=s(formExp.pesoTotal);
       ws.getCell('E8').value=`${s(remSel.projeto)} — ${s(formExp.destinatario)}`;ws.getCell('G8').value=s(formExp.dataSaida);
       (remSel.itens||[]).forEach((it,i)=>{const r=12+i;ws.getCell(`C${r}`).value=s(it.codigoMP);ws.getCell(`E${r}`).value=s(it.descricao);ws.getCell(`F${r}`).value=Number(it.quantidadeTotal);ws.getCell(`G${r}`).value=s(it.um);ws.getCell(`H${r}`).value=s(remSel.observacao);});
-      const buf=await wb.xlsx.writeBuffer();const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([buf]));a.download=`SGQ_${s(remSel.projeto)}.xlsx`;a.click();
-      addToast('Expedição concluída!');setRemSel(null);setIsLoading(false);fetchAll();
-    }catch(e){addToast('Falha ao gerar planilha.','error');setIsLoading(false);}
+      const buf=await wb.xlsx.writeBuffer();
+
+      // 3. Download local do arquivo
+      const blob=new Blob([buf],{type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'});
+      const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=`SGQ_${s(remSel.projeto)}.xlsx`;a.click();
+
+      // 4. Converter para base64 e enviar via Edge Function → Power Automate (email com anexo)
+      try{
+        const base64=await new Promise((res,rej)=>{
+          const reader=new FileReader();
+          reader.onload=()=>res(reader.result.split(',')[1]);
+          reader.onerror=rej;
+          reader.readAsDataURL(blob);
+        });
+        const nomeArquivo=`SGQ_${s(remSel.projeto)}_${s(formExp.dataSaida||new Date().toISOString().split('T')[0])}.xlsx`;
+        const proxyUrl=`${SUPABASE_URL}/functions/v1/sgq-email-proxy`;
+        await fetch(proxyUrl,{
+          method:'POST',
+          headers:{'Content-Type':'application/json','apikey':SUPABASE_KEY},
+          body:JSON.stringify({
+            record:{
+              id:remSel.id,
+              projeto:remSel.projeto,
+              produto_acabado:remSel.produto_acabado,
+              cliente:remSel.cliente,
+              quantidade_op:remSel.quantidade_op,
+              status:'ENVIADO',
+              observacao:remSel.observacao,
+              obs_expedicao:remSel.obs_expedicao,
+              criado_por:remSel.criado_por,
+              enviado_por:s(usuarioLogado?.nome),
+              data_envio:new Date().toISOString(),
+              expedicao:formExp,
+            },
+            sgq_base64:base64,
+            sgq_filename:nomeArquivo,
+          })
+        });
+        addToast('Expedição concluída e email enviado ao PCP!');
+      }catch(emailErr){
+        // Email falhou mas expedição foi salva — avisar sem bloquear
+        addToast('Expedição concluída! (Falha ao enviar email: '+emailErr.message+')','warning');
+      }
+
+      setRemSel(null);setIsLoading(false);fetchAll();
+    }catch(e){addToast('Falha ao processar expedição: '+e.message,'error');setIsLoading(false);}
   };
 
   const processarRetorno=async()=>{
@@ -2002,14 +2049,11 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
                             <Truck className="w-3.5 h-3.5"/>Dados da Saída Física
                           </p>
                           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                            <Field label="Tipo de Transporte" required>
+                            <Field label="Tipo de Frete" required>
                               <Sel value={formExp.transporte} onChange={e=>setFormExp({...formExp,transporte:e.target.value})}>
                                 <option value="">Selecione...</option>
-                                <option>Rodoviário</option>
-                                <option>Aéreo</option>
-                                <option>Marítimo</option>
-                                <option>Próprio</option>
-                                <option>Motoboy</option>
+                                <option value="FOB">FOB — Por conta do Destinatário</option>
+                                <option value="CIF">CIF — Por conta do Remetente</option>
                               </Sel>
                             </Field>
                             <Field label="Transportadora">
