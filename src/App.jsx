@@ -12,7 +12,7 @@ import {
   Calendar, Eye, AlertTriangle, Weight, Boxes, Building2, ArrowUpDown,
   ArrowUp, ArrowDown, TrendingUp, TrendingDown, Activity, MessageSquare,
   X, Send, Bot, Save, Menu, Bell, RefreshCw, RotateCcw, Factory,
-  Layers, PieChart as PieChartIcon, BarChart as BarChartIcon, Link2,
+  Layers, PieChart as PieChartIcon, BarChart as BarChartIcon, BarChart2, Link2,
   AlertOctagon, KeyRound, Circle
 } from 'lucide-react';
 
@@ -409,6 +409,15 @@ export default function App(){
   const [opPaiId,setOpPaiId]=useState('');
   const [modoManual,setModoManual]=useState(false);
   const [novoItemM,setNovoItemM]=useState({codigoMP:'',descricao:'',quantidade:'',um:'UN'});
+
+  // Prazos e Planner
+  const [dataEnvioPrevista,setDataEnvioPrevista]=useState('');
+  const [dataRetornoDesejada,setDataRetornoDesejada]=useState('');
+  const [plannerTitulo,setPlannerTitulo]=useState('');
+  const [plannerObs,setPlannerObs]=useState('');
+  const [plannerUrl,setPlannerUrl]=useState('');
+  const [modalPlanner,setModalPlanner]=useState(false);
+  const [plannerLoading,setPlannerLoading]=useState(false);
   const ITENS_RATEIO=['4941','4942','552','187'];
 
   // Expedição
@@ -468,6 +477,7 @@ export default function App(){
   // Usuarios
   const [novoUser,setNovoUser]=useState({nome:'',email:'',senha:'',perfil:'PCP'});
   const [editUser,setEditUser]=useState(false);
+  const [expandida,setExpandida]=useState(null);
 
   const isAdmin=usuarioLogado?.perfil==='ADMIN';
   const isPCP=usuarioLogado?.perfil==='PCP'||isAdmin;
@@ -501,7 +511,7 @@ export default function App(){
         supabase.from('estoque_mp').select('*'),
         supabase.from('remessas').select('*').order('data_criacao',{ascending:false}),
         supabase.from('perfis_usuarios').select('*'),
-        supabase.from('configuracoes').select('*').in('chave',['modelo_sgq','openai_api_key']),
+        supabase.from('configuracoes').select('*').in('chave',['modelo_sgq','openai_api_key','planner_flow_url']),
         supabase.from('chat_interno').select('*').order('data_envio',{ascending:true}),
         supabase.from('relatorios_ia').select('*').order('data_criacao',{ascending:false})
       ]);
@@ -513,6 +523,7 @@ export default function App(){
         const modelo=cR.data.find(c=>c.chave==='modelo_sgq');
         if(modelo?.valor_json){const b64=modelo.valor_json.data;setNomeTemplate(modelo.valor_json.nome);const bs=window.atob(b64);const bytes=new Uint8Array(bs.length);for(let i=0;i<bs.length;i++)bytes[i]=bs.charCodeAt(i);setTemplateBuf(bytes.buffer);}
         const ak=cR.data.find(c=>c.chave==='openai_api_key');if(ak?.valor_json)setOpenAIKey(ak.valor_json.key);
+        const pk=cR.data.find(c=>c.chave==='planner_flow_url');if(pk?.valor_json)setPlannerUrl(pk.valor_json.url);
       }
       if(chR.data){if(chatInternoDb.length>0&&chR.data.length>chatInternoDb.length&&!chatEqOpen)setChatEqUnread(true);setChatInternoDb(chR.data);}
       if(rlR.data)setRelatoriosIaDb(rlR.data);
@@ -577,13 +588,20 @@ export default function App(){
     if(semSaldo.length>0)return addToast(`Saldo insuficiente: ${semSaldo.map(s=>s.codigoMP).join(', ')}`,'error');
     const servFinal=servico==='Outros'?(outrosTexto||'Outros'):servico;
     const removidos=itensOrig.filter(o=>!itens.find(it=>it.codigoMP===o.codigoMP)).map(r=>({codigoMP:s(r.codigoMP),descricao:s(r.descricao),quantidade:Number(r.quantidadeTotal),um:s(r.um)}));
-    const alterados=itens.filter(it=>{const d=s(it.descricao).toUpperCase();const ie=d.includes('BORRACHA')||d.includes('CHEMITAC')||d.includes('COLA')||ITENS_RATEIO.includes(s(it.codigoMP));return ie&&it.quantidadeTotal!==it.quantidadeOriginal;});
+    // Registrar TODOS os itens com quantidade alterada + justificativa
+    const alterados=itens.filter(it=>it.quantidadeTotal!==it.quantidadeOriginal);
     let notaFinal=obsExp;
-    if(alterados.length>0){const nt=`[Ajuste PCP: ${alterados.map(a=>{const df=a.quantidadeTotal-a.quantidadeOriginal;return`${a.codigoMP}(${df>0?'+':''}${fmtD(df,a.um)})`;}).join(' | ')}]`;notaFinal=notaFinal?`${notaFinal} — ${nt}`:nt;}
+    if(alterados.length>0){
+      const nt=`[Ajuste PCP: ${alterados.map(a=>{const df=a.quantidadeTotal-a.quantidadeOriginal;const just=a.justificativa?` — "${a.justificativa}"`:' — sem justificativa';return`${a.codigoMP}: BOM=${fmtD(a.quantidadeOriginal)}→Enviado=${fmtD(a.quantidadeTotal)} ${a.um}${just}`;}).join(' | ')}]`;
+      notaFinal=notaFinal?`${notaFinal} — ${nt}`:nt;
+    }
+    // Validar: itens com alteração devem ter justificativa
+    const semJustificativa=alterados.filter(it=>!it.justificativa?.trim());
+    if(semJustificativa.length>0)return addToast(`Justifique a alteração nos itens: ${semJustificativa.map(x=>x.codigoMP).join(', ')}`,'error');
     setIsLoading(true);
     try{
       for(const it of itens){const{data:cur}=await supabase.from('estoque_mp').select('saldo_disponivel').eq('codigo_mp',it.codigoMP).single();await supabase.from('estoque_mp').update({saldo_disponivel:Number(((cur?.saldo_disponivel||0)-it.quantidadeTotal).toFixed(4))}).eq('codigo_mp',it.codigoMP);}
-      const nr={id:`REM-${Date.now()}`,produto_acabado:s(prodEncontrado.codigo_pa),descricao_produto:s(prodEncontrado.descricao),quantidade_op:parseN(qtdProd),projeto:s(projeto).toUpperCase(),cliente:s(cliente).toUpperCase(),observacao:s(servFinal),obs_expedicao:s(notaFinal),itens,itens_removidos:removidos,status:'PENDENTE_EXPEDICAO',criado_por:s(usuarioLogado?.nome||'PCP'),pecas_recebidas:0,remessa_pai_id:isComp?s(opPaiId):null};
+      const nr={id:`REM-${Date.now()}`,produto_acabado:s(prodEncontrado.codigo_pa),descricao_produto:s(prodEncontrado.descricao),quantidade_op:parseN(qtdProd),projeto:s(projeto).toUpperCase(),cliente:s(cliente).toUpperCase(),observacao:s(servFinal),obs_expedicao:s(notaFinal),itens,itens_removidos:removidos,status:'PENDENTE_EXPEDICAO',criado_por:s(usuarioLogado?.nome||'PCP'),pecas_recebidas:0,remessa_pai_id:isComp?s(opPaiId):null,data_envio_prevista:dataEnvioPrevista||null,data_retorno_desejada:dataRetornoDesejada||null};
       const{error}=await supabase.from('remessas').insert([nr]);if(error)throw error;
       addToast('Remessa enviada para Expedição!');
       setIsLoading(false);setProdEncontrado(null);setOutrosTexto('');setObsExp('');setCliente('');setIsComp(false);setOpPaiId('');setModoManual(false);setAba('HISTORICO_PCP');fetchAll();
@@ -739,6 +757,51 @@ export default function App(){
     try{await supabase.from('chat_interno').insert([{remetente:s(usuarioLogado?.nome),destinatario:chatEqDest,mensagem:msg}]);fetchAll();}catch(e){}
   };
 
+  const marcarLido=async(canalId)=>{
+    // Buscar msgs não lidas do canal atual
+    const naolidas=chatInternoDb.filter(m=>{
+      const doCanal=canalId==='Geral'
+        ?m.destinatario==='Geral'
+        :(m.remetente===canalId&&m.destinatario===usuarioLogado?.nome)||(m.destinatario===canalId&&m.remetente===usuarioLogado?.nome);
+      return doCanal&&m.remetente!==usuarioLogado?.nome&&!(m.lido_por||[]).includes(usuarioLogado?.nome);
+    });
+    for(const m of naolidas){
+      const novosLidos=[...(m.lido_por||[]),s(usuarioLogado?.nome)];
+      await supabase.from('chat_interno').update({lido_por:novosLidos}).eq('id',m.id);
+    }
+    if(naolidas.length>0)fetchAll();
+  };
+
+  const enviarPlannerCard=async()=>{
+    if(!plannerTitulo.trim())return addToast('Informe o título do card.','error');
+    setPlannerLoading(true);
+    try{
+      // Chama via Edge Function proxy (evita bloqueio CORS do navegador)
+      const proxyUrl=`${SUPABASE_URL}/functions/v1/planner-proxy`;
+      const res=await fetch(proxyUrl,{
+        method:'POST',
+        headers:{'Content-Type':'application/json','apikey':SUPABASE_KEY},
+        body:JSON.stringify({
+          titulo:plannerTitulo,
+          observacao:plannerObs,
+          projeto:s(projeto),
+          pa:s(prodEncontrado?.codigo_pa),
+          cliente:s(cliente),
+          criado_por:s(usuarioLogado?.nome),
+          data_envio_prevista:dataEnvioPrevista,
+          data_retorno_desejada:dataRetornoDesejada,
+        })
+      });
+      const data=await res.json();
+      if(res.ok&&data.ok){
+        addToast('Card criado no Planner com sucesso!');
+        setModalPlanner(false);setPlannerTitulo('');setPlannerObs('');
+      } else {
+        addToast(`Erro ${data.status||res.status}: ${data.body||data.error||'Falha no Power Automate'}`,'error');
+      }
+    }catch(e){addToast('Falha de conexão: '+e.message,'error');}finally{setPlannerLoading(false);}
+  };
+
   const pendAudit=useMemo(()=>{
     const rem=remessasDb.flatMap(r=>(Array.isArray(r.itens_removidos)?r.itens_removidos:[]).map(it=>({...it,projeto:r.projeto,pa:r.produto_acabado,data:r.data_criacao,quantidade_op:r.quantidade_op,cliente:r.cliente})));
     const env=remessasDb.flatMap(r=>(Array.isArray(r.itens)?r.itens:[]).map(it=>({codigoMP:it.codigoMP,projeto:r.projeto})));
@@ -784,6 +847,65 @@ export default function App(){
     (m.destinatario==='Geral'||m.destinatario===usuarioLogado?.nome) &&
     !m.lido_por?.includes(usuarioLogado?.nome)
   ).length;
+
+  // ── Chat computed ────────────────────────────────────────────────────────
+  const chatCanais = useMemo(()=>[
+    {id:'Geral',nome:'Geral',tipo:'canal'},
+    ...usuariosDb.filter(u=>u.nome!==usuarioLogado?.nome).map(u=>({id:u.nome,nome:u.nome,tipo:'dm',perfil:u.perfil,email:u.email}))
+  ],[usuariosDb,usuarioLogado]);
+  const chatMsgsAtual = useMemo(()=>chatInternoDb.filter(m=>{
+    if(chatEqDest==='Geral')return m.destinatario==='Geral';
+    return(m.destinatario===chatEqDest&&m.remetente===usuarioLogado?.nome)||(m.remetente===chatEqDest&&m.destinatario===usuarioLogado?.nome);
+  }),[chatInternoDb,chatEqDest,usuarioLogado]);
+  const chatUltimaMsgCanal=(canalId)=>{const msgs=canalId==='Geral'?chatInternoDb.filter(m=>m.destinatario==='Geral'):chatInternoDb.filter(m=>(m.destinatario===canalId&&m.remetente===usuarioLogado?.nome)||(m.remetente===canalId&&m.destinatario===usuarioLogado?.nome));return msgs[msgs.length-1];};
+  const chatNaoLidosCanal=(canalId)=>{const msgs=canalId==='Geral'?chatInternoDb.filter(m=>m.destinatario==='Geral'&&m.remetente!==usuarioLogado?.nome):chatInternoDb.filter(m=>m.remetente===canalId&&m.destinatario===usuarioLogado?.nome);return msgs.filter(m=>!(m.lido_por||[]).includes(s(usuarioLogado?.nome))).length;};
+  const chatPerfilColor=(perfil)=>({ADMIN:'bg-slate-900 text-white',PCP:'bg-indigo-100 text-indigo-700',EXPEDICAO:'bg-amber-100 text-amber-700'}[perfil]||'bg-slate-100 text-slate-600');
+  const chatIniciais=(nome)=>s(nome).split(' ').slice(0,2).map(n=>n[0]).join('').toUpperCase();
+  const renderChatMsgs=(msgs,meNome,perfis,getPerfilColor,getIniciais)=>{
+    let ultimoRemetente=null;let ultimaData=null;
+    return msgs.map((m,i)=>{
+      const isMe=m.remetente===meNome;
+      const dataMsg=new Date(m.data_envio).toLocaleDateString('pt-BR');
+      const horaMsg=new Date(m.data_envio).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});
+      const mostraData=dataMsg!==ultimaData;
+      const mostraRemetente=m.remetente!==ultimoRemetente||mostraData;
+      ultimoRemetente=m.remetente;ultimaData=dataMsg;
+      const userPerfil=perfis.find(u=>u.nome===m.remetente)?.perfil;
+      return(
+        <div key={i}>
+          {mostraData&&(<div className="flex items-center gap-3 my-5"><div className="flex-1 h-px bg-slate-200"/><span className="text-[10px] font-bold text-slate-400 bg-white border border-slate-200 px-3 py-1 rounded-full">{dataMsg===new Date().toLocaleDateString('pt-BR')?'Hoje':dataMsg}</span><div className="flex-1 h-px bg-slate-200"/></div>)}
+          <div className={`flex gap-3 ${isMe?'flex-row-reverse':'flex-row'} ${mostraRemetente?'mt-4':'mt-0.5'}`}>
+            {mostraRemetente?(<div className={`w-8 h-8 rounded-full flex items-center justify-center text-xs font-black flex-shrink-0 mt-0.5 ${getPerfilColor(userPerfil)}`}>{getIniciais(m.remetente)}</div>):<div className="w-8 flex-shrink-0"/>}
+            <div className={`flex flex-col ${isMe?'items-end':'items-start'} max-w-[70%]`}>
+              {mostraRemetente&&<p className={`text-[10px] font-bold mb-1 ${isMe?'text-right text-slate-400':'text-slate-500'}`}>{isMe?'Você':m.remetente} · {horaMsg}</p>}
+              <div className={`px-4 py-2.5 rounded-2xl text-sm font-medium leading-relaxed ${isMe?'bg-indigo-600 text-white rounded-tr-sm':'bg-white border border-slate-200 text-slate-800 shadow-sm rounded-tl-sm'}`}>
+                {m.tipo==='sistema'?(<div className="flex items-center gap-2"><Bell className="w-3.5 h-3.5 opacity-70 flex-shrink-0"/><span className="text-xs">{m.mensagem}</span></div>):m.mensagem}
+              </div>
+              {!mostraRemetente&&<span className="text-[9px] text-slate-300 mt-0.5">{horaMsg}</span>}
+            </div>
+          </div>
+        </div>
+      );
+    });
+  };
+
+  // ── Controle Geral computed ──────────────────────────────────────────────
+  const ctrlAtivos = useMemo(()=>projAgrup.filter(p=>['ENVIADO','RETORNO_PARCIAL'].includes(p.status)),[projAgrup]);
+  const ctrlConcluidos = useMemo(()=>projAgrup.filter(p=>p.status==='RETORNADO'),[projAgrup]);
+  const ctrlPendentes = useMemo(()=>projAgrup.filter(p=>p.status==='PENDENTE_EXPEDICAO'),[projAgrup]);
+  const ctrlAlertas = useMemo(()=>ctrlAtivos.filter(p=>p.data_envio&&Math.floor((new Date()-new Date(p.data_envio))/(864e5))>20),[ctrlAtivos]);
+  const ctrlTopMPs = useMemo(()=>{
+    const m={};
+    ctrlAtivos.forEach(p=>{(p.mpsConsumidas||[]).forEach(mp=>{const sl=mp.qtdAcumulada-mp.qtdRetornada;if(sl<=0)return;const desc=s(estoqueDb[mp.codigoMP]?.descricao||mp.descricao);if(!m[mp.codigoMP])m[mp.codigoMP]={codigoMP:mp.codigoMP,descricao:desc,um:s(estoqueDb[mp.codigoMP]?.unidade||mp.um),totalNaRua:0,projetos:[]};m[mp.codigoMP].totalNaRua+=sl;m[mp.codigoMP].projetos.push(s(p.projeto));});});
+    return Object.values(m).sort((a,b)=>b.totalNaRua-a.totalNaRua);
+  },[ctrlAtivos,estoqueDb]);
+  const ctrlFiltrados = useMemo(()=>projAgrup.filter(p=>{
+    if(filtC.status&&p.status!==filtC.status)return false;
+    if(filtC.projeto&&!s(p.projeto).toUpperCase().includes(filtC.projeto.toUpperCase()))return false;
+    if(filtC.pa&&!s(p.produto_acabado).toUpperCase().includes(filtC.pa.toUpperCase()))return false;
+    if(filtC.mp&&!(p.mpsConsumidas||[]).some(mp=>s(mp.codigoMP).toUpperCase().includes(filtC.mp.toUpperCase())))return false;
+    return true;
+  }),[projAgrup,filtC]);
 
   const navItems=[
     ...(isAdmin?[{id:'DASHBOARD',label:'Painel Executivo',icon:LayoutDashboard,group:'Visão Geral'}]:[]),
@@ -1176,7 +1298,22 @@ export default function App(){
                       {isComp&&<div className="mt-3 pt-3 border-t border-slate-200"><Field label="OP Original (Pai)"><Sel value={opPaiId} onChange={e=>setOpPaiId(e.target.value)}><option value="">Selecione...</option>{remessasDb.filter(r=>!r.remessa_pai_id).map(r=><option key={r.id} value={r.id}>[{fmtDt(r.data_criacao)}] BR: {s(r.projeto)} — {s(r.produto_acabado)}</option>)}</Sel></Field></div>}
                     </div>
                     <Field label="Nota para Expedição" className="sm:col-span-2 lg:col-span-3"><Inp placeholder="Instruções para logística..." value={obsExp} onChange={e=>setObsExp(e.target.value)}/></Field>
-                    <div className="sm:col-span-2 lg:col-span-3"><Btn type="submit" variant="dark" size="lg" className="w-full"><Database className="w-5 h-5"/>Buscar Estrutura BOM</Btn></div>
+
+                    {/* Prazos */}
+                    <div className="sm:col-span-2 lg:col-span-3">
+                      <div className="bg-indigo-50 border border-indigo-100 rounded-xl p-4">
+                        <p className="text-xs font-black text-indigo-700 uppercase tracking-wider mb-3 flex items-center gap-2"><Calendar className="w-3.5 h-3.5"/>Prazos da Operação</p>
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                          <Field label="Data Prevista de Envio"><Inp type="date" value={dataEnvioPrevista} onChange={e=>setDataEnvioPrevista(e.target.value)}/></Field>
+                          <Field label="Data Desejada de Retorno"><Inp type="date" value={dataRetornoDesejada} onChange={e=>setDataRetornoDesejada(e.target.value)}/></Field>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="sm:col-span-2 lg:col-span-3 flex gap-3">
+                      <Btn type="submit" variant="dark" size="lg" className="flex-1"><Database className="w-5 h-5"/>Buscar Estrutura BOM</Btn>
+                      <Btn type="button" variant="secondary" size="lg" onClick={()=>setModalPlanner(true)} disabled={!projeto||!cliente}><BarChart2 className="w-5 h-5"/>Criar Card no Planner</Btn>
+                    </div>
                   </form>
                 </div>
                 {modoManual&&(
@@ -1211,12 +1348,30 @@ export default function App(){
                             <td className="px-5 py-3.5 text-xs text-slate-600 truncate max-w-[200px]">{s(it.descricao)}</td>
                             <td className="px-5 py-3.5 text-center">
                               <div className="flex items-center justify-center gap-2">
-                                {isEd?(
-                                  <div className="flex flex-col items-center gap-0.5">
-                                    <input type="number" step="0.0001" className={`w-24 px-2 py-1.5 text-center rounded-lg border text-sm font-bold outline-none transition-all ${isAlt?'bg-indigo-50 border-indigo-300 text-indigo-900':'bg-slate-50 border-slate-200'}`} value={it.quantidadeTotal} onChange={e=>{const v=e.target.value===''?'':parseFloat(e.target.value);const n=[...itens];n[i].quantidadeTotal=v===''?0:v;setItens(n);}}/>
-                                    {isAlt&&<span className={`text-[9px] font-black ${diff>0?'text-indigo-600':'text-red-600'}`}>{diff>0?'+':''}{fmtD(diff)} {it.um}</span>}
+                                <div className="flex flex-col items-center gap-1">
+                                  <div className="flex items-center gap-1.5">
+                                    <input type="number" step="0.0001"
+                                      className={`w-24 px-2 py-1.5 text-center rounded-lg border text-sm font-bold outline-none transition-all ${diff!==0?'bg-amber-50 border-amber-300 text-amber-900':'bg-slate-50 border-slate-200 focus:border-indigo-400'}`}
+                                      value={it.quantidadeTotal}
+                                      onChange={e=>{const v=e.target.value===''?'':parseFloat(e.target.value);const n=[...itens];n[i]={...n[i],quantidadeTotal:v===''?0:v};setItens(n);}}
+                                    />
+                                    <span className="text-[10px] text-slate-400 font-bold">{it.um}</span>
                                   </div>
-                                ):<span className="bg-slate-100 text-slate-700 text-xs font-bold px-3 py-1.5 rounded-lg">{fmtD(it.quantidadeTotal)} {it.um}</span>}
+                                  {diff!==0&&(
+                                    <div className="flex flex-col items-center gap-0.5 w-full">
+                                      <span className={`text-[9px] font-black ${diff>0?'text-indigo-600':'text-red-600'}`}>
+                                        BOM: {fmtD(it.quantidadeOriginal)} {diff>0?'▲':'▼'} {fmtD(Math.abs(diff))}
+                                      </span>
+                                      <input
+                                        type="text"
+                                        placeholder="Justificar alteração..."
+                                        className="w-36 px-2 py-1 text-[10px] bg-amber-50 border border-amber-200 rounded-lg outline-none focus:border-amber-400 text-amber-900 placeholder:text-amber-400"
+                                        value={it.justificativa||''}
+                                        onChange={e=>{const n=[...itens];n[i]={...n[i],justificativa:e.target.value};setItens(n);}}
+                                      />
+                                    </div>
+                                  )}
+                                </div>
                                 {ITENS_RATEIO.includes(s(it.codigoMP))&&<button onClick={()=>{setIdxRateio(i);setModalRateio(true);}} className={`p-1.5 rounded-lg transition-all ${it.rateiosExtras?.length>0?'bg-indigo-100 text-indigo-600':'bg-slate-100 text-slate-500 hover:bg-slate-200'}`}><PieChartIcon className="w-3.5 h-3.5"/></button>}
                               </div>
                             </td>
@@ -1242,9 +1397,9 @@ export default function App(){
                     <div className="bg-blue-500 p-2 rounded-xl flex-shrink-0"><Clock className="w-4 h-4 text-white"/></div>
                     <div className="flex-1">
                       <p className="text-sm font-black text-blue-900">{remPend.length} remessa{remPend.length!==1?'s':''} aguardando a Logística</p>
-                      <p className="text-xs text-blue-700 mt-0.5">Enquanto não forem processadas pela expedição, você pode editar. Clique em <strong>Editar</strong> na linha correspondente.</p>
+                      <p className="text-xs text-blue-700 mt-0.5">Enquanto não processadas pela expedição, você pode editar. Clique em <strong>Editar</strong> na linha.</p>
                     </div>
-                    <div className="flex gap-1.5">
+                    <div className="flex gap-1.5 flex-wrap">
                       {remPend.slice(0,3).map((r,i)=>(
                         <span key={i} className="text-[10px] font-black text-blue-700 bg-blue-100 border border-blue-200 px-2 py-1 rounded-lg whitespace-nowrap">{s(r.projeto)}</span>
                       ))}
@@ -1263,43 +1418,70 @@ export default function App(){
                         <th className="px-5 py-3.5 cursor-pointer" onClick={()=>handleSort(sortH,setSortH,'projeto')}>Projeto BR <ArrowUpDown className="w-3 h-3 inline ml-1 opacity-40"/></th>
                         <th className="px-5 py-3.5 cursor-pointer" onClick={()=>handleSort(sortH,setSortH,'cliente')}>Cliente <ArrowUpDown className="w-3 h-3 inline ml-1 opacity-40"/></th>
                         <th className="px-5 py-3.5 cursor-pointer" onClick={()=>handleSort(sortH,setSortH,'produto_acabado')}>PA <ArrowUpDown className="w-3 h-3 inline ml-1 opacity-40"/></th>
+                        <th className="px-5 py-3.5">Serviço / Observações</th>
+                        <th className="px-5 py-3.5 text-center">Prazos</th>
                         <th className="px-5 py-3.5 text-center">Status</th>
-                          <th className="px-5 py-3.5 text-center">Ação PCP</th>
+                        <th className="px-5 py-3.5 text-center">Ação</th>
                       </tr>
                       <tr className="bg-white border-b border-slate-100">
                         <th className="px-5 py-2"/>
                         <th className="px-5 py-2"><input list="dlhp" className="w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-1.5 text-xs outline-none focus:border-indigo-400" placeholder="Filtrar..." value={filtH.projeto} onChange={e=>setFiltH({...filtH,projeto:e.target.value})}/><datalist id="dlhp">{optH.projeto.map(o=><option key={o} value={o}/>)}</datalist></th>
                         <th className="px-5 py-2"><input list="dlhc" className="w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-1.5 text-xs outline-none focus:border-indigo-400" placeholder="Filtrar..." value={filtH.cliente} onChange={e=>setFiltH({...filtH,cliente:e.target.value})}/><datalist id="dlhc">{optH.cliente.map(o=><option key={o} value={o}/>)}</datalist></th>
                         <th className="px-5 py-2"><input list="dlha" className="w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-1.5 text-xs outline-none focus:border-indigo-400" placeholder="Filtrar..." value={filtH.pa} onChange={e=>setFiltH({...filtH,pa:e.target.value})}/><datalist id="dlha">{optH.pa.map(o=><option key={o} value={o}/>)}</datalist></th>
-                        <th className="px-5 py-2"><Sel className="text-xs py-1.5" value={filtH.status} onChange={e=>setFiltH({...filtH,status:e.target.value})}><option value="">Todos</option><option value="PENDENTE_EXPEDICAO">Aguardando</option><option value="ENVIADO">Em Trânsito</option><option value="RETORNADO">Concluído</option></Sel></th>
+                        <th className="px-5 py-2"/>
+                        <th className="px-5 py-2"/>
+                        <th className="px-5 py-2"><Sel className="text-xs py-1.5" value={filtH.status} onChange={e=>setFiltH({...filtH,status:e.target.value})}><option value="">Todos</option><option value="PENDENTE_EXPEDICAO">Aguardando</option><option value="ENVIADO">Em Trânsito</option><option value="RETORNO_PARCIAL">Retorno Parcial</option><option value="RETORNADO">Concluído</option></Sel></th>
+                        <th className="px-5 py-2"/>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-50">
                       {histFilt.map(r=>(
-                        <tr key={r.id} className="hover:bg-slate-50/50 transition-colors">
+                        <tr key={r.id} className="hover:bg-slate-50/50 transition-colors align-top">
                           <td className="px-5 py-3.5 text-xs text-slate-500 whitespace-nowrap">{fmtDt(r.data_criacao)}</td>
-                          <td className="px-5 py-3.5"><div className="flex items-center gap-2"><span className="font-bold text-slate-900 uppercase text-xs">{s(r.projeto)}</span>{r.remessa_pai_id&&<span className="bg-indigo-50 text-indigo-700 text-[9px] font-bold px-1.5 py-0.5 rounded border border-indigo-100">Comp.</span>}</div></td>
-                          <td className="px-5 py-3.5 text-xs text-slate-600">{s(r.cliente||'—')}</td>
-                          <td className="px-5 py-3.5 font-bold text-indigo-700 uppercase text-xs">{s(r.produto_acabado)}</td>
+                          <td className="px-5 py-3.5">
+                            <div className="flex items-center gap-1.5">
+                              <span className="font-bold text-slate-900 uppercase text-xs">{s(r.projeto)}</span>
+                              {r.remessa_pai_id&&<span className="bg-indigo-50 text-indigo-700 text-[9px] font-bold px-1.5 py-0.5 rounded border border-indigo-100">Comp.</span>}
+                            </div>
+                            <p className="text-[10px] text-slate-400 mt-0.5">{fmtD(r.quantidade_op)} pçs</p>
+                          </td>
+                          <td className="px-5 py-3.5 text-xs text-slate-600 font-medium">{s(r.cliente||'—')}</td>
+                          <td className="px-5 py-3.5">
+                            <p className="font-bold text-indigo-700 uppercase text-xs">{s(r.produto_acabado)}</p>
+                            <p className="text-[10px] text-slate-400 mt-0.5 truncate max-w-[120px]">{s(produtosDb[r.produto_acabado]?.descricao||'')}</p>
+                          </td>
+                          <td className="px-5 py-3.5 max-w-[220px]">
+                            <span className="text-[10px] font-bold text-slate-500 bg-slate-100 px-2 py-0.5 rounded-full">{s(r.observacao)}</span>
+                            {r.obs_expedicao&&(
+                              <p className="text-[10px] text-amber-800 mt-1.5 flex items-start gap-1">
+                                <AlertTriangle className="w-3 h-3 text-amber-500 flex-shrink-0 mt-0.5"/>
+                                <span className="font-medium leading-snug">"{s(r.obs_expedicao)}"</span>
+                              </p>
+                            )}
+                            {r.editado_por&&(
+                              <p className="text-[10px] text-indigo-600 mt-1 font-medium">✏️ Editado por {s(r.editado_por)}</p>
+                            )}
+                          </td>
+                          <td className="px-5 py-3.5 text-center whitespace-nowrap">
+                            {r.data_envio_prevista&&<p className="text-[10px] text-indigo-600 font-bold">📤 {fmtDt(r.data_envio_prevista)}</p>}
+                            {r.data_retorno_desejada&&<p className="text-[10px] text-emerald-600 font-bold mt-0.5">📥 {fmtDt(r.data_retorno_desejada)}</p>}
+                            {!r.data_envio_prevista&&!r.data_retorno_desejada&&<span className="text-slate-300 text-xs">—</span>}
+                          </td>
                           <td className="px-5 py-3.5 text-center"><StatusBadge status={r.status}/></td>
                           <td className="px-5 py-3.5 text-center">
                             {r.status==='PENDENTE_EXPEDICAO'&&isPCP?(
                               <Btn variant="secondary" size="sm" onClick={()=>{
                                 setRemEditando(r);
                                 setEditItens((r.itens||[]).map(it=>({...it,saldoDisponivel:(estoqueDb[it.codigoMP]?.saldo_disponivel||0)+it.quantidadeTotal})));
-                                setEditObs(r.observacao||'');
-                                setEditObsExp(r.obs_expedicao||'');
-                                setEditCliente(r.cliente||'');
-                                setEditProjeto(r.projeto||'');
+                                setEditObs(r.observacao||'');setEditObsExp(r.obs_expedicao||'');
+                                setEditCliente(r.cliente||'');setEditProjeto(r.projeto||'');
                                 setModalEditRemessa(true);
-                              }}>
-                                <Edit3 className="w-3.5 h-3.5"/>Editar
-                              </Btn>
+                              }}><Edit3 className="w-3.5 h-3.5"/>Editar</Btn>
                             ):<span className="text-slate-300 text-xs">—</span>}
                           </td>
                         </tr>
                       ))}
-                      {!histFilt.length&&<tr><td colSpan={6} className="py-16 text-center text-slate-400 text-sm">Nenhuma remessa encontrada</td></tr>}
+                      {!histFilt.length&&<tr><td colSpan={8} className="py-16 text-center text-slate-400 text-sm">Nenhuma remessa encontrada</td></tr>}
                     </tbody>
                   </table></div>
                 </div>
@@ -1307,43 +1489,7 @@ export default function App(){
             )}
 
             {/* ── CONTROLE GERAL ────────────────────────────────────────── */}
-            {aba==='CONTROLE_GERAL'&&(()=>{
-              // ── Dados consolidados por projeto ──────────────────────────
-              const projetosAtivos = projAgrup.filter(p=>['ENVIADO','RETORNO_PARCIAL'].includes(p.status));
-              const projetosConcluidos = projAgrup.filter(p=>p.status==='RETORNADO');
-              const projetosPendentes = projAgrup.filter(p=>p.status==='PENDENTE_EXPEDICAO');
-
-              // Alertas críticos: na rua >20 dias
-              const alertasCriticos = projetosAtivos.filter(p=>{
-                if(!p.data_envio) return false;
-                return Math.floor((new Date()-new Date(p.data_envio))/(864e5))>20;
-              });
-
-              // Todos os MPs em trânsito com saldo na rua
-              const mpsNaRua = {};
-              projetosAtivos.forEach(p=>{
-                (p.mpsConsumidas||[]).forEach(mp=>{
-                  const saldo = mp.qtdAcumulada - mp.qtdRetornada;
-                  if(saldo<=0) return;
-                  const desc = s(estoqueDb[mp.codigoMP]?.descricao||mp.descricao);
-                  if(!mpsNaRua[mp.codigoMP]) mpsNaRua[mp.codigoMP]={codigoMP:mp.codigoMP,descricao:desc,um:s(estoqueDb[mp.codigoMP]?.unidade||mp.um),totalNaRua:0,projetos:[]};
-                  mpsNaRua[mp.codigoMP].totalNaRua+=saldo;
-                  mpsNaRua[mp.codigoMP].projetos.push(s(p.projeto));
-                });
-              });
-              const topMPsNaRua = Object.values(mpsNaRua).sort((a,b)=>b.totalNaRua-a.totalNaRua);
-
-              // Busca/filtro geral
-              const buscaCtrl = filtC.projeto||filtC.pa||filtC.mp||filtC.status;
-              const projetosFiltrados = projAgrup.filter(p=>{
-                if(filtC.status&&p.status!==filtC.status) return false;
-                if(filtC.projeto&&!s(p.projeto).toUpperCase().includes(filtC.projeto.toUpperCase())) return false;
-                if(filtC.pa&&!s(p.produto_acabado).toUpperCase().includes(filtC.pa.toUpperCase())) return false;
-                if(filtC.mp&&!(p.mpsConsumidas||[]).some(mp=>s(mp.codigoMP).toUpperCase().includes(filtC.mp.toUpperCase()))) return false;
-                return true;
-              });
-
-              return(
+            {aba==='CONTROLE_GERAL'&&(
               <div className="space-y-6 pb-10" style={{animation:'fadeIn 0.25s ease'}}>
 
                 {/* ── TÍTULO + FILTRO RÁPIDO ── */}
@@ -1356,10 +1502,10 @@ export default function App(){
                     {/* Filtros rápidos por status */}
                     {[
                       {label:'Todos',val:'',count:projAgrup.length},
-                      {label:'Aguardando',val:'PENDENTE_EXPEDICAO',count:projetosPendentes.length,color:'blue'},
-                      {label:'Em Trânsito',val:'ENVIADO',count:projetosAtivos.filter(p=>p.status==='ENVIADO').length,color:'amber'},
-                      {label:'Retorno Parcial',val:'RETORNO_PARCIAL',count:projetosAtivos.filter(p=>p.status==='RETORNO_PARCIAL').length,color:'orange'},
-                      {label:'Concluído',val:'RETORNADO',count:projetosConcluidos.length,color:'emerald'},
+                      {label:'Aguardando',val:'PENDENTE_EXPEDICAO',count:ctrlPendentes.length,color:'blue'},
+                      {label:'Em Trânsito',val:'ENVIADO',count:ctrlAtivos.filter(p=>p.status==='ENVIADO').length,color:'amber'},
+                      {label:'Retorno Parcial',val:'RETORNO_PARCIAL',count:ctrlAtivos.filter(p=>p.status==='RETORNO_PARCIAL').length,color:'orange'},
+                      {label:'Concluído',val:'RETORNADO',count:ctrlConcluidos.length,color:'emerald'},
                     ].map(f=>(
                       <button key={f.val} onClick={()=>setFiltC({...filtC,status:f.val})} className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold border transition-all ${filtC.status===f.val?'bg-slate-900 text-white border-slate-900':'bg-white text-slate-600 border-slate-200 hover:border-slate-300'}`}>
                         {f.label}
@@ -1375,35 +1521,35 @@ export default function App(){
                 <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
                   <div className="bg-white border border-slate-200 rounded-2xl p-4">
                     <p className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">Projetos Ativos</p>
-                    <p className="text-3xl font-black text-amber-600 mt-1">{projetosAtivos.length}</p>
+                    <p className="text-3xl font-black text-amber-600 mt-1">{ctrlAtivos.length}</p>
                     <p className="text-[10px] text-slate-400 mt-0.5">em poder de terceiros agora</p>
                   </div>
                   <div className="bg-white border border-slate-200 rounded-2xl p-4">
                     <p className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">Aguardando Saída</p>
-                    <p className="text-3xl font-black text-blue-600 mt-1">{projetosPendentes.length}</p>
+                    <p className="text-3xl font-black text-blue-600 mt-1">{ctrlPendentes.length}</p>
                     <p className="text-[10px] text-slate-400 mt-0.5">na fila da expedição</p>
                   </div>
-                  <div className={`border rounded-2xl p-4 ${alertasCriticos.length>0?'bg-red-50 border-red-200':'bg-white border-slate-200'}`}>
-                    <p className={`text-[10px] font-bold uppercase tracking-wider ${alertasCriticos.length>0?'text-red-600':'text-slate-500'}`}>Alertas Críticos</p>
-                    <p className={`text-3xl font-black mt-1 ${alertasCriticos.length>0?'text-red-600':'text-slate-300'}`}>{alertasCriticos.length}</p>
-                    <p className={`text-[10px] mt-0.5 ${alertasCriticos.length>0?'text-red-500 font-bold animate-pulse':'text-slate-400'}`}>{alertasCriticos.length>0?`+20 dias sem retorno`:'nenhum atraso crítico'}</p>
+                  <div className={`border rounded-2xl p-4 ${ctrlAlertas.length>0?'bg-red-50 border-red-200':'bg-white border-slate-200'}`}>
+                    <p className={`text-[10px] font-bold uppercase tracking-wider ${ctrlAlertas.length>0?'text-red-600':'text-slate-500'}`}>Alertas Críticos</p>
+                    <p className={`text-3xl font-black mt-1 ${ctrlAlertas.length>0?'text-red-600':'text-slate-300'}`}>{ctrlAlertas.length}</p>
+                    <p className={`text-[10px] mt-0.5 ${ctrlAlertas.length>0?'text-red-500 font-bold animate-pulse':'text-slate-400'}`}>{ctrlAlertas.length>0?`+20 dias sem retorno`:'nenhum atraso crítico'}</p>
                   </div>
                   <div className="bg-white border border-slate-200 rounded-2xl p-4">
                     <p className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">Tipos de MP na Rua</p>
-                    <p className="text-3xl font-black text-indigo-600 mt-1">{topMPsNaRua.length}</p>
+                    <p className="text-3xl font-black text-indigo-600 mt-1">{ctrlTopMPs.length}</p>
                     <p className="text-[10px] text-slate-400 mt-0.5">materiais aguardando retorno</p>
                   </div>
                 </div>
 
                 {/* ── ALERTAS CRÍTICOS ── */}
-                {alertasCriticos.length>0&&(
+                {ctrlAlertas.length>0&&(
                   <div className="bg-red-50 border border-red-200 rounded-2xl overflow-hidden">
                     <div className="flex items-center gap-3 px-5 py-3 bg-red-600">
                       <AlertOctagon className="w-4 h-4 text-white flex-shrink-0"/>
-                      <p className="text-sm font-black text-white">{alertasCriticos.length} projeto{alertasCriticos.length>1?'s':''} crítico{alertasCriticos.length>1?'s':''} — material há mais de 20 dias com terceiros</p>
+                      <p className="text-sm font-black text-white">{ctrlAlertas.length} projeto{ctrlAlertas.length>1?'s':''} crítico{ctrlAlertas.length>1?'s':''} — material há mais de 20 dias com terceiros</p>
                     </div>
                     <div className="divide-y divide-red-100">
-                      {alertasCriticos.map((p,i)=>{
+                      {ctrlAlertas.map((p,i)=>{
                         const dias=Math.floor((new Date()-new Date(p.data_envio))/(864e5));
                         const saldoPA=Number(p.quantidade_op)-Number(p.pecas_recebidas||0);
                         return(
@@ -1446,13 +1592,13 @@ export default function App(){
                         <input className="bg-white border border-slate-200 rounded-lg pl-8 pr-3 py-1.5 text-xs outline-none focus:border-indigo-400 w-44" placeholder="Buscar projeto ou PA..." value={filtC.projeto} onChange={e=>setFiltC({...filtC,projeto:e.target.value})}/>
                       </div>
                     </div>
-                    {projetosFiltrados.length===0&&(
+                    {ctrlFiltrados.length===0&&(
                       <div className="bg-white border border-slate-200 rounded-2xl py-16 text-center text-slate-400">
                         <Truck className="w-10 h-10 mx-auto mb-3 opacity-30"/>
                         <p className="text-sm font-semibold">Nenhum projeto encontrado</p>
                       </div>
                     )}
-                    {projetosFiltrados.map((p,i)=>{
+                    {ctrlFiltrados.map((p,i)=>{
                       const diasFora=p.data_envio?Math.floor((new Date()-new Date(p.data_envio))/(864e5)):null;
                       const saldoPA=Number(p.quantidade_op||0)-Number(p.pecas_recebidas||0);
                       const pctRetPA=Number(p.quantidade_op||0)>0?Math.min(100,(Number(p.pecas_recebidas||0)/Number(p.quantidade_op||0))*100):0;
@@ -1564,14 +1710,14 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
                         <input className="w-full bg-white border border-slate-200 rounded-xl pl-9 pr-4 py-2.5 text-xs outline-none focus:border-indigo-400" placeholder="Buscar código MP..." value={filtC.mp} onChange={e=>setFiltC({...filtC,mp:e.target.value})}/>
                       </div>
                       <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
-                        {topMPsNaRua.length===0&&(
+                        {ctrlTopMPs.length===0&&(
                           <div className="py-12 text-center text-slate-400">
                             <CheckCircle className="w-8 h-8 mx-auto mb-2 opacity-30"/>
                             <p className="text-xs font-semibold">Nenhum material em campo</p>
                           </div>
                         )}
-                        {topMPsNaRua.filter(mp=>!filtC.mp||mp.codigoMP.toUpperCase().includes(filtC.mp.toUpperCase())||mp.descricao.toUpperCase().includes(filtC.mp.toUpperCase())).map((mp,i)=>{
-                          const maxVal=topMPsNaRua[0]?.totalNaRua||1;
+                        {ctrlTopMPs.filter(mp=>!filtC.mp||mp.codigoMP.toUpperCase().includes(filtC.mp.toUpperCase())||mp.descricao.toUpperCase().includes(filtC.mp.toUpperCase())).map((mp,i)=>{
+                          const maxVal=ctrlTopMPs[0]?.totalNaRua||1;
                           const pct=(mp.totalNaRua/maxVal)*100;
                           return(
                             <div key={i} className="p-4 border-b border-slate-50 last:border-0 hover:bg-slate-50/50 transition-colors">
@@ -1604,7 +1750,7 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
                     <div>
                       <p className="text-xs font-black text-slate-700 uppercase tracking-wider mb-3 flex items-center gap-2"><Database className="w-3.5 h-3.5 text-emerald-500"/>Saldo ERP — Top MPs</p>
                       <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
-                        {topMPsNaRua.slice(0,6).map((mp,i)=>{
+                        {ctrlTopMPs.slice(0,6).map((mp,i)=>{
                           const saldoERP=Number(estoqueDb[mp.codigoMP]?.saldo_disponivel||0);
                           const umERP=s(estoqueDb[mp.codigoMP]?.unidade||mp.um);
                           const risco=saldoERP<mp.totalNaRua*0.3;
@@ -1622,7 +1768,7 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
                             </div>
                           );
                         })}
-                        {topMPsNaRua.length===0&&<div className="py-8 text-center text-slate-400 text-xs">Sem materiais ativos</div>}
+                        {ctrlTopMPs.length===0&&<div className="py-8 text-center text-slate-400 text-xs">Sem materiais ativos</div>}
                       </div>
                     </div>
 
@@ -1630,8 +1776,7 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
                 </div>
 
               </div>
-              );
-            })()}
+            )}
 
             {/* ── AUDITORIA ─────────────────────────────────────────────── */}
             {aba==='AUDITORIA'&&isAdmin&&(
@@ -2166,44 +2311,7 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
             )}
 
             {/* ── CHAT INTERNO ─────────────────────────────────────────── */}
-            {aba==='CHAT_INTERNO'&&(()=>{
-              // Canais: Geral + DM com cada usuário
-              const canais = [
-                {id:'Geral', nome:'Geral', tipo:'canal', descricao:'Toda a equipe'},
-                ...usuariosDb
-                  .filter(u=>u.nome!==usuarioLogado?.nome)
-                  .map(u=>({id:u.nome, nome:u.nome, tipo:'dm', perfil:u.perfil, email:u.email}))
-              ];
-
-              const canalAtual = chatEqDest;
-
-              // Mensagens do canal atual
-              const msgsCanalAtual = chatInternoDb.filter(m=>{
-                if(canalAtual==='Geral') return m.destinatario==='Geral';
-                return (m.destinatario===canalAtual&&m.remetente===usuarioLogado?.nome) ||
-                       (m.remetente===canalAtual&&m.destinatario===usuarioLogado?.nome);
-              });
-
-              // Última mensagem por canal (para preview)
-              const ultimaMsgCanal = (canalId)=>{
-                const msgs = canalId==='Geral'
-                  ? chatInternoDb.filter(m=>m.destinatario==='Geral')
-                  : chatInternoDb.filter(m=>(m.destinatario===canalId&&m.remetente===usuarioLogado?.nome)||(m.remetente===canalId&&m.destinatario===usuarioLogado?.nome));
-                return msgs[msgs.length-1];
-              };
-
-              // Não lidos por canal
-              const naoLidosCanal = (canalId)=>{
-                const msgs = canalId==='Geral'
-                  ? chatInternoDb.filter(m=>m.destinatario==='Geral'&&m.remetente!==usuarioLogado?.nome)
-                  : chatInternoDb.filter(m=>m.remetente===canalId&&m.destinatario===usuarioLogado?.nome);
-                return msgs.filter(m=>!m.lido_por?.includes(usuarioLogado?.nome)).length;
-              };
-
-              const perfilColor = (perfil)=>({ADMIN:'bg-slate-900 text-white',PCP:'bg-indigo-100 text-indigo-700',EXPEDICAO:'bg-amber-100 text-amber-700'}[perfil]||'bg-slate-100 text-slate-600');
-              const iniciais = (nome)=>s(nome).split(' ').slice(0,2).map(n=>n[0]).join('').toUpperCase();
-
-              return(
+            {aba==='CHAT_INTERNO'&&(
               <div className="flex h-[calc(100vh-10rem)] gap-0 bg-white rounded-2xl border border-slate-200 overflow-hidden shadow-sm" style={{animation:'fadeIn 0.2s ease'}}>
 
                 {/* ── SIDEBAR DE CANAIS ── */}
@@ -2233,12 +2341,12 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
                     {/* Seção: Canal Geral */}
                     <div className="px-3 pt-3 pb-1">
                       <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest px-2 mb-1">Canal</p>
-                      {[canais[0]].map(canal=>{
-                        const ultima=ultimaMsgCanal(canal.id);
-                        const naoLidos=naoLidosCanal(canal.id);
-                        const ativo=canalAtual===canal.id;
+                      {[chatCanais[0]].map(canal=>{
+                        const ultima=chatUltimaMsgCanal(canal.id);
+                        const naoLidos=chatNaoLidosCanal(canal.id);
+                        const ativo=chatEqDest===canal.id;
                         return(
-                          <button key={canal.id} onClick={()=>setChatEqDest(canal.id)} className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl transition-all text-left ${ativo?'bg-indigo-50 border border-indigo-100':'hover:bg-slate-50'}`}>
+                          <button key={canal.id} onClick={()=>{setChatEqDest(canal.id);setTimeout(()=>marcarLido(canal.id),300);}} className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl transition-all text-left ${ativo?'bg-indigo-50 border border-indigo-100':'hover:bg-slate-50'}`}>
                             <div className={`w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0 ${ativo?'bg-indigo-600':'bg-slate-100'}`}>
                               <MessageSquare className={`w-4 h-4 ${ativo?'text-white':'text-slate-500'}`}/>
                             </div>
@@ -2258,15 +2366,15 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
                     {/* Seção: Mensagens Diretas */}
                     <div className="px-3 pt-3 pb-2">
                       <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest px-2 mb-1">Mensagens Diretas</p>
-                      {canais.slice(1).map(canal=>{
-                        const ultima=ultimaMsgCanal(canal.id);
-                        const naoLidos=naoLidosCanal(canal.id);
-                        const ativo=canalAtual===canal.id;
+                      {chatCanais.slice(1).map(canal=>{
+                        const ultima=chatUltimaMsgCanal(canal.id);
+                        const naoLidos=chatNaoLidosCanal(canal.id);
+                        const ativo=chatEqDest===canal.id;
                         return(
-                          <button key={canal.id} onClick={()=>setChatEqDest(canal.id)} className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl transition-all text-left ${ativo?'bg-indigo-50 border border-indigo-100':'hover:bg-slate-50'}`}>
+                          <button key={canal.id} onClick={()=>{setChatEqDest(canal.id);setTimeout(()=>marcarLido(canal.id),300);}} className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl transition-all text-left ${ativo?'bg-indigo-50 border border-indigo-100':'hover:bg-slate-50'}`}>
                             <div className="relative flex-shrink-0">
-                              <div className={`w-9 h-9 rounded-full flex items-center justify-center text-xs font-black ${perfilColor(canal.perfil)}`}>
-                                {iniciais(canal.nome)}
+                              <div className={`w-9 h-9 rounded-full flex items-center justify-center text-xs font-black ${chatPerfilColor(canal.perfil)}`}>
+                                {chatIniciais(canal.nome)}
                               </div>
                               <div className="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 bg-emerald-400 rounded-full border-2 border-white"/>
                             </div>
@@ -2291,8 +2399,8 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
 
                   {/* Rodapé: usuário atual */}
                   <div className="px-4 py-3 border-t border-slate-100 bg-slate-50 flex items-center gap-3">
-                    <div className={`w-8 h-8 rounded-full flex items-center justify-center text-xs font-black flex-shrink-0 ${perfilColor(usuarioLogado?.perfil)}`}>
-                      {iniciais(usuarioLogado?.nome)}
+                    <div className={`w-8 h-8 rounded-full flex items-center justify-center text-xs font-black flex-shrink-0 ${chatPerfilColor(usuarioLogado?.perfil)}`}>
+                      {chatIniciais(usuarioLogado?.nome)}
                     </div>
                     <div className="flex-1 min-w-0">
                       <p className="text-xs font-bold text-slate-800 truncate">{s(usuarioLogado?.nome)}</p>
@@ -2307,22 +2415,22 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
 
                   {/* Header do canal ativo */}
                   <div className="flex items-center gap-3 px-6 py-4 border-b border-slate-100 flex-shrink-0 bg-white">
-                    {canalAtual==='Geral'?(
+                    {chatEqDest==='Geral'?(
                       <div className="w-9 h-9 bg-indigo-600 rounded-xl flex items-center justify-center flex-shrink-0">
                         <MessageSquare className="w-4 h-4 text-white"/>
                       </div>
                     ):(
                       <div className="relative flex-shrink-0">
-                        <div className={`w-9 h-9 rounded-full flex items-center justify-center text-xs font-black ${perfilColor(canais.find(c=>c.id===canalAtual)?.perfil)}`}>
-                          {iniciais(canalAtual)}
+                        <div className={`w-9 h-9 rounded-full flex items-center justify-center text-xs font-black ${chatPerfilColor(chatCanais.find(c=>c.id===chatEqDest)?.perfil)}`}>
+                          {chatIniciais(chatEqDest)}
                         </div>
                         <div className="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 bg-emerald-400 rounded-full border-2 border-white"/>
                       </div>
                     )}
                     <div className="flex-1 min-w-0">
-                      <p className="font-black text-slate-900 text-sm">{canalAtual==='Geral'?'# Geral':canalAtual}</p>
+                      <p className="font-black text-slate-900 text-sm">{chatEqDest==='Geral'?'# Geral':chatEqDest}</p>
                       <p className="text-[10px] text-slate-400">
-                        {canalAtual==='Geral'?`${usuariosDb.length} membros · Canal público da equipe`:`${canais.find(c=>c.id===canalAtual)?.perfil||'Colaborador'} · Mensagem direta`}
+                        {chatEqDest==='Geral'?`${usuariosDb.length} membros · Canal público da equipe`:`${chatCanais.find(c=>c.id===chatEqDest)?.perfil||'Colaborador'} · Mensagem direta`}
                       </p>
                     </div>
                     <div className="flex items-center gap-2">
@@ -2335,61 +2443,18 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
 
                   {/* Mensagens */}
                   <div className="flex-1 overflow-y-auto custom-scrollbar px-6 py-5 space-y-1 bg-slate-50/30">
-                    {msgsCanalAtual.length===0&&(
+                    {chatMsgsAtual.length===0&&(
                       <div className="flex flex-col items-center justify-center h-full text-center py-20">
                         <div className="w-16 h-16 bg-slate-100 rounded-2xl flex items-center justify-center mb-4">
                           <MessageSquare className="w-7 h-7 text-slate-300"/>
                         </div>
                         <p className="text-sm font-bold text-slate-400">Nenhuma mensagem ainda</p>
                         <p className="text-xs text-slate-400 mt-1">
-                          {canalAtual==='Geral'?'Seja o primeiro a enviar uma mensagem para a equipe':'Inicie a conversa com '+canalAtual}
+                          {chatEqDest==='Geral'?'Seja o primeiro a enviar uma mensagem para a equipe':'Inicie a conversa com '+chatEqDest}
                         </p>
                       </div>
                     )}
-                    {(()=>{
-                      // Agrupar mensagens por data e remetente
-                      let ultimoRemetente=null; let ultimaData=null;
-                      return msgsCanalAtual.map((m,i)=>{
-                        const isMe=m.remetente===usuarioLogado?.nome;
-                        const dataMsg=new Date(m.data_envio).toLocaleDateString('pt-BR');
-                        const horaMsg=new Date(m.data_envio).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});
-                        const mostraData=dataMsg!==ultimaData;
-                        const mostraRemetente=m.remetente!==ultimoRemetente||mostraData;
-                        ultimoRemetente=m.remetente; ultimaData=dataMsg;
-                        return(
-                          <div key={i}>
-                            {mostraData&&(
-                              <div className="flex items-center gap-3 my-5">
-                                <div className="flex-1 h-px bg-slate-200"/>
-                                <span className="text-[10px] font-bold text-slate-400 bg-white border border-slate-200 px-3 py-1 rounded-full">{dataMsg===new Date().toLocaleDateString('pt-BR')?'Hoje':dataMsg}</span>
-                                <div className="flex-1 h-px bg-slate-200"/>
-                              </div>
-                            )}
-                            <div className={`flex gap-3 ${isMe?'flex-row-reverse':'flex-row'} ${mostraRemetente?'mt-4':'mt-0.5'}`}>
-                              {/* Avatar — só no início de grupo */}
-                              {mostraRemetente?(
-                                <div className={`w-8 h-8 rounded-full flex items-center justify-center text-xs font-black flex-shrink-0 mt-0.5 ${perfilColor(usuariosDb.find(u=>u.nome===m.remetente)?.perfil)}`}>
-                                  {iniciais(m.remetente)}
-                                </div>
-                              ):<div className="w-8 flex-shrink-0"/>}
-                              <div className={`flex flex-col ${isMe?'items-end':'items-start'} max-w-[70%]`}>
-                                {mostraRemetente&&<p className={`text-[10px] font-bold mb-1 ${isMe?'text-right text-slate-400':'text-slate-500'}`}>{isMe?'Você':m.remetente} · {horaMsg}</p>}
-                                <div className={`px-4 py-2.5 rounded-2xl text-sm font-medium leading-relaxed ${isMe?'bg-indigo-600 text-white rounded-tr-sm':'bg-white border border-slate-200 text-slate-800 shadow-sm rounded-tl-sm'}`}>
-                                  {/* Detectar se é mensagem de sistema/notificação */}
-                                  {m.tipo==='sistema'?(
-                                    <div className="flex items-center gap-2">
-                                      <Bell className="w-3.5 h-3.5 opacity-70 flex-shrink-0"/>
-                                      <span className="text-xs">{m.mensagem}</span>
-                                    </div>
-                                  ):m.mensagem}
-                                </div>
-                                {!mostraRemetente&&<span className="text-[9px] text-slate-300 mt-0.5">{horaMsg}</span>}
-                              </div>
-                            </div>
-                          </div>
-                        );
-                      });
-                    })()}
+                    {renderChatMsgs(chatMsgsAtual,s(usuarioLogado?.nome),usuariosDb,chatPerfilColor,chatIniciais)}
                     <div ref={chatEndRef}/>
                   </div>
 
@@ -2400,14 +2465,14 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
                         <textarea
                           rows={1}
                           className="w-full bg-transparent text-sm text-slate-800 outline-none resize-none placeholder:text-slate-400 font-medium"
-                          placeholder={canalAtual==='Geral'?'Mensagem para toda a equipe...':'Mensagem para '+canalAtual+'...'}
+                          placeholder={chatEqDest==='Geral'?'Mensagem para toda a equipe...':'Mensagem para '+chatEqDest+'...'}
                           value={chatEqIn}
                           onChange={e=>{setChatEqIn(e.target.value);e.target.style.height='auto';e.target.style.height=Math.min(e.target.scrollHeight,120)+'px';}}
                           onKeyDown={e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();if(chatEqIn.trim())enviarMsgEq(e);}}}
                         />
                         <div className="flex items-center justify-between mt-1.5">
                           <p className="text-[9px] text-slate-400">Enter para enviar · Shift+Enter para nova linha</p>
-                          <p className="text-[9px] text-slate-300">{canalAtual==='Geral'?'Canal público':'Mensagem direta'}</p>
+                          <p className="text-[9px] text-slate-300">{chatEqDest==='Geral'?'Canal público':'Mensagem direta'}</p>
                         </div>
                       </div>
                       <button type="submit" disabled={!chatEqIn.trim()} className="w-11 h-11 bg-indigo-600 text-white rounded-xl flex items-center justify-center hover:bg-indigo-700 transition-all disabled:opacity-30 disabled:cursor-not-allowed active:scale-95 flex-shrink-0">
@@ -2418,14 +2483,61 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
                 </div>
 
               </div>
-              );
-            })()}
+            )}
 
 
           </div>
         </main>
       </div>
       {/* ── MODALS ──────────────────────────────────────────────────────── */}
+
+      {/* Modal: Criar Card no Planner */}
+      <Modal open={modalPlanner} onClose={()=>setModalPlanner(false)} title="Criar Card no Microsoft Planner" subtitle="O card será criado via Power Automate e vinculado a esta remessa" maxWidth="max-w-lg"
+        footer={
+          <div className="flex justify-end gap-2">
+            <Btn variant="secondary" onClick={()=>setModalPlanner(false)}>Cancelar</Btn>
+            <Btn variant="primary" onClick={enviarPlannerCard} disabled={plannerLoading||!plannerTitulo.trim()}>
+              {plannerLoading?<><Loader2 className="w-4 h-4 animate-spin"/>Criando...</>:<><BarChart2 className="w-4 h-4"/>Criar Card</>}
+            </Btn>
+          </div>
+        }
+      >
+        <div className="space-y-5">
+          {/* Contexto da remessa */}
+          <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 space-y-1">
+            <p className="text-[10px] font-black text-slate-500 uppercase tracking-wider mb-2">Contexto da Remessa</p>
+            <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs">
+              <div><span className="text-slate-400">Projeto:</span> <span className="font-bold text-slate-700">{s(projeto).toUpperCase()||'—'}</span></div>
+              <div><span className="text-slate-400">PA:</span> <span className="font-bold text-indigo-700">{s(prodEncontrado?.codigo_pa)||'—'}</span></div>
+              <div><span className="text-slate-400">Cliente:</span> <span className="font-bold text-slate-700">{s(cliente)||'—'}</span></div>
+              <div><span className="text-slate-400">Criado por:</span> <span className="font-bold text-slate-700">{s(usuarioLogado?.nome)}</span></div>
+              {dataEnvioPrevista&&<div><span className="text-slate-400">Envio previsto:</span> <span className="font-bold text-slate-700">{fmtDt(dataEnvioPrevista)}</span></div>}
+              {dataRetornoDesejada&&<div><span className="text-slate-400">Retorno desejado:</span> <span className="font-bold text-slate-700">{fmtDt(dataRetornoDesejada)}</span></div>}
+            </div>
+          </div>
+
+          <Field label="Título do Card" required>
+            <Inp placeholder="Ex: Industrialização BR13947 — Vale Salobo" value={plannerTitulo} onChange={e=>setPlannerTitulo(e.target.value)}/>
+          </Field>
+
+          <Field label="Observação / Descrição do Card">
+            <textarea
+              rows={3}
+              className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-2.5 text-sm font-medium text-slate-900 outline-none focus:border-indigo-400 focus:bg-white transition-colors placeholder:text-slate-400 resize-none"
+              placeholder="Descreva o que precisa ser feito, prazo, prioridade..."
+              value={plannerObs}
+              onChange={e=>setPlannerObs(e.target.value)}
+            />
+          </Field>
+
+          <div className={`flex items-center gap-3 rounded-xl px-4 py-3 border ${plannerUrl?'bg-emerald-50 border-emerald-200':'bg-red-50 border-red-200'}`}>
+            {plannerUrl
+              ? <><CheckCircle className="w-4 h-4 text-emerald-500 flex-shrink-0"/><div><p className="text-xs font-bold text-emerald-800">Fluxo Power Automate configurado</p><p className="text-[10px] text-emerald-600 font-mono truncate max-w-xs mt-0.5">{plannerUrl.substring(0,60)}...</p></div></>
+              : <><AlertTriangle className="w-4 h-4 text-red-500 flex-shrink-0"/><p className="text-xs font-bold text-red-700">URL do fluxo não configurada. Contate o administrador.</p></>
+            }
+          </div>
+        </div>
+      </Modal>
 
       {/* Modal: Atrasos */}
       <Modal open={modalAtrasos} onClose={()=>setModalAtrasos(false)} title="OPs com Atraso Crítico" subtitle="Materiais em poder de terceiros há mais de 20 dias" maxWidth="max-w-3xl">
