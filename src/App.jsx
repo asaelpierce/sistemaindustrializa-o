@@ -1365,14 +1365,95 @@ export default function App(){
                 </div>
                 {modoManual&&(
                   <div className="bg-amber-50 border border-amber-200 rounded-2xl p-5">
-                    <p className="text-xs font-bold text-amber-800 uppercase tracking-wider mb-4 flex items-center gap-2"><AlertTriangle className="w-4 h-4"/>Modo Manual — Produto fora da BOM</p>
-                    <div className="flex flex-wrap gap-3 items-end">
-                      <Field label="Cód MP" className="w-32"><Inp value={novoItemM.codigoMP} onChange={e=>setNovoItemM({...novoItemM,codigoMP:e.target.value})} className="uppercase"/></Field>
-                      <Field label="Descrição" className="flex-1 min-w-48"><Inp value={novoItemM.descricao} onChange={e=>setNovoItemM({...novoItemM,descricao:e.target.value})} className="uppercase"/></Field>
-                      <Field label="UN" className="w-20"><Inp value={novoItemM.um} onChange={e=>setNovoItemM({...novoItemM,um:e.target.value})} className="uppercase text-center"/></Field>
-                      <Field label="Qtd" className="w-28"><Inp type="number" value={novoItemM.quantidade} onChange={e=>setNovoItemM({...novoItemM,quantidade:e.target.value})}/></Field>
-                      <Btn variant="amber" onClick={addItemManual}>Adicionar</Btn>
+                    <p className="text-xs font-bold text-amber-800 uppercase tracking-wider mb-4 flex items-center gap-2">
+                      <AlertTriangle className="w-4 h-4"/>Modo Manual — Produto fora da BOM
+                    </p>
+                    <div className="flex flex-wrap gap-3 items-start">
+                      {/* Campo de código MP com lookup automático */}
+                      <Field label="Cód MP" className="w-36">
+                        <div className="relative">
+                          <Inp
+                            value={novoItemM.codigoMP}
+                            className="uppercase"
+                            placeholder="Ex: 2736"
+                            onChange={e=>{
+                              const cod=e.target.value.toUpperCase().trim();
+                              const found=estoqueDb[cod];
+                              setNovoItemM({
+                                ...novoItemM,
+                                codigoMP:cod,
+                                descricao: found?s(found.descricao):novoItemM.descricao,
+                                um: found?s(found.unidade||'UN'):novoItemM.um,
+                              });
+                            }}
+                          />
+                          {novoItemM.codigoMP&&estoqueDb[novoItemM.codigoMP]&&(
+                            <div className="absolute right-2 top-2.5">
+                              <CheckCircle className="w-4 h-4 text-emerald-500"/>
+                            </div>
+                          )}
+                          {novoItemM.codigoMP&&!estoqueDb[novoItemM.codigoMP]&&(
+                            <div className="absolute right-2 top-2.5">
+                              <AlertCircle className="w-4 h-4 text-amber-400"/>
+                            </div>
+                          )}
+                        </div>
+                        {/* Feedback do lookup */}
+                        {novoItemM.codigoMP&&estoqueDb[novoItemM.codigoMP]&&(
+                          <p className="text-[10px] text-emerald-700 font-bold mt-1 flex items-center gap-1">
+                            <CheckCircle className="w-2.5 h-2.5"/>Encontrado no ERP
+                          </p>
+                        )}
+                        {novoItemM.codigoMP&&!estoqueDb[novoItemM.codigoMP]&&(
+                          <p className="text-[10px] text-amber-700 font-semibold mt-1">
+                            Não catalogado — preencha manualmente
+                          </p>
+                        )}
+                      </Field>
+
+                      {/* Descrição — preenchida automaticamente ou manual */}
+                      <Field label="Descrição" className="flex-1 min-w-48">
+                        <Inp
+                          value={novoItemM.descricao}
+                          className={`uppercase ${estoqueDb[novoItemM.codigoMP]?'bg-emerald-50 border-emerald-200':''}`}
+                          placeholder="Descrição do material..."
+                          onChange={e=>setNovoItemM({...novoItemM,descricao:e.target.value})}
+                        />
+                        {estoqueDb[novoItemM.codigoMP]&&(
+                          <p className="text-[9px] text-emerald-600 mt-1 font-medium">Preenchido automaticamente pelo ERP</p>
+                        )}
+                      </Field>
+
+                      {/* UN — preenchida automaticamente ou manual */}
+                      <Field label="UN" className="w-20">
+                        <Inp
+                          value={novoItemM.um}
+                          className={`uppercase text-center ${estoqueDb[novoItemM.codigoMP]?'bg-emerald-50 border-emerald-200':''}`}
+                          onChange={e=>setNovoItemM({...novoItemM,um:e.target.value})}
+                        />
+                      </Field>
+
+                      <Field label="Qtd" className="w-28">
+                        <Inp type="number" value={novoItemM.quantidade} onChange={e=>setNovoItemM({...novoItemM,quantidade:e.target.value})} placeholder="0"/>
+                      </Field>
+
+                      <div className="flex flex-col gap-1">
+                        <label className="text-xs font-bold text-slate-600 uppercase tracking-wider opacity-0">.</label>
+                        <Btn variant="amber" onClick={addItemManual} disabled={!novoItemM.codigoMP||!novoItemM.descricao||!novoItemM.quantidade}>
+                          + Adicionar
+                        </Btn>
+                      </div>
                     </div>
+
+                    {/* Saldo ERP se encontrado */}
+                    {novoItemM.codigoMP&&estoqueDb[novoItemM.codigoMP]&&(
+                      <div className="mt-3 pt-3 border-t border-amber-100 flex items-center gap-4 text-xs">
+                        <span className="text-amber-700 font-medium">Saldo disponível no ERP:</span>
+                        <span className={`font-black ${estoqueDb[novoItemM.codigoMP].saldo_disponivel>0?'text-emerald-700':'text-red-600'}`}>
+                          {fmtD(estoqueDb[novoItemM.codigoMP].saldo_disponivel)} {s(estoqueDb[novoItemM.codigoMP].unidade||'UN')}
+                        </span>
+                      </div>
+                    )}
                   </div>
                 )}
                 {prodEncontrado&&(
