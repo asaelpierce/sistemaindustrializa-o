@@ -409,6 +409,10 @@ export default function App(){
   const [opPaiId,setOpPaiId]=useState('');
   const [modoManual,setModoManual]=useState(false);
   const [novoItemM,setNovoItemM]=useState({codigoMP:'',descricao:'',quantidade:'',um:'UN'});
+  const [buscandoSankhya,setBuscandoSankhya]=useState(false);
+  const [produtoNaoEncontrado,setProdutoNaoEncontrado]=useState(false);
+  const [sincronizandoERP,setSincronizandoERP]=useState(false);
+  const [ultimaSync,setUltimaSync]=useState(null);
 
   // Prazos e Planner
   const [dataEnvioPrevista,setDataEnvioPrevista]=useState('');
@@ -558,7 +562,7 @@ export default function App(){
   };
 
   const buscarProduto=e=>{
-    if(e)e.preventDefault();setModoManual(false);
+    if(e)e.preventDefault();setModoManual(false);setProdutoNaoEncontrado(false);
     const cod=codigoBusca.toUpperCase().trim();const prod=produtosDb[cod];
     if(prod){
       setProdEncontrado(prod);
@@ -569,7 +573,61 @@ export default function App(){
       });
       setItens(list);setItensOrig(list);
     }else{
-      if(window.confirm('Produto não encontrado na BOM. Criar remessa manual?')){setModoManual(true);setProdEncontrado({codigo_pa:cod,descricao:'ITEM MANUAL'});setItens([]);setItensOrig([]);}
+      // Não achou localmente — oferece buscar direto no Sankhya
+      setProdutoNaoEncontrado(true);
+    }
+  };
+
+  // Busca o código diretamente no Sankhya (PA ou MP) e cadastra automaticamente
+  const buscarNoSankhya=async()=>{
+    const cod=codigoBusca.toUpperCase().trim();
+    if(!cod)return addToast('Informe um código para buscar.','error');
+    setBuscandoSankhya(true);
+    try{
+      const res=await fetch(`${SUPABASE_URL}/functions/v1/sankhya-buscar-produto`,{
+        method:'POST',
+        headers:{'Content-Type':'application/json','apikey':SUPABASE_KEY},
+        body:JSON.stringify({codigo:cod})
+      });
+      const data=await res.json();
+      if(!data.ok)throw new Error(data.erro||'Falha na busca');
+
+      if(data.tipo==='PA'){
+        addToast(`Produto ${cod} encontrado no Sankhya e cadastrado!`);
+        await fetchAll();
+        // Re-executa a busca local agora que já está cadastrado
+        setTimeout(()=>{ setCodigoBusca(cod); buscarProduto(); },800);
+      }else if(data.tipo==='MP'){
+        addToast(`Código ${cod} é uma matéria-prima (não um produto acabado). Cadastrado no estoque.`,'info');
+        await fetchAll();
+      }else{
+        addToast(`Código ${cod} não encontrado no Sankhya. Verifique se está correto.`,'error');
+      }
+      setProdutoNaoEncontrado(false);
+    }catch(e){
+      addToast('Erro ao buscar no Sankhya: '+e.message,'error');
+    }finally{
+      setBuscandoSankhya(false);
+    }
+  };
+
+  // Sincroniza TODO o estoque/BOM agora (mesmo job do cron, disparado manualmente)
+  const sincronizarERPAgora=async()=>{
+    setSincronizandoERP(true);
+    try{
+      const res=await fetch(`${SUPABASE_URL}/functions/v1/sankhya-stock-sync`,{
+        method:'POST',
+        headers:{'Content-Type':'application/json','apikey':SUPABASE_KEY},
+      });
+      const data=await res.json();
+      if(!data.ok)throw new Error(data.erro||'Falha na sincronização');
+      addToast(`Sincronizado: ${data.produtos_sincronizados} produtos e ${data.itens_estoque_sincronizados} itens de estoque.`);
+      setUltimaSync(new Date());
+      await fetchAll();
+    }catch(e){
+      addToast('Erro na sincronização: '+e.message,'error');
+    }finally{
+      setSincronizandoERP(false);
     }
   };
 
@@ -1363,6 +1421,28 @@ export default function App(){
                     </div>
                   </form>
                 </div>
+                {produtoNaoEncontrado&&!modoManual&&(
+                  <div className="bg-blue-50 border border-blue-200 rounded-2xl p-6">
+                    <div className="flex items-start gap-4">
+                      <div className="w-11 h-11 bg-blue-100 rounded-xl flex items-center justify-center flex-shrink-0">
+                        <FileSearch className="w-5 h-5 text-blue-600"/>
+                      </div>
+                      <div className="flex-1">
+                        <p className="text-sm font-black text-blue-900">Código {s(codigoBusca).toUpperCase()} não está cadastrado no sistema</p>
+                        <p className="text-xs text-blue-700 mt-1">Isso pode acontecer se o item é novo ou ainda não foi sincronizado. Você pode buscar direto no Sankhya agora, ou criar a remessa manualmente.</p>
+                        <div className="flex gap-2 mt-4">
+                          <Btn variant="primary" size="sm" onClick={buscarNoSankhya} disabled={buscandoSankhya}>
+                            {buscandoSankhya?<><Loader2 className="w-3.5 h-3.5 animate-spin"/>Buscando no Sankhya...</>:<><Database className="w-3.5 h-3.5"/>Buscar no Sankhya Agora</>}
+                          </Btn>
+                          <Btn variant="secondary" size="sm" onClick={()=>{setModoManual(true);setProdEncontrado({codigo_pa:s(codigoBusca).toUpperCase(),descricao:'ITEM MANUAL'});setItens([]);setItensOrig([]);setProdutoNaoEncontrado(false);}}>
+                            <Edit3 className="w-3.5 h-3.5"/>Criar Manualmente
+                          </Btn>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
                 {modoManual&&(
                   <div className="bg-amber-50 border border-amber-200 rounded-2xl p-5">
                     <p className="text-xs font-bold text-amber-800 uppercase tracking-wider mb-4 flex items-center gap-2">
@@ -2309,8 +2389,40 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
             {/* ── UPLOAD ESTOQUE ────────────────────────────────────────── */}
             {aba==='UPLOAD_ESTOQUE'&&(
               <div className="max-w-xl mx-auto space-y-6">
-                <SectionHeader title="Sincronização ERP" subtitle="Importe planilha para atualizar produtos e saldos de estoque"/>
+                <SectionHeader title="Sincronização ERP" subtitle="Atualize produtos e saldos de estoque direto do Sankhya"/>
+
+                {/* Sincronização automática direta do Sankhya */}
+                <div className="bg-white rounded-2xl border border-slate-200 p-8 flex flex-col items-center text-center">
+                  <div className="w-16 h-16 bg-emerald-50 rounded-2xl flex items-center justify-center mb-5 border border-emerald-100">
+                    <RefreshCw className={`w-8 h-8 text-emerald-600 ${sincronizandoERP?'animate-spin':''}`}/>
+                  </div>
+                  <h3 className="text-base font-black text-slate-900 mb-1.5">Sincronização Automática</h3>
+                  <p className="text-sm text-slate-500 mb-5 max-w-sm">Busca direto no Sankhya os saldos e a estrutura BOM mais recentes. Roda automaticamente todo dia 1 e 16, mas você pode forçar agora.</p>
+                  <Btn variant="success" size="lg" onClick={sincronizarERPAgora} disabled={sincronizandoERP}>
+                    {sincronizandoERP?<><Loader2 className="w-5 h-5 animate-spin"/>Sincronizando com o Sankhya...</>:<><RefreshCw className="w-5 h-5"/>Sincronizar Agora</>}
+                  </Btn>
+                  {ultimaSync&&<p className="text-[10px] text-emerald-600 font-bold mt-3">✓ Última sincronização: {ultimaSync.toLocaleTimeString('pt-BR')}</p>}
+                </div>
+
+                {/* Busca pontual de um código específico */}
+                <div className="bg-blue-50 border border-blue-200 rounded-2xl p-6">
+                  <div className="flex items-center gap-3 mb-3">
+                    <FileSearch className="w-4 h-4 text-blue-600"/>
+                    <p className="text-sm font-black text-blue-900">Buscar um código específico</p>
+                  </div>
+                  <p className="text-xs text-blue-700 mb-4">Se um item não aparece na sincronização geral, busque ele direto aqui pelo código (PA ou MP).</p>
+                  <div className="flex gap-2">
+                    <Inp placeholder="Ex: 18812" value={codigoBusca} onChange={e=>setCodigoBusca(e.target.value)} className="bg-white"/>
+                    <Btn variant="primary" onClick={buscarNoSankhya} disabled={buscandoSankhya||!codigoBusca.trim()}>
+                      {buscandoSankhya?<Loader2 className="w-4 h-4 animate-spin"/>:<Database className="w-4 h-4"/>}
+                      Buscar
+                    </Btn>
+                  </div>
+                </div>
+
+                {/* Upload manual de planilha (alternativa/backup) */}
                 <div className="bg-white rounded-2xl border border-slate-200 p-10 flex flex-col items-center text-center">
+                  <p className="text-xs font-bold text-slate-400 uppercase tracking-widest mb-4">Alternativa — Upload manual</p>
                   <div className="w-20 h-20 bg-indigo-50 rounded-2xl flex items-center justify-center mb-6 border border-indigo-100"><UploadCloud className="w-10 h-10 text-indigo-600"/></div>
                   <h3 className="text-lg font-black text-slate-900 mb-2">Importar Planilha BOM</h3>
                   <p className="text-sm text-slate-500 mb-8 max-w-sm">Atualize a estrutura de produtos (BOM) e saldos físicos de estoque de matéria-prima.</p>
