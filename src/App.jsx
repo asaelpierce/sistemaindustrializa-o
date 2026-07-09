@@ -1197,11 +1197,7 @@ export default function App(){
       w('B7', s(rnc.data_recebimento?new Date(rnc.data_recebimento).toLocaleDateString('pt-BR'):dataAbertura)); // Data recebimento
       w('F7', rnc.qtd_reprovada?`${fmtD(rnc.qtd_reprovada)} UN`:'—'); // Qtd reprovada
       // Descrição NC (A9:H17 merged area)
-      const itensText=(Array.isArray(rnc.itens)&&rnc.itens.length>0)?'
-
-Itens:
-'+rnc.itens.map((it,i)=>`${i+1}. ${s(typeof it==='string'?it:it.descricao||it)}`).join('
-'):'';
+      const itensText=(Array.isArray(rnc.itens)&&rnc.itens.length>0)?('\n\nItens:\n'+rnc.itens.map((it,i)=>`${i+1}. ${s(typeof it==='string'?it:it.descricao||it)}`).join('\n')):'';
       w('A9', s(rnc.descricao_nc)+itensText);
       // Ação contenção (A41:H43)
       if(rnc.acao_corretiva) w('A41', s(rnc.acao_corretiva));
