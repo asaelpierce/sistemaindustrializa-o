@@ -483,6 +483,23 @@ export default function App(){
   const [editUser,setEditUser]=useState(false);
   const [expandida,setExpandida]=useState(null);
 
+  // Qualidade
+  const [inspecoesDb,setInspecoesDb]=useState([]);
+  const [rncsDb,setRncsDb]=useState([]);
+  const [modalNovaInspecao,setModalNovaInspecao]=useState(false);
+  const [modalInspecaoDetalhe,setModalInspecaoDetalhe]=useState(false);
+  const [inspecaoSel,setInspecaoSel]=useState(null);
+  const [modalRNC,setModalRNC]=useState(false);
+  const [rncSel,setRncSel]=useState(null);
+  const [filtroQual,setFiltroQual]=useState({status:'',resultado:'',busca:''});
+  const [formInspecao,setFormInspecao]=useState({material:'',fornecedor:'',nota_fiscal:'',pedido:'',quantidade:'',unidade:'UN',observacoes:'',itens_ressalva:[],resultado:''});
+  const [formRNC,setFormRNC]=useState({descricao_nc:'',causa_raiz:'',acao_corretiva:'',responsavel:'',prazo:'',gravidade:'MEDIA',email_destinatario:'',itens:[]});
+  const [fotosUpload,setFotosUpload]=useState([]);
+  const [novoItemRessalva,setNovoItemRessalva]=useState('');
+  const [qualAba,setQualAba]=useState('INSPECOES');
+  const [enviandoRNC,setEnviandoRNC]=useState(false);
+  const [plannerQualUrl,setPlannerQualUrl]=useState('');
+
   const isAdmin=usuarioLogado?.perfil==='ADMIN';
   const isPCP=usuarioLogado?.perfil==='PCP'||isAdmin;
   const isExp=usuarioLogado?.perfil==='EXPEDICAO'||isAdmin;
@@ -531,6 +548,13 @@ export default function App(){
       }
       if(chR.data){if(chatInternoDb.length>0&&chR.data.length>chatInternoDb.length&&!chatEqOpen)setChatEqUnread(true);setChatInternoDb(chR.data);}
       if(rlR.data)setRelatoriosIaDb(rlR.data);
+      // Qualidade
+      const [insR,rncR]=await Promise.all([
+        supabase.from('inspecoes').select('*').order('data_criacao',{ascending:false}),
+        supabase.from('rncs').select('*').order('data_abertura',{ascending:false})
+      ]);
+      if(insR.data)setInspecoesDb(insR.data);
+      if(rncR.data)setRncsDb(rncR.data);
       setDbOnline(true);
     }catch(e){setDbOnline(false);}
   },[supabase,chatEqOpen]);
@@ -953,6 +977,136 @@ export default function App(){
     !m.lido_por?.includes(usuarioLogado?.nome)
   ).length;
 
+  // ── Qualidade — funções ──────────────────────────────────────────────────
+
+  const salvarInspecao = async(resultado) => {
+    if(!formInspecao.material||!formInspecao.fornecedor) return addToast('Material e Fornecedor são obrigatórios.','error');
+    setIsLoading(true);
+    try{
+      const id=`INS-${Date.now()}`;
+      const now=new Date().toISOString();
+      // Upload fotos como base64 em jsonb
+      const fotosData=fotosUpload.map(f=>({nome:f.name,tipo:f.type,dados:f.b64,tamanho:f.size}));
+      const inspecao={
+        id,material:formInspecao.material,fornecedor:formInspecao.fornecedor,
+        nota_fiscal:formInspecao.nota_fiscal,pedido:formInspecao.pedido,
+        quantidade:parseN(formInspecao.quantidade),unidade:formInspecao.unidade,
+        resultado,observacoes:formInspecao.observacoes,
+        itens_ressalva:formInspecao.itens_ressalva,fotos:fotosData,
+        inspetor:s(usuarioLogado?.nome),data_inspecao:now,status:'CONCLUIDA',
+        notificado_teams:false
+      };
+      const{error}=await supabase.from('inspecoes').insert([inspecao]);
+      if(error)throw error;
+
+      // Se reprovado, criar RNC automática
+      if(resultado==='REPROVADO'){
+        const ano=new Date().getFullYear();
+        const numRNC=`RNC-${ano}-${String(rncsDb.length+1).padStart(3,'0')}`;
+        const rnc={
+          id:`RNC-${Date.now()}`,numero:numRNC,inspecao_id:id,
+          material:formInspecao.material,fornecedor:formInspecao.fornecedor,
+          nota_fiscal:formInspecao.nota_fiscal,
+          descricao_nc:formInspecao.observacoes||'Ver detalhes da inspeção',
+          itens:formInspecao.itens_ressalva,fotos:fotosData,
+          criado_por:s(usuarioLogado?.nome),gravidade:'MEDIA',status:'ABERTA'
+        };
+        const{error:errRnc}=await supabase.from('rncs').insert([rnc]);
+        if(errRnc)throw errRnc;
+        // Atualizar inspeção com ID da RNC
+        await supabase.from('inspecoes').update({rnc_id:rnc.id}).eq('id',id);
+        addToast(`Inspeção registrada e RNC ${numRNC} gerada!`,'warning');
+      } else {
+        // Notificar Teams via Power Automate
+        try{
+          if(plannerQualUrl){
+            await fetch(plannerQualUrl,{method:'POST',headers:{'Content-Type':'application/json'},
+              body:JSON.stringify({material:formInspecao.material,fornecedor:formInspecao.fornecedor,
+                nota_fiscal:formInspecao.nota_fiscal,resultado,inspetor:s(usuarioLogado?.nome),
+                observacoes:formInspecao.observacoes,data:now})});
+            await supabase.from('inspecoes').update({notificado_teams:true}).eq('id',id);
+          }
+        }catch(e){}
+        addToast(`Material ${resultado==='APROVADO'?'aprovado':'aprovado com ressalva'} e registrado!`);
+      }
+
+      setModalNovaInspecao(false);
+      setFormInspecao({material:'',fornecedor:'',nota_fiscal:'',pedido:'',quantidade:'',unidade:'UN',observacoes:'',itens_ressalva:[],resultado:''});
+      setFotosUpload([]);
+      fetchAll();
+    }catch(e){addToast('Erro: '+e.message,'error');}finally{setIsLoading(false);}
+  };
+
+  const encerrarRNC = async(rncId) => {
+    if(!window.confirm('Confirma o encerramento desta RNC?'))return;
+    const{error}=await supabase.from('rncs').update({status:'ENCERRADA',data_encerramento:new Date().toISOString()}).eq('id',rncId);
+    if(error)return addToast('Erro ao encerrar RNC.','error');
+    // Notificar Teams
+    try{
+      if(plannerQualUrl){
+        const rnc=rncsDb.find(r=>r.id===rncId);
+        await fetch(plannerQualUrl,{method:'POST',headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({tipo:'RNC_ENCERRADA',numero:rnc?.numero,material:rnc?.material,
+            fornecedor:rnc?.fornecedor,encerrado_por:s(usuarioLogado?.nome)})});
+      }
+    }catch(e){}
+    addToast('RNC encerrada e equipe notificada no Teams!');
+    fetchAll();
+  };
+
+  const handleFotoUpload = async(files) => {
+    const novos=[];
+    for(const file of Array.from(files)){
+      if(file.size>5*1024*1024){addToast(`${file.name} excede 5MB.`,'error');continue;}
+      const b64=await new Promise(res=>{const r=new FileReader();r.onload=e=>res(e.target.result.split(',')[1]);r.readAsDataURL(file);});
+      novos.push({name:file.name,type:file.type,size:file.size,b64,preview:URL.createObjectURL(file)});
+    }
+    setFotosUpload(p=>[...p,...novos]);
+  };
+
+  const gerarPDFRNC = (rnc) => {
+    const w=window.open('','_blank');
+    w.document.write(`<!DOCTYPE html><html><head><title>RNC ${rnc.numero}</title>
+    <style>body{font-family:Arial,sans-serif;padding:40px;color:#1a1a1a;max-width:800px;margin:0 auto}
+    h1{color:#dc2626;border-bottom:2px solid #dc2626;padding-bottom:8px}
+    h2{color:#374151;font-size:14px;margin-top:24px;margin-bottom:8px;text-transform:uppercase;letter-spacing:.05em}
+    table{width:100%;border-collapse:collapse;margin-bottom:16px}
+    td{padding:8px 12px;border:1px solid #e5e7eb;font-size:13px}
+    td:first-child{font-weight:bold;background:#f9fafb;width:35%}
+    .badge{display:inline-block;padding:3px 10px;border-radius:9999px;font-size:11px;font-weight:bold}
+    .aberta{background:#fee2e2;color:#dc2626}.media{background:#fef3c7;color:#92400e}
+    .alta{background:#fee2e2;color:#dc2626}.critica{background:#7f1d1d;color:white}
+    @media print{button{display:none}}</style>
+    </head><body>
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:24px">
+      <h1 style="margin:0">Registro de Não Conformidade</h1>
+      <div style="text-align:right"><p style="margin:0;font-size:20px;font-weight:bold;color:#dc2626">${rnc.numero||rnc.id}</p>
+      <p style="margin:0;font-size:12px;color:#6b7280">${new Date(rnc.data_abertura).toLocaleDateString('pt-BR')}</p></div>
+    </div>
+    <h2>Identificação</h2>
+    <table><tr><td>Material</td><td>${s(rnc.material)}</td></tr>
+    <tr><td>Fornecedor</td><td>${s(rnc.fornecedor)}</td></tr>
+    <tr><td>Nota Fiscal</td><td>${s(rnc.nota_fiscal||'—')}</td></tr>
+    <tr><td>Gravidade</td><td><span class="badge ${s(rnc.gravidade).toLowerCase()}">${s(rnc.gravidade)}</span></td></tr>
+    <tr><td>Status</td><td>${s(rnc.status)}</td></tr>
+    <tr><td>Aberta por</td><td>${s(rnc.criado_por||'—')}</td></tr></table>
+    <h2>Descrição da Não Conformidade</h2>
+    <p style="border:1px solid #e5e7eb;padding:12px;border-radius:8px;background:#fef2f2;font-size:13px">${s(rnc.descricao_nc)}</p>
+    ${rnc.itens?.length>0?`<h2>Itens com Não Conformidade</h2><ul>${(Array.isArray(rnc.itens)?rnc.itens:[]).map(i=>`<li style="font-size:13px;margin-bottom:4px">${s(typeof i==='string'?i:i.descricao||i)}</li>`).join('')}</ul>`:''}
+    <h2>Análise e Ação</h2>
+    <table><tr><td>Causa Raiz</td><td>${s(rnc.causa_raiz||'A definir')}</td></tr>
+    <tr><td>Ação Corretiva</td><td>${s(rnc.acao_corretiva||'A definir')}</td></tr>
+    <tr><td>Responsável</td><td>${s(rnc.responsavel||'A definir')}</td></tr>
+    <tr><td>Prazo</td><td>${rnc.prazo?new Date(rnc.prazo).toLocaleDateString('pt-BR'):'A definir'}</td></tr></table>
+    <div style="margin-top:48px;display:grid;grid-template-columns:1fr 1fr;gap:40px">
+      <div style="border-top:1px solid #374151;padding-top:8px;text-align:center;font-size:12px">Qualidade / Inspetor</div>
+      <div style="border-top:1px solid #374151;padding-top:8px;text-align:center;font-size:12px">Compras / Responsável</div>
+    </div>
+    <div style="margin-top:32px;text-align:center"><button onclick="window.print()" style="background:#1e293b;color:white;border:none;padding:10px 24px;border-radius:8px;cursor:pointer;font-size:14px">🖨️ Imprimir / Salvar PDF</button></div>
+    </body></html>`);
+    w.document.close();
+  };
+
   // ── Chat computed ────────────────────────────────────────────────────────
   const chatCanais = useMemo(()=>[
     {id:'Geral',nome:'Geral',tipo:'canal'},
@@ -1018,6 +1172,7 @@ export default function App(){
     ...(isExp?[{id:'EXPEDICAO',label:'Fila de Expedição',icon:Truck,group:'Logística',badge:remPend.length||null},{id:'FORNECEDORES',label:'Retorno de Peças',icon:RotateCcw,group:'Logística'},{id:'CONTROLE_GERAL',label:'Controle Geral',icon:ListChecks,group:'Logística'}]:[]),
     ...(isAdmin?[{id:'IA_ANALISTA',label:'Analista IA',icon:Bot,group:'Inteligência'},{id:'AUDITORIA',label:'Auditoria BOM',icon:FileSearch,group:'Inteligência'},{id:'GESTAO_USUARIOS',label:'Gestão de Acessos',icon:Users,group:'Sistema'}]:[]),
     {id:'CHAT_INTERNO',label:'Chat da Equipe',icon:MessageSquare,group:'Comunicação',badge:chatNaoLidos||null},
+    ...(isAdmin||usuarioLogado?.perfil==='QUALIDADE'?[{id:'QUALIDADE',label:'Qualidade',icon:ShieldAlert,group:'Qualidade'},{id:'RNCS',label:'Registro de RNCs',icon:AlertOctagon,group:'Qualidade'}]:[]),
   ];
   const groups=[...new Set(navItems.map(i=>i.group))];
   // ─── LOGIN ────────────────────────────────────────────────────────────────
@@ -2547,6 +2702,182 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
               </div>
             )}
 
+            {/* ── QUALIDADE ────────────────────────────────────────────── */}
+            {aba==='QUALIDADE'&&(
+              <div className="space-y-6" style={{animation:'fadeIn 0.25s ease'}}>
+
+                {/* Header + KPIs */}
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                  <div>
+                    <h2 className="text-xl font-black text-slate-900">Inspeções de Qualidade</h2>
+                    <p className="text-sm text-slate-500 mt-0.5">Controle de recebimento, aprovações e registros de não conformidade</p>
+                  </div>
+                  <Btn variant="primary" onClick={()=>{setFormInspecao({material:'',fornecedor:'',nota_fiscal:'',pedido:'',quantidade:'',unidade:'UN',observacoes:'',itens_ressalva:[],resultado:''});setFotosUpload([]);setModalNovaInspecao(true);}}>
+                    <ShieldAlert className="w-4 h-4"/>Nova Inspeção
+                  </Btn>
+                </div>
+
+                {/* KPIs */}
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                  {[
+                    {label:'Pendentes',val:inspecoesDb.filter(i=>i.status==='PENDENTE').length,color:'blue',icon:Clock},
+                    {label:'Aprovados',val:inspecoesDb.filter(i=>i.resultado==='APROVADO').length,color:'emerald',icon:CheckCircle},
+                    {label:'Com Ressalva',val:inspecoesDb.filter(i=>i.resultado==='APROVADO_RESSALVA').length,color:'amber',icon:AlertTriangle},
+                    {label:'Reprovados/RNC',val:inspecoesDb.filter(i=>i.resultado==='REPROVADO').length,color:'red',icon:XCircle},
+                  ].map((k,i)=><KPICard key={i} label={k.label} value={k.val} icon={k.icon} color={k.color}/>)}
+                </div>
+
+                {/* Filtros */}
+                <div className="flex flex-wrap gap-2 items-center">
+                  <div className="relative flex-1 min-w-40">
+                    <Search className="w-3.5 h-3.5 absolute left-3 top-2.5 text-slate-400"/>
+                    <input className="w-full bg-white border border-slate-200 rounded-xl pl-9 pr-3 py-2 text-xs outline-none focus:border-indigo-400" placeholder="Material, fornecedor, NF..." value={filtroQual.busca} onChange={e=>setFiltroQual({...filtroQual,busca:e.target.value})}/>
+                  </div>
+                  <Sel className="text-xs py-2 w-44" value={filtroQual.resultado} onChange={e=>setFiltroQual({...filtroQual,resultado:e.target.value})}>
+                    <option value="">Todos os resultados</option>
+                    <option value="APROVADO">Aprovado</option>
+                    <option value="APROVADO_RESSALVA">Aprovado c/ Ressalva</option>
+                    <option value="REPROVADO">Reprovado (RNC)</option>
+                  </Sel>
+                  <Sel className="text-xs py-2 w-40" value={filtroQual.status} onChange={e=>setFiltroQual({...filtroQual,status:e.target.value})}>
+                    <option value="">Todos os status</option>
+                    <option value="PENDENTE">Pendente</option>
+                    <option value="CONCLUIDA">Concluída</option>
+                  </Sel>
+                  <button onClick={()=>setFiltroQual({status:'',resultado:'',busca:''})} className="p-2 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-lg"><XCircle className="w-4 h-4"/></button>
+                </div>
+
+                {/* Tabela de inspeções */}
+                <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left text-sm">
+                      <thead className="bg-slate-50 border-b border-slate-100">
+                        <tr className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">
+                          <th className="px-5 py-3.5">Data</th>
+                          <th className="px-5 py-3.5">Material / Fornecedor</th>
+                          <th className="px-5 py-3.5">NF / Pedido</th>
+                          <th className="px-5 py-3.5 text-center">Fotos</th>
+                          <th className="px-5 py-3.5 text-center">Resultado</th>
+                          <th className="px-5 py-3.5">Inspetor</th>
+                          <th className="px-5 py-3.5 text-center">Ações</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-50">
+                        {inspecoesDb
+                          .filter(i=>{
+                            if(filtroQual.resultado&&i.resultado!==filtroQual.resultado)return false;
+                            if(filtroQual.status&&i.status!==filtroQual.status)return false;
+                            if(filtroQual.busca){const b=filtroQual.busca.toUpperCase();if(!s(i.material).toUpperCase().includes(b)&&!s(i.fornecedor).toUpperCase().includes(b)&&!s(i.nota_fiscal).toUpperCase().includes(b))return false;}
+                            return true;
+                          })
+                          .map((ins,i)=>{
+                            const resStyle={APROVADO:'bg-emerald-50 text-emerald-700 border-emerald-200',APROVADO_RESSALVA:'bg-amber-50 text-amber-700 border-amber-200',REPROVADO:'bg-red-50 text-red-700 border-red-200'}[ins.resultado]||'bg-slate-50 text-slate-600 border-slate-200';
+                            const resLabel={APROVADO:'✅ Aprovado',APROVADO_RESSALVA:'⚠️ Ressalva',REPROVADO:'⛔ Reprovado'}[ins.resultado]||'Pendente';
+                            const fotos=Array.isArray(ins.fotos)?ins.fotos:[];
+                            return(
+                              <tr key={i} className="hover:bg-slate-50/50 transition-colors">
+                                <td className="px-5 py-3.5 text-xs text-slate-500 whitespace-nowrap">{fmtDt(ins.data_inspecao||ins.data_criacao)}</td>
+                                <td className="px-5 py-3.5">
+                                  <p className="font-bold text-slate-900 text-xs">{s(ins.material)}</p>
+                                  <p className="text-[10px] text-slate-500 mt-0.5">{s(ins.fornecedor)}</p>
+                                </td>
+                                <td className="px-5 py-3.5">
+                                  <p className="text-xs font-medium text-slate-700">NF: {s(ins.nota_fiscal||'—')}</p>
+                                  {ins.pedido&&<p className="text-[10px] text-slate-400">Ped: {s(ins.pedido)}</p>}
+                                </td>
+                                <td className="px-5 py-3.5 text-center">
+                                  {fotos.length>0
+                                    ?<span className="bg-indigo-50 text-indigo-700 text-[10px] font-bold px-2 py-1 rounded-full border border-indigo-100">{fotos.length} foto{fotos.length>1?'s':''}</span>
+                                    :<span className="text-slate-300 text-xs">—</span>
+                                  }
+                                </td>
+                                <td className="px-5 py-3.5 text-center">
+                                  {ins.resultado
+                                    ?<span className={`text-[10px] font-bold px-2.5 py-1 rounded-full border ${resStyle}`}>{resLabel}</span>
+                                    :<span className="bg-blue-50 text-blue-700 text-[10px] font-bold px-2.5 py-1 rounded-full border border-blue-200">Pendente</span>
+                                  }
+                                  {ins.rnc_id&&<p className="text-[9px] text-red-500 font-bold mt-1">RNC gerada</p>}
+                                </td>
+                                <td className="px-5 py-3.5 text-xs text-slate-600">{s(ins.inspetor||'—')}</td>
+                                <td className="px-5 py-3.5 text-center">
+                                  <div className="flex items-center justify-center gap-1">
+                                    <Btn variant="ghost" size="sm" onClick={()=>{setInspecaoSel(ins);setModalInspecaoDetalhe(true);}}>
+                                      <Eye className="w-3.5 h-3.5"/>
+                                    </Btn>
+                                    {ins.rnc_id&&<Btn variant="ghost" size="sm" onClick={()=>{setRncSel(rncsDb.find(r=>r.id===ins.rnc_id));setModalRNC(true);}}>
+                                      <AlertOctagon className="w-3.5 h-3.5 text-red-500"/>
+                                    </Btn>}
+                                  </div>
+                                </td>
+                              </tr>
+                            );
+                          })
+                        }
+                        {!inspecoesDb.length&&<tr><td colSpan={7} className="py-16 text-center text-slate-400 text-sm"><ShieldAlert className="w-10 h-10 mx-auto mb-3 opacity-30"/><p>Nenhuma inspeção registrada</p></td></tr>}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* ── RNCs ─────────────────────────────────────────────────────── */}
+            {aba==='RNCS'&&(
+              <div className="space-y-6" style={{animation:'fadeIn 0.25s ease'}}>
+                <div className="flex items-center justify-between">
+                  <div>
+                    <h2 className="text-xl font-black text-slate-900">Registro de Não Conformidades</h2>
+                    <p className="text-sm text-slate-500 mt-0.5">Controle e tratativa de RNCs com fornecedores</p>
+                  </div>
+                  <div className="flex gap-2 text-xs font-bold">
+                    <span className="bg-red-100 text-red-700 px-3 py-1.5 rounded-xl border border-red-200">{rncsDb.filter(r=>r.status==='ABERTA').length} Abertas</span>
+                    <span className="bg-amber-100 text-amber-700 px-3 py-1.5 rounded-xl border border-amber-200">{rncsDb.filter(r=>r.status==='EM_TRATATIVA').length} Em Tratativa</span>
+                    <span className="bg-emerald-100 text-emerald-700 px-3 py-1.5 rounded-xl border border-emerald-200">{rncsDb.filter(r=>r.status==='ENCERRADA').length} Encerradas</span>
+                  </div>
+                </div>
+
+                <div className="space-y-3">
+                  {rncsDb.map((rnc,i)=>{
+                    const statusStyle={ABERTA:'border-red-300 bg-red-50/30',EM_TRATATIVA:'border-amber-300 bg-amber-50/20',ENCERRADA:'border-slate-200 opacity-60'}[rnc.status]||'border-slate-200';
+                    const gravStyle={BAIXA:'bg-slate-100 text-slate-600',MEDIA:'bg-amber-100 text-amber-700',ALTA:'bg-red-100 text-red-700',CRITICA:'bg-red-700 text-white'}[rnc.gravidade]||'bg-slate-100 text-slate-600';
+                    return(
+                      <div key={i} className={`bg-white rounded-2xl border overflow-hidden ${statusStyle}`}>
+                        <div className="p-5">
+                          <div className="flex items-start justify-between gap-4">
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-center gap-2 flex-wrap mb-2">
+                                <span className="font-black text-red-700 text-sm">{s(rnc.numero||rnc.id)}</span>
+                                <span className={`text-[10px] font-black px-2 py-0.5 rounded-full ${gravStyle}`}>{s(rnc.gravidade)}</span>
+                                <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${rnc.status==='ABERTA'?'bg-red-50 text-red-700 border-red-200 animate-pulse':rnc.status==='EM_TRATATIVA'?'bg-amber-50 text-amber-700 border-amber-200':'bg-emerald-50 text-emerald-700 border-emerald-200'}`}>{rnc.status.replace('_',' ')}</span>
+                                <span className="text-[10px] text-slate-400 ml-auto">{fmtDt(rnc.data_abertura)}</span>
+                              </div>
+                              <p className="font-bold text-slate-900 text-sm">{s(rnc.material)}</p>
+                              <p className="text-xs text-slate-500">{s(rnc.fornecedor)} · NF: {s(rnc.nota_fiscal||'—')}</p>
+                              <p className="text-xs text-slate-600 mt-2 leading-relaxed">{s(rnc.descricao_nc)}</p>
+                              {rnc.acao_corretiva&&<p className="text-[10px] text-emerald-700 mt-1.5 font-medium">✓ Ação: {s(rnc.acao_corretiva)}</p>}
+                              {rnc.prazo&&<p className="text-[10px] text-indigo-600 mt-0.5 font-medium">📅 Prazo: {fmtDt(rnc.prazo)}</p>}
+                            </div>
+                            <div className="flex flex-col gap-2 flex-shrink-0">
+                              <Btn variant="secondary" size="sm" onClick={()=>gerarPDFRNC(rnc)}>
+                                <FileSearch className="w-3.5 h-3.5"/>PDF
+                              </Btn>
+                              <Btn variant="secondary" size="sm" onClick={()=>{setRncSel(rnc);setFormRNC({descricao_nc:rnc.descricao_nc||'',causa_raiz:rnc.causa_raiz||'',acao_corretiva:rnc.acao_corretiva||'',responsavel:rnc.responsavel||'',prazo:rnc.prazo||'',gravidade:rnc.gravidade||'MEDIA',email_destinatario:rnc.email_destinatario||'',itens:rnc.itens||[]});setModalRNC(true);}}>
+                                <Edit3 className="w-3.5 h-3.5"/>Editar
+                              </Btn>
+                              {rnc.status!=='ENCERRADA'&&<Btn variant="success" size="sm" onClick={()=>encerrarRNC(rnc.id)}>
+                                <CheckCircle className="w-3.5 h-3.5"/>Encerrar
+                              </Btn>}
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                  {!rncsDb.length&&<div className="bg-white rounded-2xl border border-slate-200 py-16 text-center text-slate-400"><CheckCircle className="w-10 h-10 mx-auto mb-3 text-emerald-300"/><p className="text-sm font-semibold">Nenhuma RNC registrada</p></div>}
+                </div>
+              </div>
+            )}
+
             {/* ── CHAT INTERNO ─────────────────────────────────────────── */}
             {aba==='CHAT_INTERNO'&&(
               <div className="flex h-[calc(100vh-10rem)] gap-0 bg-white rounded-2xl border border-slate-200 overflow-hidden shadow-sm" style={{animation:'fadeIn 0.2s ease'}}>
@@ -2774,6 +3105,104 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
             }
           </div>
         </div>
+      </Modal>
+
+      {/* Modal: Nova Inspeção */}
+      <Modal open={modalNovaInspecao} onClose={()=>setModalNovaInspecao(false)} title="Registrar Inspeção" subtitle="Preencha os dados e registre o resultado da inspeção de recebimento" maxWidth="max-w-3xl">
+        <div className="space-y-5">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <Field label="Material / Código" required><Inp placeholder="Ex: 14325 ou Chapa de Aço" value={formInspecao.material} onChange={e=>setFormInspecao({...formInspecao,material:e.target.value})}/></Field>
+            <Field label="Fornecedor" required><Inp placeholder="Ex: Industria Metalúrgica Perfitec" value={formInspecao.fornecedor} onChange={e=>setFormInspecao({...formInspecao,fornecedor:e.target.value})}/></Field>
+            <Field label="Nota Fiscal"><Inp placeholder="Ex: 26465" value={formInspecao.nota_fiscal} onChange={e=>setFormInspecao({...formInspecao,nota_fiscal:e.target.value})}/></Field>
+            <Field label="Pedido de Compra"><Inp placeholder="Número do pedido" value={formInspecao.pedido} onChange={e=>setFormInspecao({...formInspecao,pedido:e.target.value})}/></Field>
+            <Field label="Quantidade"><Inp type="number" value={formInspecao.quantidade} onChange={e=>setFormInspecao({...formInspecao,quantidade:e.target.value})}/></Field>
+            <Field label="Unidade"><Sel value={formInspecao.unidade} onChange={e=>setFormInspecao({...formInspecao,unidade:e.target.value})}><option>UN</option><option>KG</option><option>PC</option><option>M</option><option>M²</option><option>L</option></Sel></Field>
+          </div>
+
+          <Field label="Observações / Itens Inspecionados">
+            <textarea rows={3} className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-2.5 text-sm outline-none focus:border-indigo-400 resize-none" placeholder="Descreva o que foi inspecionado, dimensões verificadas, normas aplicadas..." value={formInspecao.observacoes} onChange={e=>setFormInspecao({...formInspecao,observacoes:e.target.value})}/>
+          </Field>
+
+          {/* Itens de ressalva */}
+          <div>
+            <p className="text-xs font-black text-slate-600 uppercase tracking-wider mb-2">Itens com Não Conformidade / Ressalva (Max 10)</p>
+            <div className="flex gap-2 mb-2">
+              <Inp placeholder="Descreva o item..." value={novoItemRessalva} onChange={e=>setNovoItemRessalva(e.target.value)}
+                onKeyDown={e=>{if(e.key==='Enter'&&novoItemRessalva.trim()&&formInspecao.itens_ressalva.length<10){setFormInspecao(p=>({...p,itens_ressalva:[...p.itens_ressalva,novoItemRessalva.trim()]}));setNovoItemRessalva('');}}}/>
+              <Btn variant="secondary" onClick={()=>{if(novoItemRessalva.trim()&&formInspecao.itens_ressalva.length<10){setFormInspecao(p=>({...p,itens_ressalva:[...p.itens_ressalva,novoItemRessalva.trim()]}));setNovoItemRessalva('');}}} disabled={!novoItemRessalva.trim()||formInspecao.itens_ressalva.length>=10}>+ Add</Btn>
+            </div>
+            {formInspecao.itens_ressalva.length>0&&<div className="flex flex-wrap gap-2">{formInspecao.itens_ressalva.map((item,i)=><div key={i} className="flex items-center gap-1.5 bg-amber-50 border border-amber-200 text-amber-800 text-xs font-medium px-3 py-1.5 rounded-lg"><span>{item}</span><button onClick={()=>setFormInspecao(p=>({...p,itens_ressalva:p.itens_ressalva.filter((_,idx)=>idx!==i)}))} className="text-amber-500 hover:text-red-500"><X className="w-3 h-3"/></button></div>)}</div>}
+          </div>
+
+          {/* Upload de fotos */}
+          <div>
+            <p className="text-xs font-black text-slate-600 uppercase tracking-wider mb-2">Fotos da Inspeção</p>
+            <label className="flex flex-col items-center justify-center gap-2 border-2 border-dashed border-slate-200 rounded-xl p-6 cursor-pointer hover:border-indigo-300 hover:bg-indigo-50/30 transition-all">
+              <UploadCloud className="w-7 h-7 text-slate-300"/>
+              <p className="text-sm text-slate-400 font-medium">Clique ou arraste fotos aqui</p>
+              <p className="text-[10px] text-slate-400">JPG, PNG, WEBP — máx 5MB cada</p>
+              <input type="file" multiple accept="image/*" className="hidden" onChange={e=>handleFotoUpload(e.target.files)}/>
+            </label>
+            {fotosUpload.length>0&&<div className="grid grid-cols-4 sm:grid-cols-6 gap-2 mt-3">{fotosUpload.map((f,i)=><div key={i} className="relative group"><img src={f.preview} alt={f.name} className="w-full h-16 object-cover rounded-lg border border-slate-200"/><button onClick={()=>setFotosUpload(p=>p.filter((_,idx)=>idx!==i))} className="absolute top-0.5 right-0.5 bg-red-500 text-white rounded-full w-4 h-4 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-all"><X className="w-2.5 h-2.5"/></button></div>)}</div>}
+          </div>
+        </div>
+
+        {/* Botões de resultado */}
+        <div className="mt-6 pt-6 border-t border-slate-100">
+          <p className="text-xs font-black text-slate-600 uppercase tracking-wider mb-3 text-center">Selecione o Resultado da Inspeção</p>
+          <div className="grid grid-cols-3 gap-3">
+            <button onClick={()=>salvarInspecao('APROVADO')} disabled={isLoading||!formInspecao.material||!formInspecao.fornecedor} className="flex flex-col items-center gap-2 bg-emerald-50 hover:bg-emerald-100 border-2 border-emerald-200 hover:border-emerald-400 text-emerald-800 rounded-2xl p-4 transition-all disabled:opacity-40 disabled:cursor-not-allowed font-bold text-sm">
+              <CheckCircle className="w-8 h-8 text-emerald-500"/>✅ Aprovar Total
+            </button>
+            <button onClick={()=>salvarInspecao('APROVADO_RESSALVA')} disabled={isLoading||!formInspecao.material||!formInspecao.fornecedor} className="flex flex-col items-center gap-2 bg-amber-50 hover:bg-amber-100 border-2 border-amber-200 hover:border-amber-400 text-amber-800 rounded-2xl p-4 transition-all disabled:opacity-40 disabled:cursor-not-allowed font-bold text-sm">
+              <AlertTriangle className="w-8 h-8 text-amber-500"/>⚠️ Aprovado c/ Ressalva
+            </button>
+            <button onClick={()=>salvarInspecao('REPROVADO')} disabled={isLoading||!formInspecao.material||!formInspecao.fornecedor} className="flex flex-col items-center gap-2 bg-red-50 hover:bg-red-100 border-2 border-red-200 hover:border-red-400 text-red-800 rounded-2xl p-4 transition-all disabled:opacity-40 disabled:cursor-not-allowed font-bold text-sm">
+              <XCircle className="w-8 h-8 text-red-500"/>⛔ Reprovar (RNC)
+            </button>
+          </div>
+        </div>
+      </Modal>
+
+      {/* Modal: Detalhe Inspeção */}
+      <Modal open={modalInspecaoDetalhe&&!!inspecaoSel} onClose={()=>setModalInspecaoDetalhe(false)} title={`Inspeção: ${s(inspecaoSel?.material)}`} subtitle={`${s(inspecaoSel?.fornecedor)} · NF: ${s(inspecaoSel?.nota_fiscal||'—')}`} maxWidth="max-w-3xl">
+        {inspecaoSel&&(
+          <div className="space-y-5">
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+              <div className="bg-slate-50 rounded-xl p-3 border border-slate-100"><p className="text-[9px] font-black text-slate-400 uppercase tracking-wider mb-1">Data</p><p className="text-xs font-bold text-slate-800">{fmtDt(inspecaoSel.data_inspecao)}</p></div>
+              <div className="bg-slate-50 rounded-xl p-3 border border-slate-100"><p className="text-[9px] font-black text-slate-400 uppercase tracking-wider mb-1">Inspetor</p><p className="text-xs font-bold text-slate-800">{s(inspecaoSel.inspetor||'—')}</p></div>
+              <div className="bg-slate-50 rounded-xl p-3 border border-slate-100"><p className="text-[9px] font-black text-slate-400 uppercase tracking-wider mb-1">Quantidade</p><p className="text-xs font-bold text-slate-800">{fmtD(inspecaoSel.quantidade)} {s(inspecaoSel.unidade)}</p></div>
+              <div className="bg-slate-50 rounded-xl p-3 border border-slate-100"><p className="text-[9px] font-black text-slate-400 uppercase tracking-wider mb-1">Teams</p><p className={`text-xs font-bold ${inspecaoSel.notificado_teams?'text-emerald-600':'text-slate-400'}`}>{inspecaoSel.notificado_teams?'Notificado':'Pendente'}</p></div>
+            </div>
+            {inspecaoSel.observacoes&&<div><p className="text-xs font-black text-slate-600 uppercase tracking-wider mb-2">Observações</p><p className="text-sm text-slate-700 bg-slate-50 rounded-xl p-4 border border-slate-100 leading-relaxed">{s(inspecaoSel.observacoes)}</p></div>}
+            {inspecaoSel.itens_ressalva?.length>0&&<div><p className="text-xs font-black text-amber-700 uppercase tracking-wider mb-2">Itens com Ressalva</p><div className="flex flex-wrap gap-2">{(Array.isArray(inspecaoSel.itens_ressalva)?inspecaoSel.itens_ressalva:[]).map((item,i)=><span key={i} className="bg-amber-50 border border-amber-200 text-amber-800 text-xs font-medium px-3 py-1.5 rounded-lg">{s(typeof item==='string'?item:item)}</span>)}</div></div>}
+            {inspecaoSel.fotos?.length>0&&<div><p className="text-xs font-black text-slate-600 uppercase tracking-wider mb-2">Fotos da Inspeção ({inspecaoSel.fotos.length})</p><div className="grid grid-cols-3 sm:grid-cols-5 gap-2">{(Array.isArray(inspecaoSel.fotos)?inspecaoSel.fotos:[]).map((f,i)=><img key={i} src={`data:${f.tipo};base64,${f.dados}`} alt={f.nome} className="w-full h-24 object-cover rounded-xl border border-slate-200 cursor-pointer hover:opacity-80 transition-opacity" onClick={()=>window.open(`data:${f.tipo};base64,${f.dados}`,'_blank')}/>)}</div></div>}
+          </div>
+        )}
+      </Modal>
+
+      {/* Modal: RNC */}
+      <Modal open={modalRNC&&!!rncSel} onClose={()=>setModalRNC(false)} title={`RNC: ${s(rncSel?.numero||rncSel?.id)}`} subtitle={`${s(rncSel?.material)} · ${s(rncSel?.fornecedor)}`} maxWidth="max-w-2xl"
+        footer={<div className="flex justify-between"><Btn variant="secondary" onClick={()=>gerarPDFRNC(rncSel)}><FileSearch className="w-4 h-4"/>Gerar PDF</Btn><Btn variant="primary" disabled={enviandoRNC} onClick={async()=>{setEnviandoRNC(true);try{await supabase.from('rncs').update({causa_raiz:formRNC.causa_raiz,acao_corretiva:formRNC.acao_corretiva,responsavel:formRNC.responsavel,prazo:formRNC.prazo||null,gravidade:formRNC.gravidade,email_destinatario:formRNC.email_destinatario,status:formRNC.acao_corretiva?'EM_TRATATIVA':'ABERTA'}).eq('id',rncSel.id);addToast('RNC atualizada!');setModalRNC(false);fetchAll();}catch(e){addToast('Erro: '+e.message,'error');}finally{setEnviandoRNC(false);}}}><Save className="w-4 h-4"/>Salvar</Btn></div>}
+      >
+        {rncSel&&(
+          <div className="space-y-4">
+            <div className="bg-red-50 border border-red-200 rounded-xl p-4">
+              <p className="text-xs font-black text-red-700 uppercase tracking-wider mb-1">Descrição da Não Conformidade</p>
+              <p className="text-sm text-red-900 font-medium">{s(rncSel.descricao_nc)}</p>
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              <Field label="Gravidade"><Sel value={formRNC.gravidade} onChange={e=>setFormRNC({...formRNC,gravidade:e.target.value})}><option value="BAIXA">Baixa</option><option value="MEDIA">Média</option><option value="ALTA">Alta</option><option value="CRITICA">Crítica</option></Sel></Field>
+              <Field label="Responsável"><Inp placeholder="Nome do responsável" value={formRNC.responsavel} onChange={e=>setFormRNC({...formRNC,responsavel:e.target.value})}/></Field>
+            </div>
+            <Field label="Causa Raiz"><textarea rows={2} className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-2.5 text-sm outline-none focus:border-indigo-400 resize-none" placeholder="Qual foi a causa raiz da não conformidade?" value={formRNC.causa_raiz} onChange={e=>setFormRNC({...formRNC,causa_raiz:e.target.value})}/></Field>
+            <Field label="Ação Corretiva"><textarea rows={2} className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-2.5 text-sm outline-none focus:border-indigo-400 resize-none" placeholder="Descreva a ação corretiva a ser tomada" value={formRNC.acao_corretiva} onChange={e=>setFormRNC({...formRNC,acao_corretiva:e.target.value})}/></Field>
+            <div className="grid grid-cols-2 gap-4">
+              <Field label="Prazo para Correção"><Inp type="date" value={formRNC.prazo} onChange={e=>setFormRNC({...formRNC,prazo:e.target.value})}/></Field>
+              <Field label="Email Compras (para enviar PDF)"><Inp type="email" placeholder="compras@kalenborn.com.br" value={formRNC.email_destinatario} onChange={e=>setFormRNC({...formRNC,email_destinatario:e.target.value})}/></Field>
+            </div>
+          </div>
+        )}
       </Modal>
 
       {/* Modal: Atrasos */}
