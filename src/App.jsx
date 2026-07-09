@@ -13,7 +13,7 @@ import {
   ArrowUp, ArrowDown, TrendingUp, TrendingDown, Activity, MessageSquare,
   X, Send, Bot, Save, Menu, Bell, RefreshCw, RotateCcw, Factory,
   Layers, PieChart as PieChartIcon, BarChart as BarChartIcon, BarChart2, Link2,
-  AlertOctagon, KeyRound, Circle, ShieldAlert
+  AlertOctagon, KeyRound, Circle, ShieldAlert, Camera
 } from 'lucide-react';
 
 // ============================================================================
@@ -1008,23 +1008,51 @@ export default function App(){
       }
       if(error)throw error;
 
-      // Se reprovado, criar RNC automática
+      // Se reprovado, criar RNC automática com numeração dupla
       if(resultado==='REPROVADO'){
         const ano=new Date().getFullYear();
-        const numRNC=`RNC-${ano}-${String(rncsDb.length+1).padStart(3,'0')}`;
+        // Numeração global sequencial
+        const totalGlobal=rncsDb.length+1;
+        const numGlobal=`RNC-${ano}-${String(totalGlobal).padStart(3,'0')}`;
+        // Numeração por fornecedor
+        const rncsFornecedor=rncsDb.filter(r=>s(r.fornecedor).toLowerCase()===s(formInspecao.fornecedor).toLowerCase());
+        const numFornecedor=rncsFornecedor.length+1;
+
+        const rncId=`RNC-${Date.now()}`;
         const rnc={
-          id:`RNC-${Date.now()}`,numero:numRNC,inspecao_id:id,
-          material:formInspecao.material,fornecedor:formInspecao.fornecedor,
+          id:rncId,
+          numero:numGlobal,            // campo legado compatível
+          numero_global:numGlobal,     // RNC-2026-001
+          numero_fornecedor:numFornecedor, // 3 (3ª RNC deste fornecedor)
+          inspecao_id:id,
+          material:formInspecao.material,
+          fornecedor:formInspecao.fornecedor,
           nota_fiscal:formInspecao.nota_fiscal,
           descricao_nc:formInspecao.observacoes||'Ver detalhes da inspeção',
-          itens:formInspecao.itens_ressalva,fotos:fotosData,
-          criado_por:s(usuarioLogado?.nome),gravidade:'MEDIA',status:'ABERTA'
+          descricao_produto:formInspecao.material,
+          data_recebimento:formInspecao.data_inspecao||new Date().toISOString().split('T')[0],
+          qtd_reprovada:formInspecao.quantidade||0,
+          itens:formInspecao.itens_ressalva,
+          fotos:fotosData,
+          criado_por:s(usuarioLogado?.nome),
+          gravidade:'MEDIA',
+          status:'ABERTA'
         };
         const{error:errRnc}=await supabase.from('rncs').insert([rnc]);
         if(errRnc)throw errRnc;
-        // Atualizar inspeção com ID da RNC
-        await supabase.from('inspecoes').update({rnc_id:rnc.id}).eq('id',id);
-        addToast(`Inspeção registrada e RNC ${numRNC} gerada!`,'warning');
+        await supabase.from('inspecoes').update({rnc_id:rncId}).eq('id',id);
+        addToast(`Inspeção registrada e ${numGlobal} gerada! (${numFornecedor}ª RNC de ${s(formInspecao.fornecedor).split(' ')[0]})`, 'warning');
+        // Auto gerar PDF de fotos ao reprovar
+        if(fotosData.length>0){
+          setTimeout(()=>gerarPDFFotos({
+            numero_global:numGlobal,numero:numGlobal,
+            fornecedor:formInspecao.fornecedor,
+            nota_fiscal:formInspecao.nota_fiscal,
+            material:formInspecao.material,
+            criado_por:s(usuarioLogado?.nome),
+            data_abertura:new Date().toISOString(),
+          },fotosData),800);
+        }
       } else {
         // Notificar Teams via Power Automate
         try{
@@ -1073,47 +1101,139 @@ export default function App(){
     setFotosUpload(p=>[...p,...novos]);
   };
 
-  const gerarPDFRNC = (rnc) => {
+  const gerarPDFFotos = (rnc, fotos) => {
+    if(!fotos||fotos.length===0){addToast('Nenhuma foto para gerar o PDF.','error');return;}
+    const numRNC=s(rnc.numero_global||rnc.numero||rnc.id);
+    const dataStr=rnc.data_abertura?new Date(rnc.data_abertura).toLocaleDateString('pt-BR'):new Date().toLocaleDateString('pt-BR');
+    const fotosHTML=fotos.map((f,i)=>`
+      <div style="break-inside:avoid;margin-bottom:20px;">
+        <p style="margin:0 0 4px 0;font-size:10px;font-weight:bold;color:#555;">Foto ${i+1}${f.nome?` — ${f.nome}`:''}</p>
+        <img src="data:${f.tipo};base64,${f.dados}" style="width:100%;max-height:320px;object-fit:contain;border:1px solid #ddd;border-radius:4px;background:#f9f9f9;"/>
+      </div>`).join('');
     const w=window.open('','_blank');
-    w.document.write(`<!DOCTYPE html><html><head><title>RNC ${rnc.numero}</title>
-    <style>body{font-family:Arial,sans-serif;padding:40px;color:#1a1a1a;max-width:800px;margin:0 auto}
-    h1{color:#dc2626;border-bottom:2px solid #dc2626;padding-bottom:8px}
-    h2{color:#374151;font-size:14px;margin-top:24px;margin-bottom:8px;text-transform:uppercase;letter-spacing:.05em}
-    table{width:100%;border-collapse:collapse;margin-bottom:16px}
-    td{padding:8px 12px;border:1px solid #e5e7eb;font-size:13px}
-    td:first-child{font-weight:bold;background:#f9fafb;width:35%}
-    .badge{display:inline-block;padding:3px 10px;border-radius:9999px;font-size:11px;font-weight:bold}
-    .aberta{background:#fee2e2;color:#dc2626}.media{background:#fef3c7;color:#92400e}
-    .alta{background:#fee2e2;color:#dc2626}.critica{background:#7f1d1d;color:white}
-    @media print{button{display:none}}</style>
+    w.document.write(`<!DOCTYPE html><html><head><meta charset="UTF-8">
+    <title>Fotos RNC ${numRNC}</title>
+    <style>
+      *{box-sizing:border-box;margin:0;padding:0}
+      body{font-family:Arial,sans-serif;padding:30px;color:#1a1a1a;background:#fff}
+      .header{display:flex;justify-content:space-between;align-items:flex-start;padding-bottom:16px;border-bottom:3px solid #dc2626;margin-bottom:24px}
+      .header h1{font-size:18px;color:#dc2626;font-weight:bold}
+      .header h2{font-size:13px;color:#374151;margin-top:4px;font-weight:normal}
+      .meta{text-align:right;font-size:12px;color:#6b7280;line-height:1.6}
+      .meta strong{color:#1a1a1a;display:block;font-size:16px}
+      .grid{columns:2;column-gap:20px}
+      .footer{margin-top:32px;padding-top:16px;border-top:1px solid #e5e7eb;font-size:10px;color:#9ca3af;text-align:center}
+      @media print{button{display:none!important}.no-print{display:none!important}}
+    </style>
     </head><body>
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:24px">
-      <h1 style="margin:0">Registro de Não Conformidade</h1>
-      <div style="text-align:right"><p style="margin:0;font-size:20px;font-weight:bold;color:#dc2626">${rnc.numero||rnc.id}</p>
-      <p style="margin:0;font-size:12px;color:#6b7280">${new Date(rnc.data_abertura).toLocaleDateString('pt-BR')}</p></div>
+    <div class="header">
+      <div>
+        <h1>📷 Registro Fotográfico de Inspeção</h1>
+        <h2>KdB143 — Relatório de Reclamação de Fornecimento</h2>
+        <p style="font-size:12px;color:#374151;margin-top:6px;">
+          <strong style="color:#dc2626">${numRNC}</strong> &nbsp;·&nbsp; 
+          Fornecedor: <strong>${s(rnc.fornecedor)}</strong> &nbsp;·&nbsp;
+          NF: <strong>${s(rnc.nota_fiscal||'—')}</strong>
+        </p>
+        <p style="font-size:11px;color:#6b7280;margin-top:2px;">
+          Projeto (BR): ${s(rnc.material)} &nbsp;·&nbsp; Data: ${dataStr} &nbsp;·&nbsp; Inspetor: ${s(rnc.criado_por||'—')}
+        </p>
+      </div>
+      <div class="meta">
+        <strong>${numRNC}</strong>
+        ${fotos.length} foto${fotos.length!==1?'s':''}
+      </div>
     </div>
-    <h2>Identificação</h2>
-    <table><tr><td>Material</td><td>${s(rnc.material)}</td></tr>
-    <tr><td>Fornecedor</td><td>${s(rnc.fornecedor)}</td></tr>
-    <tr><td>Nota Fiscal</td><td>${s(rnc.nota_fiscal||'—')}</td></tr>
-    <tr><td>Gravidade</td><td><span class="badge ${s(rnc.gravidade).toLowerCase()}">${s(rnc.gravidade)}</span></td></tr>
-    <tr><td>Status</td><td>${s(rnc.status)}</td></tr>
-    <tr><td>Aberta por</td><td>${s(rnc.criado_por||'—')}</td></tr></table>
-    <h2>Descrição da Não Conformidade</h2>
-    <p style="border:1px solid #e5e7eb;padding:12px;border-radius:8px;background:#fef2f2;font-size:13px">${s(rnc.descricao_nc)}</p>
-    ${rnc.itens?.length>0?`<h2>Itens com Não Conformidade</h2><ul>${(Array.isArray(rnc.itens)?rnc.itens:[]).map(i=>`<li style="font-size:13px;margin-bottom:4px">${s(typeof i==='string'?i:i.descricao||i)}</li>`).join('')}</ul>`:''}
-    <h2>Análise e Ação</h2>
-    <table><tr><td>Causa Raiz</td><td>${s(rnc.causa_raiz||'A definir')}</td></tr>
-    <tr><td>Ação Corretiva</td><td>${s(rnc.acao_corretiva||'A definir')}</td></tr>
-    <tr><td>Responsável</td><td>${s(rnc.responsavel||'A definir')}</td></tr>
-    <tr><td>Prazo</td><td>${rnc.prazo?new Date(rnc.prazo).toLocaleDateString('pt-BR'):'A definir'}</td></tr></table>
-    <div style="margin-top:48px;display:grid;grid-template-columns:1fr 1fr;gap:40px">
-      <div style="border-top:1px solid #374151;padding-top:8px;text-align:center;font-size:12px">Qualidade / Inspetor</div>
-      <div style="border-top:1px solid #374151;padding-top:8px;text-align:center;font-size:12px">Compras / Responsável</div>
+
+    <div class="no-print" style="margin-bottom:20px;display:flex;gap:10px;">
+      <button onclick="window.print()" style="background:#dc2626;color:white;border:none;padding:10px 24px;border-radius:8px;cursor:pointer;font-size:14px;font-weight:bold;">
+        🖨️ Imprimir / Salvar PDF
+      </button>
+      <button onclick="window.close()" style="background:#f1f5f9;color:#374151;border:1px solid #e2e8f0;padding:10px 24px;border-radius:8px;cursor:pointer;font-size:14px;">
+        Fechar
+      </button>
     </div>
-    <div style="margin-top:32px;text-align:center"><button onclick="window.print()" style="background:#1e293b;color:white;border:none;padding:10px 24px;border-radius:8px;cursor:pointer;font-size:14px">🖨️ Imprimir / Salvar PDF</button></div>
+
+    <div class="grid">${fotosHTML}</div>
+
+    <div class="footer">
+      Documento gerado automaticamente pelo Sistema SGQ — Kalenborn do Brasil &nbsp;·&nbsp; ${dataStr} &nbsp;·&nbsp; ${numRNC}
+    </div>
     </body></html>`);
     w.document.close();
+  };
+
+  const gerarExcelRNC = async(rnc) => {
+    try{
+      // Load ExcelJS
+      if(!window.ExcelJS) return addToast('ExcelJS não carregado.','error');
+
+      // Decode the model template from base64
+      const binStr=atob(RNC_MODELO_B64);
+      const buf=new ArrayBuffer(binStr.length);
+      const bytes=new Uint8Array(buf);
+      for(let i=0;i<binStr.length;i++) bytes[i]=binStr.charCodeAt(i);
+
+      const wb=new window.ExcelJS.Workbook();
+      await wb.xlsx.load(buf);
+
+      const ws=wb.getWorksheet('Plan1');
+      const ws3=wb.getWorksheet('Plan3');
+
+      // Helper: write to a cell safely (ExcelJS handles merged cells fine)
+      const w=(cell,val)=>{ try{ ws.getCell(cell).value=val; }catch(_){} };
+
+      const dataAbertura=rnc.data_abertura?new Date(rnc.data_abertura).toLocaleDateString('pt-BR'):new Date().toLocaleDateString('pt-BR');
+      const numRNC=s(rnc.numero_global||rnc.numero||rnc.id);
+      const numForn=rnc.numero_fornecedor?`${numRNC} (Forn. nº ${rnc.numero_fornecedor}°)`:numRNC;
+
+      // Plan1 — Formulário principal
+      w('G2', numForn);                              // Nº RRF
+      w('H3', dataAbertura);                         // Data
+      w('B5', s(rnc.fornecedor));                   // Fornecedor
+      w('D6', s(rnc.descricao_produto||rnc.material)); // Descrição produto
+      w('H6', s(rnc.nota_fiscal||'—'));             // Nota Fiscal
+      w('B7', s(rnc.data_recebimento?new Date(rnc.data_recebimento).toLocaleDateString('pt-BR'):dataAbertura)); // Data recebimento
+      w('F7', rnc.qtd_reprovada?`${fmtD(rnc.qtd_reprovada)} UN`:'—'); // Qtd reprovada
+      // Descrição NC (A9:H17 merged area)
+      const itensText=(Array.isArray(rnc.itens)&&rnc.itens.length>0)?'
+
+Itens:
+'+rnc.itens.map((it,i)=>`${i+1}. ${s(typeof it==='string'?it:it.descricao||it)}`).join('
+'):'';
+      w('A9', s(rnc.descricao_nc)+itensText);
+      // Ação contenção (A41:H43)
+      if(rnc.acao_corretiva) w('A41', s(rnc.acao_corretiva));
+      // Comentário fornecedor (A47:H49)
+      if(rnc.comentario_fornecedor) w('A47', s(rnc.comentario_fornecedor));
+      // Responsáveis
+      w('B38', s(rnc.criado_por||usuarioLogado?.nome||'Qualidade'));
+      w('G38', dataAbertura);
+      w('B45', s(rnc.responsavel||rnc.criado_por||'—'));
+      w('G45', rnc.prazo?new Date(rnc.prazo).toLocaleDateString('pt-BR'):dataAbertura);
+
+      // Plan3 — Registro de controle (adiciona nova linha)
+      if(ws3){
+        let nextRow=2;
+        while(ws3.getCell(`A${nextRow}`).value) nextRow++;
+        ws3.getCell(`A${nextRow}`).value=s(rnc.fornecedor);
+        ws3.getCell(`B${nextRow}`).value=s(rnc.material);
+        ws3.getCell(`C${nextRow}`).value=numRNC;
+        ws3.getCell(`D${nextRow}`).value=s(rnc.nota_fiscal||'—');
+        ws3.getCell(`F${nextRow}`).value=dataAbertura;
+      }
+
+      const xlsBuf=await wb.xlsx.writeBuffer();
+      const blob=new Blob([xlsBuf],{type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'});
+      const a=document.createElement('a');
+      a.href=URL.createObjectURL(blob);
+      a.download=`RNC_${numRNC.replace(/[^a-zA-Z0-9-]/g,'_')}_${s(rnc.fornecedor).substring(0,20).replace(/\s/g,'_')}.xlsx`;
+      a.click();
+      addToast(`${numRNC} — arquivo KdB143 gerado com sucesso!`);
+    }catch(e){
+      console.error(e);
+      addToast('Erro ao gerar Excel: '+e.message,'error');
+    }
   };
 
   // ── Chat computed ────────────────────────────────────────────────────────
@@ -2740,7 +2860,7 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
                 <div className="flex flex-wrap gap-2 items-center">
                   <div className="relative flex-1 min-w-40">
                     <Search className="w-3.5 h-3.5 absolute left-3 top-2.5 text-slate-400"/>
-                    <input className="w-full bg-white border border-slate-200 rounded-xl pl-9 pr-3 py-2 text-xs outline-none focus:border-indigo-400" placeholder="Material, fornecedor, NF..." value={filtroQual.busca} onChange={e=>setFiltroQual({...filtroQual,busca:e.target.value})}/>
+                    <input className="w-full bg-white border border-slate-200 rounded-xl pl-9 pr-3 py-2 text-xs outline-none focus:border-indigo-400" placeholder="Projeto BR, fornecedor, NF..." value={filtroQual.busca} onChange={e=>setFiltroQual({...filtroQual,busca:e.target.value})}/>
                   </div>
                   <Sel className="text-xs py-2 w-44" value={filtroQual.resultado} onChange={e=>setFiltroQual({...filtroQual,resultado:e.target.value})}>
                     <option value="">Todos os resultados</option>
@@ -2763,7 +2883,7 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
                       <thead className="bg-slate-50 border-b border-slate-100">
                         <tr className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">
                           <th className="px-5 py-3.5">Data</th>
-                          <th className="px-5 py-3.5">Material / Fornecedor</th>
+                          <th className="px-5 py-3.5">Projeto (BR) / Fornecedor</th>
                           <th className="px-5 py-3.5">NF / Pedido</th>
                           <th className="px-5 py-3.5 text-center">Fotos</th>
                           <th className="px-5 py-3.5 text-center">Resultado</th>
@@ -2877,9 +2997,17 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
                               {rnc.prazo&&<p className="text-[10px] text-indigo-600 mt-0.5 font-medium">📅 Prazo: {fmtDt(rnc.prazo)}</p>}
                             </div>
                             <div className="flex flex-col gap-2 flex-shrink-0">
-                              <Btn variant="secondary" size="sm" onClick={()=>gerarPDFRNC(rnc)}>
-                                <FileSearch className="w-3.5 h-3.5"/>PDF
+                              <Btn variant="secondary" size="sm" onClick={()=>gerarExcelRNC(rnc)}>
+                                <FileSearch className="w-3.5 h-3.5"/>Gerar KdB143
                               </Btn>
+                              {(rnc.fotos?.length>0||inspecoesDb.find(i=>i.rnc_id===rnc.id)?.fotos?.length>0)&&(
+                                <Btn variant="ghost" size="sm" onClick={()=>{
+                                  const fotos=rnc.fotos?.length>0?rnc.fotos:inspecoesDb.find(i=>i.rnc_id===rnc.id)?.fotos||[];
+                                  gerarPDFFotos(rnc,fotos);
+                                }}>
+                                  <Camera className="w-3.5 h-3.5 text-indigo-500"/>Fotos
+                                </Btn>
+                              )}
                               <Btn variant="secondary" size="sm" onClick={()=>{setRncSel(rnc);setFormRNC({descricao_nc:rnc.descricao_nc||'',causa_raiz:rnc.causa_raiz||'',acao_corretiva:rnc.acao_corretiva||'',responsavel:rnc.responsavel||'',prazo:rnc.prazo||'',gravidade:rnc.gravidade||'MEDIA',email_destinatario:rnc.email_destinatario||'',itens:rnc.itens||[]});setModalRNC(true);}}>
                                 <Edit3 className="w-3.5 h-3.5"/>Editar
                               </Btn>
@@ -3134,7 +3262,7 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
           <div className="space-y-5">
             {/* Info do material */}
             <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
-              <div><p className="text-[9px] font-black text-slate-400 uppercase tracking-wider mb-0.5">Material</p><p className="font-bold text-slate-800">{s(inspecaoSel?.material||formInspecao.material||'—')}</p></div>
+              <div><p className="text-[9px] font-black text-slate-400 uppercase tracking-wider mb-0.5">Projeto (BR)</p><p className="font-bold text-slate-800">{s(inspecaoSel?.material||formInspecao.material||'—')}</p></div>
               <div><p className="text-[9px] font-black text-slate-400 uppercase tracking-wider mb-0.5">Fornecedor</p><p className="font-bold text-slate-800 truncate">{s(inspecaoSel?.fornecedor||formInspecao.fornecedor||'—')}</p></div>
               <div><p className="text-[9px] font-black text-slate-400 uppercase tracking-wider mb-0.5">Nota Fiscal</p><p className="font-bold text-slate-800">{s(inspecaoSel?.nota_fiscal||formInspecao.nota_fiscal||'—')}</p></div>
               <div><p className="text-[9px] font-black text-slate-400 uppercase tracking-wider mb-0.5">Pedido</p><p className="font-bold text-slate-800">{s(inspecaoSel?.pedido||formInspecao.pedido||'—')}</p></div>
@@ -3341,14 +3469,14 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
             </div>
             {inspecaoSel.observacoes&&<div><p className="text-xs font-black text-slate-600 uppercase tracking-wider mb-2">Observações</p><p className="text-sm text-slate-700 bg-slate-50 rounded-xl p-4 border border-slate-100 leading-relaxed">{s(inspecaoSel.observacoes)}</p></div>}
             {inspecaoSel.itens_ressalva?.length>0&&<div><p className="text-xs font-black text-amber-700 uppercase tracking-wider mb-2">Itens com Ressalva</p><div className="flex flex-wrap gap-2">{(Array.isArray(inspecaoSel.itens_ressalva)?inspecaoSel.itens_ressalva:[]).map((item,i)=><span key={i} className="bg-amber-50 border border-amber-200 text-amber-800 text-xs font-medium px-3 py-1.5 rounded-lg">{s(typeof item==='string'?item:item)}</span>)}</div></div>}
-            {inspecaoSel.fotos?.length>0&&<div><p className="text-xs font-black text-slate-600 uppercase tracking-wider mb-2">Fotos da Inspeção ({inspecaoSel.fotos.length})</p><div className="grid grid-cols-3 sm:grid-cols-5 gap-2">{(Array.isArray(inspecaoSel.fotos)?inspecaoSel.fotos:[]).map((f,i)=><img key={i} src={`data:${f.tipo};base64,${f.dados}`} alt={f.nome} className="w-full h-24 object-cover rounded-xl border border-slate-200 cursor-pointer hover:opacity-80 transition-opacity" onClick={()=>window.open(`data:${f.tipo};base64,${f.dados}`,'_blank')}/>)}</div></div>}
+            {inspecaoSel.fotos?.length>0&&<div><p className="text-xs font-black text-slate-600 uppercase tracking-wider mb-2">Fotos da Inspeção ({inspecaoSel.fotos.length})</p><div className="grid grid-cols-3 sm:grid-cols-5 gap-2">{(Array.isArray(inspecaoSel.fotos)?inspecaoSel.fotos:[]).map((f,i)=><img key={i} src={`data:${f.tipo};base64,${f.dados}`} alt={f.nome} className="w-full h-24 object-cover rounded-xl border border-slate-200 cursor-pointer hover:opacity-80 transition-opacity" onClick={()=>{const byteStr=atob(f.dados);const ab=new ArrayBuffer(byteStr.length);const ia=new Uint8Array(ab);for(let j=0;j<byteStr.length;j++)ia[j]=byteStr.charCodeAt(j);const blob=new Blob([ab],{type:f.tipo});const url=URL.createObjectURL(blob);window.open(url,'_blank');}}/>)}</div></div>}
           </div>
         )}
       </Modal>
 
       {/* Modal: RNC */}
       <Modal open={modalRNC&&!!rncSel} onClose={()=>setModalRNC(false)} title={`RNC: ${s(rncSel?.numero||rncSel?.id)}`} subtitle={`${s(rncSel?.material)} · ${s(rncSel?.fornecedor)}`} maxWidth="max-w-2xl"
-        footer={<div className="flex justify-between"><Btn variant="secondary" onClick={()=>gerarPDFRNC(rncSel)}><FileSearch className="w-4 h-4"/>Gerar PDF</Btn><Btn variant="primary" disabled={enviandoRNC} onClick={async()=>{setEnviandoRNC(true);try{await supabase.from('rncs').update({causa_raiz:formRNC.causa_raiz,acao_corretiva:formRNC.acao_corretiva,responsavel:formRNC.responsavel,prazo:formRNC.prazo||null,gravidade:formRNC.gravidade,email_destinatario:formRNC.email_destinatario,status:formRNC.acao_corretiva?'EM_TRATATIVA':'ABERTA'}).eq('id',rncSel.id);addToast('RNC atualizada!');setModalRNC(false);fetchAll();}catch(e){addToast('Erro: '+e.message,'error');}finally{setEnviandoRNC(false);}}}><Save className="w-4 h-4"/>Salvar</Btn></div>}
+        footer={<div className="flex justify-between"><Btn variant="secondary" onClick={()=>gerarExcelRNC(rncSel)}><FileSearch className="w-4 h-4"/>Gerar KdB143</Btn><Btn variant="primary" disabled={enviandoRNC} onClick={async()=>{setEnviandoRNC(true);try{await supabase.from('rncs').update({causa_raiz:formRNC.causa_raiz,acao_corretiva:formRNC.acao_corretiva,responsavel:formRNC.responsavel,prazo:formRNC.prazo||null,gravidade:formRNC.gravidade,email_destinatario:formRNC.email_destinatario,status:formRNC.acao_corretiva?'EM_TRATATIVA':'ABERTA'}).eq('id',rncSel.id);addToast('RNC atualizada!');setModalRNC(false);fetchAll();}catch(e){addToast('Erro: '+e.message,'error');}finally{setEnviandoRNC(false);}}}><Save className="w-4 h-4"/>Salvar</Btn></div>}
       >
         {rncSel&&(
           <div className="space-y-4">
