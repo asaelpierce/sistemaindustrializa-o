@@ -13,7 +13,7 @@ import {
   ArrowUp, ArrowDown, TrendingUp, TrendingDown, Activity, MessageSquare,
   X, Send, Bot, Save, Menu, Bell, RefreshCw, RotateCcw, Factory,
   Layers, PieChart as PieChartIcon, BarChart as BarChartIcon, BarChart2, Link2,
-  AlertOctagon, KeyRound, Circle
+  AlertOctagon, KeyRound, Circle, ShieldAlert
 } from 'lucide-react';
 
 // ============================================================================
