@@ -505,6 +505,7 @@ export default function App(){
   const isAdmin=usuarioLogado?.perfil==='ADMIN';
   const isPCP=usuarioLogado?.perfil==='PCP'||isAdmin;
   const isExp=usuarioLogado?.perfil==='EXPEDICAO'||isAdmin;
+  const isQual=usuarioLogado?.perfil==='QUALIDADE'||isAdmin;
 
   const s=v=>(v===null||v===undefined)?'':String(v);
   const fmtD=(v,u='')=>{if(v===undefined||v===null||isNaN(v)||v==='')return'—';const n=parseFloat(v);const st=Number.isInteger(n)?n.toString():n.toFixed(2).replace('.',',');return u?`${st} ${u}`:st;};
@@ -1301,7 +1302,7 @@ Itens:
     ...(isExp?[{id:'EXPEDICAO',label:'Fila de Expedição',icon:Truck,group:'Logística',badge:remPend.length||null},{id:'FORNECEDORES',label:'Retorno de Peças',icon:RotateCcw,group:'Logística'},{id:'CONTROLE_GERAL',label:'Controle Geral',icon:ListChecks,group:'Logística'}]:[]),
     ...(isAdmin?[{id:'IA_ANALISTA',label:'Analista IA',icon:Bot,group:'Inteligência'},{id:'AUDITORIA',label:'Auditoria BOM',icon:FileSearch,group:'Inteligência'},{id:'GESTAO_USUARIOS',label:'Gestão de Acessos',icon:Users,group:'Sistema'}]:[]),
     {id:'CHAT_INTERNO',label:'Chat da Equipe',icon:MessageSquare,group:'Comunicação',badge:chatNaoLidos||null},
-    ...(isAdmin||usuarioLogado?.perfil==='QUALIDADE'?[{id:'QUALIDADE',label:'Qualidade',icon:ShieldAlert,group:'Qualidade'},{id:'RNCS',label:'Registro de RNCs',icon:AlertOctagon,group:'Qualidade'}]:[]),
+    ...(isQual?[{id:'QUALIDADE',label:'Qualidade',icon:ShieldAlert,group:'Qualidade'},{id:'RNCS',label:'Registro de RNCs',icon:AlertOctagon,group:'Qualidade'}]:[]),
   ];
   const groups=[...new Set(navItems.map(i=>i.group))];
   // ─── LOGIN ────────────────────────────────────────────────────────────────
