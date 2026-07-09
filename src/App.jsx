@@ -499,6 +499,8 @@ export default function App(){
   const [qualAba,setQualAba]=useState('INSPECOES');
   const [enviandoRNC,setEnviandoRNC]=useState(false);
   const [plannerQualUrl,setPlannerQualUrl]=useState('');
+  const [insEtapa,setInsEtapa]=useState(1); // 1=selecionar resultado, 2=detalhes
+  const [insResultadoSel,setInsResultadoSel]=useState(''); // resultado selecionado antes de preencher detalhes
 
   const isAdmin=usuarioLogado?.perfil==='ADMIN';
   const isPCP=usuarioLogado?.perfil==='PCP'||isAdmin;
@@ -981,22 +983,29 @@ export default function App(){
 
   const salvarInspecao = async(resultado) => {
     if(!formInspecao.material||!formInspecao.fornecedor) return addToast('Material e Fornecedor são obrigatórios.','error');
+    if(fotosUpload.length===0) return addToast('Anexe pelo menos uma foto da inspeção.','error');
     setIsLoading(true);
     try{
-      const id=`INS-${Date.now()}`;
-      const now=new Date().toISOString();
-      // Upload fotos como base64 em jsonb
+      const isExistente=!!inspecaoSel?.id;
+      const id=isExistente?inspecaoSel.id:`INS-${Date.now()}`;
+      const dataInsp=formInspecao.data_inspecao?new Date(formInspecao.data_inspecao).toISOString():new Date().toISOString();
       const fotosData=fotosUpload.map(f=>({nome:f.name,tipo:f.type,dados:f.b64,tamanho:f.size}));
-      const inspecao={
-        id,material:formInspecao.material,fornecedor:formInspecao.fornecedor,
+      const dadosInspecao={
+        material:formInspecao.material,fornecedor:formInspecao.fornecedor,
         nota_fiscal:formInspecao.nota_fiscal,pedido:formInspecao.pedido,
         quantidade:parseN(formInspecao.quantidade),unidade:formInspecao.unidade,
         resultado,observacoes:formInspecao.observacoes,
         itens_ressalva:formInspecao.itens_ressalva,fotos:fotosData,
-        inspetor:s(usuarioLogado?.nome),data_inspecao:now,status:'CONCLUIDA',
+        resolucao:formInspecao.resolucao||null,
+        inspetor:s(usuarioLogado?.nome),data_inspecao:dataInsp,status:'CONCLUIDA',
         notificado_teams:false
       };
-      const{error}=await supabase.from('inspecoes').insert([inspecao]);
+      let error;
+      if(isExistente){
+        ({error}=await supabase.from('inspecoes').update(dadosInspecao).eq('id',id));
+      } else {
+        ({error}=await supabase.from('inspecoes').insert([{id,...dadosInspecao}]));
+      }
       if(error)throw error;
 
       // Se reprovado, criar RNC automática
@@ -2712,7 +2721,7 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
                     <h2 className="text-xl font-black text-slate-900">Inspeções de Qualidade</h2>
                     <p className="text-sm text-slate-500 mt-0.5">Controle de recebimento, aprovações e registros de não conformidade</p>
                   </div>
-                  <Btn variant="primary" onClick={()=>{setFormInspecao({material:'',fornecedor:'',nota_fiscal:'',pedido:'',quantidade:'',unidade:'UN',observacoes:'',itens_ressalva:[],resultado:''});setFotosUpload([]);setModalNovaInspecao(true);}}>
+                  <Btn variant="primary" onClick={()=>{setFormInspecao({material:'',fornecedor:'',nota_fiscal:'',pedido:'',quantidade:'',unidade:'UN',observacoes:'',itens_ressalva:[],resultado:'',resolucao:''});setFotosUpload([]);setInspecaoSel(null);setInsEtapa(1);setInsResultadoSel('');setModalNovaInspecao(true);}}>
                     <ShieldAlert className="w-4 h-4"/>Nova Inspeção
                   </Btn>
                 </div>
@@ -2801,9 +2810,19 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
                                 <td className="px-5 py-3.5 text-xs text-slate-600">{s(ins.inspetor||'—')}</td>
                                 <td className="px-5 py-3.5 text-center">
                                   <div className="flex items-center justify-center gap-1">
-                                    <Btn variant="ghost" size="sm" onClick={()=>{setInspecaoSel(ins);setModalInspecaoDetalhe(true);}}>
-                                      <Eye className="w-3.5 h-3.5"/>
-                                    </Btn>
+                                    {ins.status==='PENDENTE'?(
+                                      <Btn variant="primary" size="sm" onClick={()=>{
+                                        setInspecaoSel(ins);
+                                        setFormInspecao({material:s(ins.material),fornecedor:s(ins.fornecedor),nota_fiscal:s(ins.nota_fiscal),pedido:s(ins.pedido),quantidade:ins.quantidade||'',unidade:ins.unidade||'UN',observacoes:'',itens_ressalva:[],resolucao:''});
+                                        setFotosUpload([]);setInsEtapa(1);setInsResultadoSel('');setModalNovaInspecao(true);
+                                      }}>
+                                        <ShieldAlert className="w-3.5 h-3.5"/>Inspecionar
+                                      </Btn>
+                                    ):(
+                                      <Btn variant="ghost" size="sm" onClick={()=>{setInspecaoSel(ins);setModalInspecaoDetalhe(true);}}>
+                                        <Eye className="w-3.5 h-3.5"/>
+                                      </Btn>
+                                    )}
                                     {ins.rnc_id&&<Btn variant="ghost" size="sm" onClick={()=>{setRncSel(rncsDb.find(r=>r.id===ins.rnc_id));setModalRNC(true);}}>
                                       <AlertOctagon className="w-3.5 h-3.5 text-red-500"/>
                                     </Btn>}
@@ -3108,60 +3127,206 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
       </Modal>
 
       {/* Modal: Nova Inspeção */}
-      <Modal open={modalNovaInspecao} onClose={()=>setModalNovaInspecao(false)} title="Registrar Inspeção" subtitle="Preencha os dados e registre o resultado da inspeção de recebimento" maxWidth="max-w-3xl">
-        <div className="space-y-5">
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <Field label="Material / Código" required><Inp placeholder="Ex: 14325 ou Chapa de Aço" value={formInspecao.material} onChange={e=>setFormInspecao({...formInspecao,material:e.target.value})}/></Field>
-            <Field label="Fornecedor" required><Inp placeholder="Ex: Industria Metalúrgica Perfitec" value={formInspecao.fornecedor} onChange={e=>setFormInspecao({...formInspecao,fornecedor:e.target.value})}/></Field>
-            <Field label="Nota Fiscal"><Inp placeholder="Ex: 26465" value={formInspecao.nota_fiscal} onChange={e=>setFormInspecao({...formInspecao,nota_fiscal:e.target.value})}/></Field>
-            <Field label="Pedido de Compra"><Inp placeholder="Número do pedido" value={formInspecao.pedido} onChange={e=>setFormInspecao({...formInspecao,pedido:e.target.value})}/></Field>
-            <Field label="Quantidade"><Inp type="number" value={formInspecao.quantidade} onChange={e=>setFormInspecao({...formInspecao,quantidade:e.target.value})}/></Field>
-            <Field label="Unidade"><Sel value={formInspecao.unidade} onChange={e=>setFormInspecao({...formInspecao,unidade:e.target.value})}><option>UN</option><option>KG</option><option>PC</option><option>M</option><option>M²</option><option>L</option></Sel></Field>
-          </div>
+      <Modal open={modalNovaInspecao} onClose={()=>{setModalNovaInspecao(false);setInsEtapa(1);setInsResultadoSel('');}} title={insEtapa===1?"Realizar Inspeção":"Detalhes da Inspeção — "+({APROVADO:'✅ Aprovar Total',APROVADO_RESSALVA:'⚠️ Aprovado c/ Ressalva',REPROVADO:'⛔ Reprovar (RNC)'}[insResultadoSel]||'')} subtitle={`${s(inspecaoSel?.material||formInspecao.material)} · ${s(inspecaoSel?.fornecedor||formInspecao.fornecedor)} · NF: ${s(inspecaoSel?.nota_fiscal||formInspecao.nota_fiscal||'—')}`} maxWidth="max-w-2xl">
 
-          <Field label="Observações / Itens Inspecionados">
-            <textarea rows={3} className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-2.5 text-sm outline-none focus:border-indigo-400 resize-none" placeholder="Descreva o que foi inspecionado, dimensões verificadas, normas aplicadas..." value={formInspecao.observacoes} onChange={e=>setFormInspecao({...formInspecao,observacoes:e.target.value})}/>
-          </Field>
-
-          {/* Itens de ressalva */}
-          <div>
-            <p className="text-xs font-black text-slate-600 uppercase tracking-wider mb-2">Itens com Não Conformidade / Ressalva (Max 10)</p>
-            <div className="flex gap-2 mb-2">
-              <Inp placeholder="Descreva o item..." value={novoItemRessalva} onChange={e=>setNovoItemRessalva(e.target.value)}
-                onKeyDown={e=>{if(e.key==='Enter'&&novoItemRessalva.trim()&&formInspecao.itens_ressalva.length<10){setFormInspecao(p=>({...p,itens_ressalva:[...p.itens_ressalva,novoItemRessalva.trim()]}));setNovoItemRessalva('');}}}/>
-              <Btn variant="secondary" onClick={()=>{if(novoItemRessalva.trim()&&formInspecao.itens_ressalva.length<10){setFormInspecao(p=>({...p,itens_ressalva:[...p.itens_ressalva,novoItemRessalva.trim()]}));setNovoItemRessalva('');}}} disabled={!novoItemRessalva.trim()||formInspecao.itens_ressalva.length>=10}>+ Add</Btn>
+        {/* ETAPA 1 — Selecionar resultado */}
+        {insEtapa===1&&(
+          <div className="space-y-5">
+            {/* Info do material */}
+            <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
+              <div><p className="text-[9px] font-black text-slate-400 uppercase tracking-wider mb-0.5">Material</p><p className="font-bold text-slate-800">{s(inspecaoSel?.material||formInspecao.material||'—')}</p></div>
+              <div><p className="text-[9px] font-black text-slate-400 uppercase tracking-wider mb-0.5">Fornecedor</p><p className="font-bold text-slate-800 truncate">{s(inspecaoSel?.fornecedor||formInspecao.fornecedor||'—')}</p></div>
+              <div><p className="text-[9px] font-black text-slate-400 uppercase tracking-wider mb-0.5">Nota Fiscal</p><p className="font-bold text-slate-800">{s(inspecaoSel?.nota_fiscal||formInspecao.nota_fiscal||'—')}</p></div>
+              <div><p className="text-[9px] font-black text-slate-400 uppercase tracking-wider mb-0.5">Pedido</p><p className="font-bold text-slate-800">{s(inspecaoSel?.pedido||formInspecao.pedido||'—')}</p></div>
             </div>
-            {formInspecao.itens_ressalva.length>0&&<div className="flex flex-wrap gap-2">{formInspecao.itens_ressalva.map((item,i)=><div key={i} className="flex items-center gap-1.5 bg-amber-50 border border-amber-200 text-amber-800 text-xs font-medium px-3 py-1.5 rounded-lg"><span>{item}</span><button onClick={()=>setFormInspecao(p=>({...p,itens_ressalva:p.itens_ressalva.filter((_,idx)=>idx!==i)}))} className="text-amber-500 hover:text-red-500"><X className="w-3 h-3"/></button></div>)}</div>}
-          </div>
 
-          {/* Upload de fotos */}
-          <div>
-            <p className="text-xs font-black text-slate-600 uppercase tracking-wider mb-2">Fotos da Inspeção</p>
-            <label className="flex flex-col items-center justify-center gap-2 border-2 border-dashed border-slate-200 rounded-xl p-6 cursor-pointer hover:border-indigo-300 hover:bg-indigo-50/30 transition-all">
-              <UploadCloud className="w-7 h-7 text-slate-300"/>
-              <p className="text-sm text-slate-400 font-medium">Clique ou arraste fotos aqui</p>
-              <p className="text-[10px] text-slate-400">JPG, PNG, WEBP — máx 5MB cada</p>
-              <input type="file" multiple accept="image/*" className="hidden" onChange={e=>handleFotoUpload(e.target.files)}/>
-            </label>
-            {fotosUpload.length>0&&<div className="grid grid-cols-4 sm:grid-cols-6 gap-2 mt-3">{fotosUpload.map((f,i)=><div key={i} className="relative group"><img src={f.preview} alt={f.name} className="w-full h-16 object-cover rounded-lg border border-slate-200"/><button onClick={()=>setFotosUpload(p=>p.filter((_,idx)=>idx!==i))} className="absolute top-0.5 right-0.5 bg-red-500 text-white rounded-full w-4 h-4 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-all"><X className="w-2.5 h-2.5"/></button></div>)}</div>}
-          </div>
-        </div>
+            {/* Data da inspeção */}
+            <Field label="Data da Inspeção" required>
+              <Inp type="date" value={formInspecao.data_inspecao||new Date().toISOString().split('T')[0]} onChange={e=>setFormInspecao({...formInspecao,data_inspecao:e.target.value})}/>
+            </Field>
 
-        {/* Botões de resultado */}
-        <div className="mt-6 pt-6 border-t border-slate-100">
-          <p className="text-xs font-black text-slate-600 uppercase tracking-wider mb-3 text-center">Selecione o Resultado da Inspeção</p>
-          <div className="grid grid-cols-3 gap-3">
-            <button onClick={()=>salvarInspecao('APROVADO')} disabled={isLoading||!formInspecao.material||!formInspecao.fornecedor} className="flex flex-col items-center gap-2 bg-emerald-50 hover:bg-emerald-100 border-2 border-emerald-200 hover:border-emerald-400 text-emerald-800 rounded-2xl p-4 transition-all disabled:opacity-40 disabled:cursor-not-allowed font-bold text-sm">
-              <CheckCircle className="w-8 h-8 text-emerald-500"/>✅ Aprovar Total
-            </button>
-            <button onClick={()=>salvarInspecao('APROVADO_RESSALVA')} disabled={isLoading||!formInspecao.material||!formInspecao.fornecedor} className="flex flex-col items-center gap-2 bg-amber-50 hover:bg-amber-100 border-2 border-amber-200 hover:border-amber-400 text-amber-800 rounded-2xl p-4 transition-all disabled:opacity-40 disabled:cursor-not-allowed font-bold text-sm">
-              <AlertTriangle className="w-8 h-8 text-amber-500"/>⚠️ Aprovado c/ Ressalva
-            </button>
-            <button onClick={()=>salvarInspecao('REPROVADO')} disabled={isLoading||!formInspecao.material||!formInspecao.fornecedor} className="flex flex-col items-center gap-2 bg-red-50 hover:bg-red-100 border-2 border-red-200 hover:border-red-400 text-red-800 rounded-2xl p-4 transition-all disabled:opacity-40 disabled:cursor-not-allowed font-bold text-sm">
-              <XCircle className="w-8 h-8 text-red-500"/>⛔ Reprovar (RNC)
-            </button>
+            {/* Quantidade inspecionada */}
+            <div className="grid grid-cols-2 gap-3">
+              <Field label="Quantidade Inspecionada">
+                <Inp type="number" placeholder="0" value={formInspecao.quantidade} onChange={e=>setFormInspecao({...formInspecao,quantidade:e.target.value})}/>
+              </Field>
+              <Field label="Unidade">
+                <Sel value={formInspecao.unidade} onChange={e=>setFormInspecao({...formInspecao,unidade:e.target.value})}>
+                  <option>UN</option><option>KG</option><option>PC</option><option>M</option><option>M²</option><option>L</option>
+                </Sel>
+              </Field>
+            </div>
+
+            {/* Selecionar resultado */}
+            <div>
+              <p className="text-xs font-black text-slate-600 uppercase tracking-wider mb-3">Resultado da Inspeção</p>
+              <div className="grid grid-cols-3 gap-3">
+                {[
+                  {val:'APROVADO',label:'Aprovar Total',icon:CheckCircle,color:'emerald',desc:'Material aprovado integralmente'},
+                  {val:'APROVADO_RESSALVA',label:'Aprovado c/ Ressalva',icon:AlertTriangle,color:'amber',desc:'Aprovado com itens a tratar'},
+                  {val:'REPROVADO',label:'Reprovar (RNC)',icon:XCircle,color:'red',desc:'Gera Registro de Não Conformidade'},
+                ].map(op=>(
+                  <button key={op.val} onClick={()=>setInsResultadoSel(op.val)}
+                    className={`flex flex-col items-center gap-2 border-2 rounded-2xl p-4 transition-all font-bold text-sm text-center ${insResultadoSel===op.val
+                      ?op.color==='emerald'?'bg-emerald-100 border-emerald-500 text-emerald-900':op.color==='amber'?'bg-amber-100 border-amber-500 text-amber-900':'bg-red-100 border-red-500 text-red-900'
+                      :op.color==='emerald'?'bg-emerald-50 border-emerald-200 text-emerald-700 hover:border-emerald-400':op.color==='amber'?'bg-amber-50 border-amber-200 text-amber-700 hover:border-amber-400':'bg-red-50 border-red-200 text-red-700 hover:border-red-400'}`}>
+                    <op.icon className={`w-8 h-8 ${op.color==='emerald'?'text-emerald-500':op.color==='amber'?'text-amber-500':'text-red-500'}`}/>
+                    <span>{op.label}</span>
+                    <span className="text-[10px] font-normal opacity-70">{op.desc}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="flex justify-end pt-2">
+              <Btn variant="primary" disabled={!insResultadoSel} onClick={()=>setInsEtapa(2)}>
+                Continuar →
+              </Btn>
+            </div>
           </div>
-        </div>
+        )}
+
+        {/* ETAPA 2 — Detalhes conforme resultado */}
+        {insEtapa===2&&(
+          <div className="space-y-5">
+
+            {/* APROVADO TOTAL — só fotos e obs */}
+            {insResultadoSel==='APROVADO'&&(
+              <div className="space-y-4">
+                <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-4 flex items-center gap-3">
+                  <CheckCircle className="w-6 h-6 text-emerald-500 flex-shrink-0"/>
+                  <p className="text-sm font-bold text-emerald-800">Material será aprovado integralmente. Anexe as fotos da inspeção.</p>
+                </div>
+                <Field label="Observações (opcional)">
+                  <textarea rows={2} className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-2.5 text-sm outline-none focus:border-emerald-400 resize-none" placeholder="Alguma observação sobre o material inspecionado..." value={formInspecao.observacoes} onChange={e=>setFormInspecao({...formInspecao,observacoes:e.target.value})}/>
+                </Field>
+              </div>
+            )}
+
+            {/* APROVADO COM RESSALVA */}
+            {insResultadoSel==='APROVADO_RESSALVA'&&(
+              <div className="space-y-4">
+                <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 flex items-center gap-3">
+                  <AlertTriangle className="w-6 h-6 text-amber-500 flex-shrink-0"/>
+                  <p className="text-sm font-bold text-amber-800">Material aprovado com ressalvas. Detalhe os itens e como será resolvido.</p>
+                </div>
+
+                <Field label="Justificativa da Ressalva" required>
+                  <textarea rows={2} className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-2.5 text-sm outline-none focus:border-amber-400 resize-none" placeholder="Descreva o motivo geral da ressalva..." value={formInspecao.observacoes} onChange={e=>setFormInspecao({...formInspecao,observacoes:e.target.value})}/>
+                </Field>
+
+                <div>
+                  <p className="text-xs font-black text-slate-600 uppercase tracking-wider mb-2">Itens com Ressalva (máx 10)</p>
+                  <div className="flex gap-2 mb-2">
+                    <Inp placeholder="Descreva o item com ressalva..." value={novoItemRessalva} onChange={e=>setNovoItemRessalva(e.target.value)}
+                      onKeyDown={e=>{if(e.key==='Enter'&&novoItemRessalva.trim()&&formInspecao.itens_ressalva.length<10){setFormInspecao(p=>({...p,itens_ressalva:[...p.itens_ressalva,novoItemRessalva.trim()]}));setNovoItemRessalva('');}}}/>
+                    <Btn variant="secondary" onClick={()=>{if(novoItemRessalva.trim()&&formInspecao.itens_ressalva.length<10){setFormInspecao(p=>({...p,itens_ressalva:[...p.itens_ressalva,novoItemRessalva.trim()]}));setNovoItemRessalva('');}}} disabled={!novoItemRessalva.trim()||formInspecao.itens_ressalva.length>=10}>+ Add</Btn>
+                  </div>
+                  {formInspecao.itens_ressalva.length>0&&(
+                    <div className="flex flex-wrap gap-2">
+                      {formInspecao.itens_ressalva.map((item,i)=>(
+                        <div key={i} className="flex items-center gap-1.5 bg-amber-50 border border-amber-200 text-amber-800 text-xs font-medium px-3 py-1.5 rounded-lg">
+                          <span>{item}</span>
+                          <button onClick={()=>setFormInspecao(p=>({...p,itens_ressalva:p.itens_ressalva.filter((_,idx)=>idx!==i)}))} className="text-amber-500 hover:text-red-500"><X className="w-3 h-3"/></button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                <div>
+                  <p className="text-xs font-black text-slate-600 uppercase tracking-wider mb-2">Como será resolvido?</p>
+                  <div className="grid grid-cols-2 gap-3">
+                    {[
+                      {val:'Interno',label:'Resolveremos Internamente',icon:'🏭'},
+                      {val:'Parcial',label:'Devolução Parcial ao Fornecedor',icon:'↩️'},
+                    ].map(op=>(
+                      <button key={op.val} onClick={()=>setFormInspecao(p=>({...p,resolucao:op.val}))}
+                        className={`flex items-center gap-3 border-2 rounded-xl p-3.5 text-left transition-all ${formInspecao.resolucao===op.val?'bg-indigo-50 border-indigo-400 text-indigo-900':'bg-slate-50 border-slate-200 text-slate-700 hover:border-indigo-300'}`}>
+                        <span className="text-xl">{op.icon}</span>
+                        <span className="text-xs font-bold">{op.label}</span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* REPROVADO */}
+            {insResultadoSel==='REPROVADO'&&(
+              <div className="space-y-4">
+                <div className="bg-red-50 border border-red-200 rounded-xl p-4 flex items-center gap-3">
+                  <XCircle className="w-6 h-6 text-red-500 flex-shrink-0"/>
+                  <div>
+                    <p className="text-sm font-bold text-red-800">Material reprovado. Uma RNC será gerada automaticamente.</p>
+                    <p className="text-[10px] text-red-600 mt-0.5">O setor de compras será notificado com o documento de não conformidade.</p>
+                  </div>
+                </div>
+
+                <Field label="Justificativa da Reprovação" required>
+                  <textarea rows={3} className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-2.5 text-sm outline-none focus:border-red-400 resize-none" placeholder="Descreva detalhadamente o motivo da reprovação, defeitos encontrados..." value={formInspecao.observacoes} onChange={e=>setFormInspecao({...formInspecao,observacoes:e.target.value})}/>
+                </Field>
+
+                <div>
+                  <p className="text-xs font-black text-slate-600 uppercase tracking-wider mb-2">Itens Reprovados (máx 10)</p>
+                  <div className="flex gap-2 mb-2">
+                    <Inp placeholder="Descreva o item reprovado..." value={novoItemRessalva} onChange={e=>setNovoItemRessalva(e.target.value)}
+                      onKeyDown={e=>{if(e.key==='Enter'&&novoItemRessalva.trim()&&formInspecao.itens_ressalva.length<10){setFormInspecao(p=>({...p,itens_ressalva:[...p.itens_ressalva,novoItemRessalva.trim()]}));setNovoItemRessalva('');}}}/>
+                    <Btn variant="secondary" onClick={()=>{if(novoItemRessalva.trim()&&formInspecao.itens_ressalva.length<10){setFormInspecao(p=>({...p,itens_ressalva:[...p.itens_ressalva,novoItemRessalva.trim()]}));setNovoItemRessalva('');}}} disabled={!novoItemRessalva.trim()||formInspecao.itens_ressalva.length>=10}>+ Add</Btn>
+                  </div>
+                  {formInspecao.itens_ressalva.length>0&&(
+                    <div className="flex flex-wrap gap-2">
+                      {formInspecao.itens_ressalva.map((item,i)=>(
+                        <div key={i} className="flex items-center gap-1.5 bg-red-50 border border-red-200 text-red-800 text-xs font-medium px-3 py-1.5 rounded-lg">
+                          <span>{item}</span>
+                          <button onClick={()=>setFormInspecao(p=>({...p,itens_ressalva:p.itens_ressalva.filter((_,idx)=>idx!==i)}))} className="text-red-400 hover:text-red-600"><X className="w-3 h-3"/></button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* FOTOS — obrigatório em todos os casos */}
+            <div>
+              <p className="text-xs font-black text-slate-600 uppercase tracking-wider mb-2 flex items-center gap-2">
+                Fotos da Inspeção
+                <span className="text-[9px] font-bold text-red-500 bg-red-50 border border-red-200 px-1.5 py-0.5 rounded">Obrigatório</span>
+              </p>
+              <label className="flex flex-col items-center justify-center gap-2 border-2 border-dashed border-slate-200 rounded-xl p-5 cursor-pointer hover:border-indigo-300 hover:bg-indigo-50/30 transition-all">
+                <UploadCloud className="w-7 h-7 text-slate-300"/>
+                <p className="text-sm text-slate-400 font-medium">Clique ou arraste fotos aqui</p>
+                <p className="text-[10px] text-slate-400">JPG, PNG, WEBP — máx 5MB cada</p>
+                <input type="file" multiple accept="image/*" className="hidden" onChange={e=>handleFotoUpload(e.target.files)}/>
+              </label>
+              {fotosUpload.length>0&&(
+                <div className="grid grid-cols-4 sm:grid-cols-6 gap-2 mt-3">
+                  {fotosUpload.map((f,i)=>(
+                    <div key={i} className="relative group">
+                      <img src={f.preview} alt={f.name} className="w-full h-16 object-cover rounded-lg border border-slate-200"/>
+                      <button onClick={()=>setFotosUpload(p=>p.filter((_,idx)=>idx!==i))} className="absolute top-0.5 right-0.5 bg-red-500 text-white rounded-full w-4 h-4 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-all"><X className="w-2.5 h-2.5"/></button>
+                    </div>
+                  ))}
+                </div>
+              )}
+              {fotosUpload.length===0&&<p className="text-[10px] text-red-500 font-bold mt-1.5">Pelo menos 1 foto é obrigatória</p>}
+            </div>
+
+            {/* Botões */}
+            <div className="flex justify-between pt-2 border-t border-slate-100">
+              <Btn variant="secondary" onClick={()=>setInsEtapa(1)}>← Voltar</Btn>
+              <Btn variant={insResultadoSel==='APROVADO'?'success':insResultadoSel==='REPROVADO'?'danger':'warning'}
+                disabled={isLoading||fotosUpload.length===0||(insResultadoSel==='APROVADO_RESSALVA'&&!formInspecao.observacoes)||(insResultadoSel==='REPROVADO'&&!formInspecao.observacoes)}
+                onClick={()=>salvarInspecao(insResultadoSel)}>
+                {isLoading?<><Loader2 className="w-4 h-4 animate-spin"/>Salvando...</>
+                  :insResultadoSel==='APROVADO'?<><CheckCircle className="w-4 h-4"/>Confirmar Aprovação</>
+                  :insResultadoSel==='APROVADO_RESSALVA'?<><AlertTriangle className="w-4 h-4"/>Confirmar Ressalva</>
+                  :<><XCircle className="w-4 h-4"/>Reprovar e Gerar RNC</>}
+              </Btn>
+            </div>
+          </div>
+        )}
       </Modal>
 
       {/* Modal: Detalhe Inspeção */}
