@@ -534,19 +534,17 @@ export default function App(){
 
   const fetchAll=useCallback(async()=>{
     if(!supabase)return;
+    const perfil=usuarioLogado?.perfil;
+    const isQualidadeOnly=perfil==='QUALIDADE';
     try{
-      const[pR,eR,rR,uR,cR,chR,rlR]=await Promise.all([
-        supabase.from('produtos').select('*'),
-        supabase.from('estoque_mp').select('*'),
-        supabase.from('remessas').select('*').order('data_criacao',{ascending:false}),
-        supabase.from('perfis_usuarios').select('*'),
+      // Dados leves — carrega para todos os perfis
+      const[uR,cR,chR,insR,rncR]=await Promise.all([
+        supabase.from('perfis_usuarios').select('id,nome,email,perfil'),
         supabase.from('configuracoes').select('*').in('chave',['modelo_sgq','openai_api_key','planner_flow_url','qual_email_url','qual_teams_url']),
         supabase.from('chat_interno').select('*').order('data_envio',{ascending:true}),
-        supabase.from('relatorios_ia').select('*').order('data_criacao',{ascending:false})
+        supabase.from('inspecoes').select('*').order('data_criacao',{ascending:false}),
+        supabase.from('rncs').select('*').order('data_abertura',{ascending:false})
       ]);
-      if(pR.data){const m={};pR.data.forEach(p=>{if(p.codigo_pa)m[p.codigo_pa]=p;});setProdutosDb(m);}
-      if(eR.data){const m={};eR.data.forEach(e=>{if(e.codigo_mp)m[e.codigo_mp]=e;});setEstoqueDb(m);}
-      if(rR.data)setRemessasDb(rR.data);
       if(uR.data)setUsuariosDb(uR.data);
       if(cR.data){
         const modelo=cR.data.find(c=>c.chave==='modelo_sgq');
@@ -557,17 +555,24 @@ export default function App(){
         const qt=cR.data.find(c=>c.chave==='qual_teams_url');if(qt?.valor_json)setQualTeamsUrl(qt.valor_json.url);
       }
       if(chR.data){if(chatInternoDb.length>0&&chR.data.length>chatInternoDb.length&&!chatEqOpen)setChatEqUnread(true);setChatInternoDb(chR.data);}
-      if(rlR.data)setRelatoriosIaDb(rlR.data);
-      // Qualidade
-      const [insR,rncR]=await Promise.all([
-        supabase.from('inspecoes').select('*').order('data_criacao',{ascending:false}),
-        supabase.from('rncs').select('*').order('data_abertura',{ascending:false})
-      ]);
       if(insR.data)setInspecoesDb(insR.data);
       if(rncR.data)setRncsDb(rncR.data);
+      // Dados pesados — so para perfis que precisam
+      if(!isQualidadeOnly){
+        const[pR,eR,rR,rlR]=await Promise.all([
+          supabase.from('produtos').select('*'),
+          supabase.from('estoque_mp').select('*'),
+          supabase.from('remessas').select('*').order('data_criacao',{ascending:false}),
+          supabase.from('relatorios_ia').select('*').order('data_criacao',{ascending:false})
+        ]);
+        if(pR.data){const m={};pR.data.forEach(p=>{if(p.codigo_pa)m[p.codigo_pa]=p;});setProdutosDb(m);}
+        if(eR.data){const m={};eR.data.forEach(e=>{if(e.codigo_mp)m[e.codigo_mp]=e;});setEstoqueDb(m);}
+        if(rR.data)setRemessasDb(rR.data);
+        if(rlR.data)setRelatoriosIaDb(rlR.data);
+      }
       setDbOnline(true);
     }catch(e){setDbOnline(false);}
-  },[supabase,chatEqOpen]);
+  },[supabase,chatEqOpen,usuarioLogado?.perfil]);
 
   useEffect(()=>{if(supabase){fetchAll();const iv=setInterval(fetchAll,10000);return()=>clearInterval(iv);}},[supabase]);
   useEffect(()=>{if(chatEndRef.current)chatEndRef.current.scrollIntoView({behavior:'smooth'});},[chatInternoDb,chatEqOpen]);
