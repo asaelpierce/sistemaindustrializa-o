@@ -548,38 +548,41 @@ export default function App(){
     }catch(e){setDbOnline(false);}
   },[supabase]);
 
+  // Flag para carregar modelo só uma vez
+  const modeloCarregadoRef=React.useRef(false);
+
   const fetchAll=useCallback(async()=>{
     if(!supabase)return;
     const perfil=usuarioLogado?.perfil;
     const isQualidadeOnly=perfil==='QUALIDADE';
     try{
-      // Dados leves — carrega para todos os perfis
-      const[uR,cR,chR,insR,rncR]=await Promise.all([
+      // Sempre: usuários + configurações (sem modelo_sgq nos ciclos repetidos)
+      const chaves=modeloCarregadoRef.current
+        ?['openai_api_key','planner_flow_url','qual_email_url','qual_teams_url']
+        :['modelo_sgq','openai_api_key','planner_flow_url','qual_email_url','qual_teams_url'];
+
+      const[uR,cR]=await Promise.all([
         supabase.from('perfis_usuarios').select('id,nome,email,perfil'),
-        supabase.from('configuracoes').select('*').in('chave',['modelo_sgq','openai_api_key','planner_flow_url','qual_email_url','qual_teams_url']),
-        supabase.from('chat_interno').select('*').order('data_envio',{ascending:true}),
-        supabase.from('inspecoes').select('*').order('data_criacao',{ascending:false}),
-        supabase.from('rncs').select('*').order('data_abertura',{ascending:false})
+        supabase.from('configuracoes').select('*').in('chave',chaves),
       ]);
       if(uR.data)setUsuariosDb(uR.data);
       if(cR.data){
-        const modelo=cR.data.find(c=>c.chave==='modelo_sgq');
-        if(modelo?.valor_json){const b64=modelo.valor_json.data;setNomeTemplate(modelo.valor_json.nome);const bs=window.atob(b64);const bytes=new Uint8Array(bs.length);for(let i=0;i<bs.length;i++)bytes[i]=bs.charCodeAt(i);setTemplateBuf(bytes.buffer);}
+        if(!modeloCarregadoRef.current){
+          const modelo=cR.data.find(c=>c.chave==='modelo_sgq');
+          if(modelo?.valor_json){const b64=modelo.valor_json.data;setNomeTemplate(modelo.valor_json.nome);const bs=window.atob(b64);const bytes=new Uint8Array(bs.length);for(let i=0;i<bs.length;i++)bytes[i]=bs.charCodeAt(i);setTemplateBuf(bytes.buffer);modeloCarregadoRef.current=true;}
+        }
         const ak=cR.data.find(c=>c.chave==='openai_api_key');if(ak?.valor_json)setOpenAIKey(ak.valor_json.key);
         const pk=cR.data.find(c=>c.chave==='planner_flow_url');if(pk?.valor_json)setPlannerUrl(pk.valor_json.url);
         const qe=cR.data.find(c=>c.chave==='qual_email_url');if(qe?.valor_json)setQualEmailUrl(qe.valor_json.url);
         const qt=cR.data.find(c=>c.chave==='qual_teams_url');if(qt?.valor_json)setQualTeamsUrl(qt.valor_json.url);
       }
-      if(chR.data){if(chatInternoDb.length>0&&chR.data.length>chatInternoDb.length&&!chatEqOpen)setChatEqUnread(true);setChatInternoDb(chR.data);}
-      if(insR.data)setInspecoesDb(insR.data);
-      if(rncR.data)setRncsDb(rncR.data);
-      // Dados pesados — so para perfis que precisam
+      // Dados pesados — só para perfis que precisam
       if(!isQualidadeOnly){
         const[pR,eR,rR,rlR]=await Promise.all([
-          supabase.from('produtos').select('*'),
-          supabase.from('estoque_mp').select('*'),
-          supabase.from('remessas').select('*').order('data_criacao',{ascending:false}),
-          supabase.from('relatorios_ia').select('*').order('data_criacao',{ascending:false})
+          supabase.from('produtos').select('codigo_pa,descricao,materiais'),
+          supabase.from('estoque_mp').select('codigo_mp,descricao,saldo_disponivel,unidade'),
+          supabase.from('remessas').select('*').order('data_criacao',{ascending:false}).limit(200),
+          supabase.from('relatorios_ia').select('*').order('data_criacao',{ascending:false}).limit(50)
         ]);
         if(pR.data){const m={};pR.data.forEach(p=>{if(p.codigo_pa)m[p.codigo_pa]=p;});setProdutosDb(m);}
         if(eR.data){const m={};eR.data.forEach(e=>{if(e.codigo_mp)m[e.codigo_mp]=e;});setEstoqueDb(m);}
@@ -588,9 +591,11 @@ export default function App(){
       }
       setDbOnline(true);
     }catch(e){setDbOnline(false);}
-  },[supabase,chatEqOpen,usuarioLogado?.perfil]);
+  },[supabase,usuarioLogado?.perfil]);
 
-  useEffect(()=>{if(supabase){fetchAll();const iv=setInterval(fetchAll,30000);return()=>clearInterval(iv);}},[supabase]);
+  // fetchAll na inicialização + a cada 60s (dados pesados)
+  useEffect(()=>{if(supabase){fetchAll();fetchQual();const iv=setInterval(fetchAll,60000);return()=>clearInterval(iv);}},[supabase]);
+  // fetchQual a cada 10s (leve: inspeções, RNCs, chat)
   useEffect(()=>{if(supabase){const iv=setInterval(fetchQual,10000);return()=>clearInterval(iv);}},[supabase,fetchQual]);
   useEffect(()=>{if(chatEndRef.current)chatEndRef.current.scrollIntoView({behavior:'smooth'});},[chatInternoDb,chatEqOpen]);
 
