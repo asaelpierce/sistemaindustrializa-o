@@ -574,7 +574,7 @@ export default function App(){
     }catch(e){setDbOnline(false);}
   },[supabase,chatEqOpen,usuarioLogado?.perfil]);
 
-  useEffect(()=>{if(supabase){fetchAll();const iv=setInterval(fetchAll,10000);return()=>clearInterval(iv);}},[supabase]);
+  useEffect(()=>{if(supabase){fetchAll();const iv=setInterval(fetchAll,30000);return()=>clearInterval(iv);}},[supabase]);
   useEffect(()=>{if(chatEndRef.current)chatEndRef.current.scrollIntoView({behavior:'smooth'});},[chatInternoDb,chatEqOpen]);
 
   const handleSort=(st,setSt,k)=>setSt(p=>({key:k,dir:p.key===k&&p.dir==='asc'?'desc':'asc'}));
@@ -1136,6 +1136,9 @@ export default function App(){
 
     // Enviar email com KdB143 preenchido via Power Automate
     try{
+      if(!qualEmailUrl){
+        addToast('URL de email não configurada. Configure em Qualidade → Configurações.','warning');
+      }
       if(qualEmailUrl&&rnc){
         // Buscar fotos da inspeção vinculada
         const insp=inspecoesDb.find(i=>i.rnc_id===rncId);
@@ -3185,11 +3188,11 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
                                   <Camera className="w-3.5 h-3.5 text-indigo-500"/>Fotos
                                 </Btn>
                               )}
-                              <Btn variant="secondary" size="sm" onClick={()=>{setRncSel(rnc);setFormRNC({descricao_nc:rnc.descricao_nc||'',causa_raiz:rnc.causa_raiz||'',acao_corretiva:rnc.acao_corretiva||'',responsavel:rnc.responsavel||'',prazo:rnc.prazo||'',gravidade:rnc.gravidade||'MEDIA',email_destinatario:rnc.email_destinatario||'',itens:rnc.itens||[]});setModalRNC(true);}}>
+                              <Btn variant="secondary" size="sm" onClick={()=>{setRncSel(rnc);setFormRNC({descricao_nc:rnc.descricao_nc||'',descricao_material:rnc.descricao_material||rnc.descricao_produto||'',data_recebimento:rnc.data_recebimento||'',data_inspecao:rnc.data_inspecao||'',qtd_reprovada:rnc.qtd_reprovada||'',causa_raiz:rnc.causa_raiz||'',acao_corretiva:rnc.acao_corretiva||'',responsavel:rnc.responsavel||'',prazo:rnc.prazo||'',gravidade:rnc.gravidade||'MEDIA',email_destinatario:rnc.email_destinatario||'',itens:rnc.itens||[]});setModalRNC(true);}}>
                                 <Edit3 className="w-3.5 h-3.5"/>Editar
                               </Btn>
                               {rnc.status!=='ENCERRADA'&&(()=>{
-                                const pronto=rnc.causa_raiz?.trim()&&rnc.acao_corretiva?.trim()&&rnc.responsavel?.trim();
+                                const pronto=rnc.causa_raiz?.trim()&&rnc.acao_corretiva?.trim()&&rnc.responsavel?.trim()&&rnc.descricao_material?.trim()&&rnc.data_recebimento&&rnc.qtd_reprovada;
                                 return pronto
                                   ?<Btn variant="success" size="sm" onClick={()=>encerrarRNC(rnc.id)}>
                                     <CheckCircle className="w-3.5 h-3.5"/>Encerrar e Enviar Email
@@ -3669,41 +3672,113 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
       </Modal>
 
       {/* Modal: RNC */}
-      <Modal open={modalRNC&&!!rncSel} onClose={()=>setModalRNC(false)} title={`RNC: ${s(rncSel?.numero||rncSel?.id)}`} subtitle={`${s(rncSel?.material)} · ${s(rncSel?.fornecedor)}`} maxWidth="max-w-2xl"
-        footer={<div className="flex justify-between"><Btn variant="secondary" onClick={()=>{setPreviewRNCData({...rncSel});setModalPreviewRNC(true);}}><FileSearch className="w-4 h-4"/>Gerar KdB143</Btn><Btn variant="primary" disabled={enviandoRNC} onClick={async()=>{
-  setEnviandoRNC(true);
-  try{
-    const novoStatus=(formRNC.causa_raiz?.trim()&&formRNC.acao_corretiva?.trim()&&formRNC.responsavel?.trim())?'EM_TRATATIVA':'ABERTA';
-    await supabase.from('rncs').update({
-      causa_raiz:formRNC.causa_raiz,
-      acao_corretiva:formRNC.acao_corretiva,
-      responsavel:formRNC.responsavel,
-      prazo:formRNC.prazo||null,
-      gravidade:formRNC.gravidade,
-      email_destinatario:formRNC.email_destinatario,
-      status:novoStatus
-    }).eq('id',rncSel.id);
-    addToast(novoStatus==='EM_TRATATIVA'?'RNC em tratativa — pronta para encerrar!':'RNC salva!');
-    setModalRNC(false);fetchAll();
-  }catch(e){addToast('Erro: '+e.message,'error');}
-  finally{setEnviandoRNC(false);}
-}}><Save className="w-4 h-4"/>Salvar</Btn></div>}
+      <Modal open={modalRNC&&!!rncSel} onClose={()=>setModalRNC(false)} title={`Preencher RNC: ${s(rncSel?.numero_global||rncSel?.numero||rncSel?.id)}`} subtitle={`${s(rncSel?.material)} · ${s(rncSel?.fornecedor)} · NF: ${s(rncSel?.nota_fiscal||'—')}`} maxWidth="max-w-2xl"
+        footer={<div className="flex justify-between items-center gap-2 flex-wrap">
+          <p className="text-[10px] text-slate-400">Preencha todos os campos obrigatórios para liberar o envio do email.</p>
+          <div className="flex gap-2">
+            <Btn variant="secondary" onClick={()=>setModalRNC(false)}>Cancelar</Btn>
+            <Btn variant="primary" disabled={enviandoRNC} onClick={async()=>{
+              setEnviandoRNC(true);
+              try{
+                const pronto=formRNC.causa_raiz?.trim()&&formRNC.acao_corretiva?.trim()&&formRNC.responsavel?.trim()&&formRNC.descricao_material?.trim()&&formRNC.data_recebimento&&formRNC.qtd_reprovada;
+                const novoStatus=pronto?'EM_TRATATIVA':'ABERTA';
+                await supabase.from('rncs').update({
+                  causa_raiz:formRNC.causa_raiz,
+                  acao_corretiva:formRNC.acao_corretiva,
+                  responsavel:formRNC.responsavel,
+                  prazo:formRNC.prazo||null,
+                  gravidade:formRNC.gravidade,
+                  email_destinatario:formRNC.email_destinatario,
+                  descricao_material:formRNC.descricao_material,
+                  descricao_nc:formRNC.descricao_nc,
+                  data_recebimento:formRNC.data_recebimento||null,
+                  data_inspecao:formRNC.data_inspecao||null,
+                  qtd_reprovada:parseFloat(formRNC.qtd_reprovada)||0,
+                  status:novoStatus
+                }).eq('id',rncSel.id);
+                addToast(pronto?'RNC salva — pronta para encerrar e enviar email!':'RNC salva! Complete os campos obrigatórios para liberar o envio.');
+                setModalRNC(false);fetchAll();
+              }catch(e){addToast('Erro: '+e.message,'error');}
+              finally{setEnviandoRNC(false);}
+            }}>
+              {enviandoRNC?<><Loader2 className="w-4 h-4 animate-spin"/>Salvando...</>:<><Save className="w-4 h-4"/>Salvar RNC</>}
+            </Btn>
+          </div>
+        </div>}
       >
         {rncSel&&(
           <div className="space-y-4">
-            <div className="bg-red-50 border border-red-200 rounded-xl p-4">
-              <p className="text-xs font-black text-red-700 uppercase tracking-wider mb-1">Descrição da Não Conformidade</p>
-              <p className="text-sm text-red-900 font-medium">{s(rncSel.descricao_nc)}</p>
+
+            {/* Progresso visual */}
+            {(()=>{
+              const campos=[formRNC.descricao_nc,formRNC.descricao_material,formRNC.data_recebimento,formRNC.qtd_reprovada,formRNC.causa_raiz,formRNC.acao_corretiva,formRNC.responsavel];
+              const preenchidos=campos.filter(c=>c?.toString().trim()).length;
+              const pct=Math.round((preenchidos/campos.length)*100);
+              const pronto=preenchidos===campos.length;
+              return(
+                <div className={`rounded-xl p-3 border flex items-center gap-3 ${pronto?'bg-emerald-50 border-emerald-200':'bg-amber-50 border-amber-200'}`}>
+                  <div className="flex-1">
+                    <div className="flex justify-between text-xs font-bold mb-1">
+                      <span className={pronto?'text-emerald-700':'text-amber-700'}>{pronto?'✅ Todos os campos preenchidos — pode encerrar e enviar email!':'Preencha os campos para liberar o envio do email'}</span>
+                      <span className={pronto?'text-emerald-600':'text-amber-600'}>{preenchidos}/{campos.length}</span>
+                    </div>
+                    <div className="h-1.5 bg-white/60 rounded-full overflow-hidden">
+                      <div className={`h-full rounded-full transition-all ${pronto?'bg-emerald-500':'bg-amber-400'}`} style={{width:`${pct}%`}}/>
+                    </div>
+                  </div>
+                </div>
+              );
+            })()}
+
+            {/* Dados do documento (para o KdB143) */}
+            <div className="bg-slate-50 rounded-xl border border-slate-200 p-4 space-y-3">
+              <p className="text-[10px] font-black text-slate-500 uppercase tracking-wider">Dados do Documento KdB143</p>
+              <Field label="Descrição da NC — o que aconteceu (A9)" required>
+                <textarea rows={2} className="w-full bg-white border border-slate-200 rounded-xl px-4 py-2.5 text-sm outline-none focus:border-red-400 resize-none" placeholder="Descreva detalhadamente a não conformidade encontrada..." value={formRNC.descricao_nc||''} onChange={e=>setFormRNC({...formRNC,descricao_nc:e.target.value})}/>
+              </Field>
+              <Field label="O que é o material? (D6)" required>
+                <Inp placeholder="Ex: Chapa de Aço Inox 3mm, Parafuso M8..." value={formRNC.descricao_material||''} onChange={e=>setFormRNC({...formRNC,descricao_material:e.target.value})}/>
+              </Field>
+              <div className="grid grid-cols-2 gap-3">
+                <Field label="Data de Recebimento (B7)" required>
+                  <Inp type="date" value={formRNC.data_recebimento?.split('T')[0]||''} onChange={e=>setFormRNC({...formRNC,data_recebimento:e.target.value})}/>
+                </Field>
+                <Field label="Qtd Reprovada (H7)" required>
+                  <Inp type="number" placeholder="0" value={formRNC.qtd_reprovada||''} onChange={e=>setFormRNC({...formRNC,qtd_reprovada:e.target.value})}/>
+                </Field>
+              </div>
+              <Field label="Data da Inspeção (G38)">
+                <Inp type="date" value={formRNC.data_inspecao?.split('T')[0]||''} onChange={e=>setFormRNC({...formRNC,data_inspecao:e.target.value})}/>
+              </Field>
             </div>
-            <div className="grid grid-cols-2 gap-4">
-              <Field label="Gravidade"><Sel value={formRNC.gravidade} onChange={e=>setFormRNC({...formRNC,gravidade:e.target.value})}><option value="BAIXA">Baixa</option><option value="MEDIA">Média</option><option value="ALTA">Alta</option><option value="CRITICA">Crítica</option></Sel></Field>
-              <Field label="Responsável"><Inp placeholder="Nome do responsável" value={formRNC.responsavel} onChange={e=>setFormRNC({...formRNC,responsavel:e.target.value})}/></Field>
-            </div>
-            <Field label="Causa Raiz"><textarea rows={2} className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-2.5 text-sm outline-none focus:border-indigo-400 resize-none" placeholder="Qual foi a causa raiz da não conformidade?" value={formRNC.causa_raiz} onChange={e=>setFormRNC({...formRNC,causa_raiz:e.target.value})}/></Field>
-            <Field label="Ação Corretiva"><textarea rows={2} className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-2.5 text-sm outline-none focus:border-indigo-400 resize-none" placeholder="Descreva a ação corretiva a ser tomada" value={formRNC.acao_corretiva} onChange={e=>setFormRNC({...formRNC,acao_corretiva:e.target.value})}/></Field>
-            <div className="grid grid-cols-2 gap-4">
-              <Field label="Prazo para Correção"><Inp type="date" value={formRNC.prazo} onChange={e=>setFormRNC({...formRNC,prazo:e.target.value})}/></Field>
-              <Field label="Email Compras (para enviar PDF)"><Inp type="email" placeholder="compras@kalenborn.com.br" value={formRNC.email_destinatario} onChange={e=>setFormRNC({...formRNC,email_destinatario:e.target.value})}/></Field>
+
+            {/* Análise e ação */}
+            <div className="bg-slate-50 rounded-xl border border-slate-200 p-4 space-y-3">
+              <p className="text-[10px] font-black text-slate-500 uppercase tracking-wider">Análise e Tratativa</p>
+              <div className="grid grid-cols-2 gap-3">
+                <Field label="Gravidade">
+                  <Sel value={formRNC.gravidade} onChange={e=>setFormRNC({...formRNC,gravidade:e.target.value})}>
+                    <option value="BAIXA">Baixa</option><option value="MEDIA">Média</option><option value="ALTA">Alta</option><option value="CRITICA">Crítica</option>
+                  </Sel>
+                </Field>
+                <Field label="Responsável (B45)" required>
+                  <Inp placeholder="Nome do responsável" value={formRNC.responsavel||''} onChange={e=>setFormRNC({...formRNC,responsavel:e.target.value})}/>
+                </Field>
+              </div>
+              <Field label="Causa Raiz (A41)" required>
+                <textarea rows={2} className="w-full bg-white border border-slate-200 rounded-xl px-4 py-2.5 text-sm outline-none focus:border-indigo-400 resize-none" placeholder="Qual foi a causa raiz?" value={formRNC.causa_raiz||''} onChange={e=>setFormRNC({...formRNC,causa_raiz:e.target.value})}/>
+              </Field>
+              <Field label="Ação Corretiva (A43)" required>
+                <textarea rows={2} className="w-full bg-white border border-slate-200 rounded-xl px-4 py-2.5 text-sm outline-none focus:border-indigo-400 resize-none" placeholder="Ação corretiva a ser tomada..." value={formRNC.acao_corretiva||''} onChange={e=>setFormRNC({...formRNC,acao_corretiva:e.target.value})}/>
+              </Field>
+              <div className="grid grid-cols-2 gap-3">
+                <Field label="Prazo para Correção">
+                  <Inp type="date" value={formRNC.prazo||''} onChange={e=>setFormRNC({...formRNC,prazo:e.target.value})}/>
+                </Field>
+                <Field label="Email Compras">
+                  <Inp type="email" placeholder="compras@kalenborn.com.br" value={formRNC.email_destinatario||''} onChange={e=>setFormRNC({...formRNC,email_destinatario:e.target.value})}/>
+                </Field>
+              </div>
             </div>
           </div>
         )}
