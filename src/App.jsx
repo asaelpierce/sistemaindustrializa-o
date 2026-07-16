@@ -3183,9 +3183,21 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
                               <Btn variant="secondary" size="sm" onClick={()=>{setRncSel(rnc);setFormRNC({descricao_nc:rnc.descricao_nc||'',causa_raiz:rnc.causa_raiz||'',acao_corretiva:rnc.acao_corretiva||'',responsavel:rnc.responsavel||'',prazo:rnc.prazo||'',gravidade:rnc.gravidade||'MEDIA',email_destinatario:rnc.email_destinatario||'',itens:rnc.itens||[]});setModalRNC(true);}}>
                                 <Edit3 className="w-3.5 h-3.5"/>Editar
                               </Btn>
-                              {rnc.status!=='ENCERRADA'&&<Btn variant="success" size="sm" onClick={()=>encerrarRNC(rnc.id)}>
-                                <CheckCircle className="w-3.5 h-3.5"/>Encerrar
-                              </Btn>}
+                              {rnc.status!=='ENCERRADA'&&(()=>{
+                                const pronto=rnc.causa_raiz?.trim()&&rnc.acao_corretiva?.trim()&&rnc.responsavel?.trim();
+                                return pronto
+                                  ?<Btn variant="success" size="sm" onClick={()=>encerrarRNC(rnc.id)}>
+                                    <CheckCircle className="w-3.5 h-3.5"/>Encerrar e Enviar Email
+                                  </Btn>
+                                  :<div className="relative group">
+                                    <Btn variant="secondary" size="sm" disabled className="opacity-50 cursor-not-allowed">
+                                      <AlertTriangle className="w-3.5 h-3.5 text-amber-500"/>Encerrar
+                                    </Btn>
+                                    <div className="absolute bottom-full right-0 mb-1 w-48 bg-slate-900 text-white text-[10px] rounded-lg px-3 py-2 hidden group-hover:block z-10 pointer-events-none">
+                                      Preencha Causa Raiz, Ação Corretiva e Responsável antes de encerrar.
+                                    </div>
+                                  </div>;
+                              })()}
                             </div>
                           </div>
                         </div>
@@ -3653,7 +3665,24 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
 
       {/* Modal: RNC */}
       <Modal open={modalRNC&&!!rncSel} onClose={()=>setModalRNC(false)} title={`RNC: ${s(rncSel?.numero||rncSel?.id)}`} subtitle={`${s(rncSel?.material)} · ${s(rncSel?.fornecedor)}`} maxWidth="max-w-2xl"
-        footer={<div className="flex justify-between"><Btn variant="secondary" onClick={()=>{setPreviewRNCData({...rncSel});setModalPreviewRNC(true);}}><FileSearch className="w-4 h-4"/>Gerar KdB143</Btn><Btn variant="primary" disabled={enviandoRNC} onClick={async()=>{setEnviandoRNC(true);try{await supabase.from('rncs').update({causa_raiz:formRNC.causa_raiz,acao_corretiva:formRNC.acao_corretiva,responsavel:formRNC.responsavel,prazo:formRNC.prazo||null,gravidade:formRNC.gravidade,email_destinatario:formRNC.email_destinatario,status:formRNC.acao_corretiva?'EM_TRATATIVA':'ABERTA'}).eq('id',rncSel.id);addToast('RNC atualizada!');setModalRNC(false);fetchAll();}catch(e){addToast('Erro: '+e.message,'error');}finally{setEnviandoRNC(false);}}}><Save className="w-4 h-4"/>Salvar</Btn></div>}
+        footer={<div className="flex justify-between"><Btn variant="secondary" onClick={()=>{setPreviewRNCData({...rncSel});setModalPreviewRNC(true);}}><FileSearch className="w-4 h-4"/>Gerar KdB143</Btn><Btn variant="primary" disabled={enviandoRNC} onClick={async()=>{
+  setEnviandoRNC(true);
+  try{
+    const novoStatus=(formRNC.causa_raiz?.trim()&&formRNC.acao_corretiva?.trim()&&formRNC.responsavel?.trim())?'EM_TRATATIVA':'ABERTA';
+    await supabase.from('rncs').update({
+      causa_raiz:formRNC.causa_raiz,
+      acao_corretiva:formRNC.acao_corretiva,
+      responsavel:formRNC.responsavel,
+      prazo:formRNC.prazo||null,
+      gravidade:formRNC.gravidade,
+      email_destinatario:formRNC.email_destinatario,
+      status:novoStatus
+    }).eq('id',rncSel.id);
+    addToast(novoStatus==='EM_TRATATIVA'?'RNC em tratativa — pronta para encerrar!':'RNC salva!');
+    setModalRNC(false);fetchAll();
+  }catch(e){addToast('Erro: '+e.message,'error');}
+  finally{setEnviandoRNC(false);}
+}}><Save className="w-4 h-4"/>Salvar</Btn></div>}
       >
         {rncSel&&(
           <div className="space-y-4">
