@@ -532,6 +532,22 @@ export default function App(){
     return()=>clearInterval(chk);
   },[]);
 
+  // Fetch leve — só qualidade, chat e usuários (rápido)
+  const fetchQual=useCallback(async()=>{
+    if(!supabase)return;
+    try{
+      const[insR,rncR,chR]=await Promise.all([
+        supabase.from('inspecoes').select('*').order('data_criacao',{ascending:false}),
+        supabase.from('rncs').select('*').order('data_abertura',{ascending:false}),
+        supabase.from('chat_interno').select('*').order('data_envio',{ascending:true}),
+      ]);
+      if(insR.data)setInspecoesDb(insR.data);
+      if(rncR.data)setRncsDb(rncR.data);
+      if(chR.data)setChatInternoDb(chR.data);
+      setDbOnline(true);
+    }catch(e){setDbOnline(false);}
+  },[supabase]);
+
   const fetchAll=useCallback(async()=>{
     if(!supabase)return;
     const perfil=usuarioLogado?.perfil;
@@ -575,6 +591,7 @@ export default function App(){
   },[supabase,chatEqOpen,usuarioLogado?.perfil]);
 
   useEffect(()=>{if(supabase){fetchAll();const iv=setInterval(fetchAll,30000);return()=>clearInterval(iv);}},[supabase]);
+  useEffect(()=>{if(supabase){const iv=setInterval(fetchQual,10000);return()=>clearInterval(iv);}},[supabase,fetchQual]);
   useEffect(()=>{if(chatEndRef.current)chatEndRef.current.scrollIntoView({behavior:'smooth'});},[chatInternoDb,chatEqOpen]);
 
   const handleSort=(st,setSt,k)=>setSt(p=>({key:k,dir:p.key===k&&p.dir==='asc'?'desc':'asc'}));
@@ -1057,6 +1074,7 @@ export default function App(){
         if(errRnc)throw errRnc;
         await supabase.from('inspecoes').update({rnc_id:rncId}).eq('id',id);
         addToast(`Inspeção registrada e ${numGlobal} gerada! (${numFornecedor}ª RNC de ${s(formInspecao.fornecedor).split(' ')[0]})`, 'warning');
+        await fetchQual(); // atualiza RNCs imediatamente
         // Auto gerar PDF de fotos ao reprovar
         if(fotosData.length>0){
           setTimeout(()=>gerarPDFFotos({
