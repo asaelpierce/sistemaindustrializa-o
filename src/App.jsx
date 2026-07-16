@@ -1106,18 +1106,109 @@ export default function App(){
 
   const encerrarRNC = async(rncId) => {
     if(!window.confirm('Confirma o encerramento desta RNC?'))return;
+    const rnc=rncsDb.find(r=>r.id===rncId);
     const{error}=await supabase.from('rncs').update({status:'ENCERRADA',data_encerramento:new Date().toISOString()}).eq('id',rncId);
     if(error)return addToast('Erro ao encerrar RNC.','error');
-    // Notificar Teams
+
+    // Notificar Teams via Edge Function
     try{
-      if(plannerQualUrl){
-        const rnc=rncsDb.find(r=>r.id===rncId);
-        await fetch(plannerQualUrl,{method:'POST',headers:{'Content-Type':'application/json'},
-          body:JSON.stringify({tipo:'RNC_ENCERRADA',numero:rnc?.numero,material:rnc?.material,
-            fornecedor:rnc?.fornecedor,encerrado_por:s(usuarioLogado?.nome)})});
+      if(qualTeamsUrl){
+        await fetch(`${SUPABASE_URL}/functions/v1/qualidade-notificar`,{
+          method:'POST',headers:{'Content-Type':'application/json','apikey':SUPABASE_KEY},
+          body:JSON.stringify({tipo:'RNC_ENCERRADA',flow_url:qualTeamsUrl,dados:{
+            numero:rnc?.numero_global||rnc?.numero,
+            material:rnc?.material,
+            fornecedor:rnc?.fornecedor,
+            causa_raiz:rnc?.causa_raiz,
+            acao_corretiva:rnc?.acao_corretiva,
+            responsavel:rnc?.responsavel,
+            encerrado_por:s(usuarioLogado?.nome),
+            data:new Date().toISOString()
+          }})
+        });
       }
     }catch(e){}
-    addToast('RNC encerrada e equipe notificada no Teams!');
+
+    // Enviar email com KdB143 preenchido via Power Automate
+    try{
+      if(qualEmailUrl&&rnc){
+        // Buscar fotos da inspeção vinculada
+        const insp=inspecoesDb.find(i=>i.rnc_id===rncId);
+        const fotos=insp?.fotos||[];
+
+        // Gerar Excel em memória para anexar no email
+        let xlsBase64='';
+        let xlsNome=`KdB143_${s(rnc.numero_global||rnc.numero)}.xlsx`;
+        try{
+          if(window.ExcelJS&&RNC_MODELO_B64){
+            const binStr=atob(RNC_MODELO_B64);
+            const buf=new ArrayBuffer(binStr.length);
+            const bytes=new Uint8Array(buf);
+            for(let i=0;i<binStr.length;i++) bytes[i]=binStr.charCodeAt(i);
+            const wb=new window.ExcelJS.Workbook();
+            await wb.xlsx.load(buf);
+            const ws=wb.getWorksheet('Plan1');
+            const ws3=wb.getWorksheet('Plan3');
+            const w=(cell,val)=>{try{ws.getCell(cell).value=val;}catch(_){}};
+            const dataAb=rnc.data_abertura?new Date(rnc.data_abertura).toLocaleDateString('pt-BR'):new Date().toLocaleDateString('pt-BR');
+            const dataInsp=rnc.data_inspecao?new Date(rnc.data_inspecao).toLocaleDateString('pt-BR'):dataAb;
+            const dataReceb=rnc.data_recebimento?new Date(rnc.data_recebimento).toLocaleDateString('pt-BR'):dataAb;
+            const numSeq=String(rnc.numero_fornecedor||rncsDb.findIndex(r=>r.id===rncId)+1||1);
+            w('G2',numSeq);
+            w('B5',s(rnc.fornecedor));
+            w('D6',s(rnc.descricao_material||rnc.descricao_produto||rnc.material));
+            w('H6',s(rnc.nota_fiscal||'—'));
+            w('B7',dataReceb);
+            w('H7',rnc.qtd_reprovada?`${fmtD(rnc.qtd_reprovada)} UN`:'—');
+            const itensText=(Array.isArray(rnc.itens)&&rnc.itens.length>0)?('\n\nItens nao conformes:\n'+rnc.itens.map((it,i)=>`${i+1}. ${s(typeof it==='string'?it:it.descricao||it)}`).join('\n')):'';
+            w('A9',s(rnc.descricao_nc)+itensText);
+            w('B38',s(rnc.criado_por||'Sergio Malaquias'));
+            w('G38',dataInsp);
+            w('B45',s(rnc.responsavel||rnc.criado_por||'—'));
+            w('G45',rnc.prazo?new Date(rnc.prazo).toLocaleDateString('pt-BR'):dataInsp);
+            if(rnc.causa_raiz) w('A41',s(rnc.causa_raiz));
+            if(rnc.acao_corretiva) w('A43',s(rnc.acao_corretiva));
+            if(ws3){let nr=2;while(ws3.getCell(`A${nr}`).value)nr++;ws3.getCell(`A${nr}`).value=s(rnc.fornecedor);ws3.getCell(`B${nr}`).value=s(rnc.material);ws3.getCell(`C${nr}`).value=s(rnc.numero_global||rnc.numero);ws3.getCell(`D${nr}`).value=s(rnc.nota_fiscal||'—');ws3.getCell(`F${nr}`).value=dataAb;}
+            const xlsBuf=await wb.xlsx.writeBuffer();
+            xlsBase64=await new Promise(res=>{const r=new FileReader();r.onload=e=>res(e.target.result.split(',')[1]);r.readAsDataURL(new Blob([xlsBuf],{type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'}));});
+          }
+        }catch(excelErr){console.warn('Erro ao gerar Excel para email:',excelErr);}
+
+        // Montar anexos: KdB143 + fotos
+        const fotosAnexos=fotos.slice(0,5).map((f,i)=>({nome:`Foto_${i+1}_${f.nome||'foto.jpg'}`,conteudo:f.dados,tipo:f.tipo||'image/jpeg'}));
+
+        await fetch(`${SUPABASE_URL}/functions/v1/qualidade-notificar`,{
+          method:'POST',headers:{'Content-Type':'application/json','apikey':SUPABASE_KEY},
+          body:JSON.stringify({
+            tipo:'ENVIAR_EMAIL_RNC',
+            flow_url:qualEmailUrl,
+            dados:{
+              numero:rnc?.numero_global||rnc?.numero,
+              numero_fornecedor:rnc?.numero_fornecedor,
+              fornecedor:rnc?.fornecedor,
+              material:rnc?.material,
+              nota_fiscal:rnc?.nota_fiscal,
+              descricao_nc:rnc?.descricao_nc,
+              causa_raiz:rnc?.causa_raiz||'',
+              acao_corretiva:rnc?.acao_corretiva||'',
+              responsavel:rnc?.responsavel||'',
+              prazo:rnc?.prazo||'',
+              inspetor:rnc?.criado_por||'',
+              encerrado_por:s(usuarioLogado?.nome),
+              data:new Date().toISOString(),
+              sgq_filename:xlsNome,
+              sgq_base64:xlsBase64,
+              fotos:fotosAnexos,
+            }
+          })
+        });
+        addToast('RNC encerrada — email com KdB143 enviado para Compras!');
+      } else {
+        addToast('RNC encerrada e equipe notificada no Teams!');
+      }
+    }catch(e){
+      addToast('RNC encerrada! (Falha ao enviar email: '+e.message+')','warning');
+    }
     fetchAll();
   };
 
