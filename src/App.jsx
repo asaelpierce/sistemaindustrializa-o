@@ -1212,8 +1212,6 @@ export default function App(){
       const w=(cell,val)=>{ try{ ws.getCell(cell).value=val; }catch(_){} };
 
       const dataAbertura=rnc.data_abertura?new Date(rnc.data_abertura).toLocaleDateString('pt-BR'):new Date().toLocaleDateString('pt-BR');
-      const numRNC=s(rnc.numero_global||rnc.numero||rnc.id);
-      const numForn=rnc.numero_fornecedor?`${numRNC} (Forn. nº ${rnc.numero_fornecedor}°)`:numRNC;
 
       // Plan1 — KdB143 v2 cell mapping
       const dataInsp=rnc.data_inspecao?new Date(rnc.data_inspecao).toLocaleDateString('pt-BR'):dataAbertura;
