@@ -499,6 +499,8 @@ export default function App(){
   const [novoItemRessalva,setNovoItemRessalva]=useState('');
   const [qualAba,setQualAba]=useState('INSPECOES');
   const [enviandoRNC,setEnviandoRNC]=useState(false);
+  const [modalPreviewRNC,setModalPreviewRNC]=useState(false);
+  const [previewRNCData,setPreviewRNCData]=useState(null);
   const [plannerQualUrl,setPlannerQualUrl]=useState('');
   const [qualEmailUrl,setQualEmailUrl]=useState('');
   const [qualTeamsUrl,setQualTeamsUrl]=useState('');
