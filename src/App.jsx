@@ -255,6 +255,7 @@ function KPICard({label,value,unit,icon:Icon,trend,trendLabel,color='indigo',onC
 function StatusBadge({status}){
   const m={
     PENDENTE_EXPEDICAO:{label:'Aguardando Saída',cls:'bg-blue-50 text-blue-700 border-blue-200',dot:'bg-blue-500'},
+    CANCELADO:{label:'Cancelado',cls:'bg-red-50 text-red-700 border-red-200',dot:'bg-red-500'},
     ENVIADO:{label:'Em Trânsito',cls:'bg-amber-50 text-amber-700 border-amber-200',dot:'bg-amber-500'},
     RETORNO_PARCIAL:{label:'Retorno Parcial',cls:'bg-orange-50 text-orange-700 border-orange-200',dot:'bg-orange-500'},
     RETORNADO:{label:'Concluído',cls:'bg-emerald-50 text-emerald-700 border-emerald-200',dot:'bg-emerald-500'},
@@ -1005,7 +1006,7 @@ export default function App(){
 
   const optH=useMemo(()=>({projeto:[...new Set(remessasDb.map(r=>s(r.projeto)))].filter(x=>x).sort(),cliente:[...new Set(remessasDb.map(r=>s(r.cliente)))].filter(x=>x).sort(),pa:[...new Set(remessasDb.map(r=>s(r.produto_acabado)))].filter(x=>x).sort()}),[remessasDb]);
   const optC=useMemo(()=>({projeto:[...new Set(remessasDb.map(r=>s(r.projeto)))].filter(x=>x).sort(),pa:[...new Set(remessasDb.map(r=>s(r.produto_acabado)))].filter(x=>x).sort(),mp:[...new Set(remessasDb.flatMap(r=>(Array.isArray(r.itens)?r.itens:[]).map(it=>s(it.codigoMP))))].filter(x=>x).sort()}),[remessasDb]);
-  const remPend=useMemo(()=>remessasDb.filter(r=>s(r.status)==='PENDENTE_EXPEDICAO'),[remessasDb]);
+  const remPend=useMemo(()=>remessasDb.filter(r=>s(r.status)==='PENDENTE_EXPEDICAO'&&s(r.status)!=='CANCELADO'),[remessasDb]);
   const remFora=useMemo(()=>remessasDb.filter(r=>['ENVIADO','RETORNO_PARCIAL','RETORNADO'].includes(s(r.status))),[remessasDb]);
 
   const chatNaoLidos = chatInternoDb.filter(m=>
@@ -1013,6 +1014,27 @@ export default function App(){
     (m.destinatario==='Geral'||m.destinatario===usuarioLogado?.nome) &&
     !m.lido_por?.includes(usuarioLogado?.nome)
   ).length;
+
+  const cancelarRemessa = async(remId, motivo) => {
+    const rem = remessasDb.find(r=>r.id===remId);
+    if(!rem) return;
+    // PCP só pode cancelar se ainda PENDENTE_EXPEDICAO
+    if(isPCP && !isExp && rem.status !== 'PENDENTE_EXPEDICAO')
+      return addToast('Somente a logística pode cancelar remessas que já saíram.','error');
+    // Logística pode cancelar PENDENTE_EXPEDICAO e ENVIADO
+    if(isExp && !['PENDENTE_EXPEDICAO','ENVIADO'].includes(rem.status))
+      return addToast('Não é possível cancelar uma remessa já concluída.','error');
+
+    const{error}=await supabase.from('remessas').update({
+      status:'CANCELADO',
+      editado_por:s(usuarioLogado?.nome),
+      data_edicao:new Date().toISOString(),
+      obs_expedicao: motivo ? `[CANCELADO: ${motivo}] ${s(rem.obs_expedicao||'')}`.trim() : s(rem.obs_expedicao||'')
+    }).eq('id',remId);
+    if(error) return addToast('Erro ao cancelar remessa.','error');
+    addToast('Remessa cancelada com sucesso.');
+    fetchAll();
+  };
 
   // ── Qualidade — funções ──────────────────────────────────────────────────
 
@@ -2066,7 +2088,7 @@ export default function App(){
                         <th className="px-5 py-2"><input list="dlha" className="w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-1.5 text-xs outline-none focus:border-indigo-400" placeholder="Filtrar..." value={filtH.pa} onChange={e=>setFiltH({...filtH,pa:e.target.value})}/><datalist id="dlha">{optH.pa.map(o=><option key={o} value={o}/>)}</datalist></th>
                         <th className="px-5 py-2"/>
                         <th className="px-5 py-2"/>
-                        <th className="px-5 py-2"><Sel className="text-xs py-1.5" value={filtH.status} onChange={e=>setFiltH({...filtH,status:e.target.value})}><option value="">Todos</option><option value="PENDENTE_EXPEDICAO">Aguardando</option><option value="ENVIADO">Em Trânsito</option><option value="RETORNO_PARCIAL">Retorno Parcial</option><option value="RETORNADO">Concluído</option></Sel></th>
+                        <th className="px-5 py-2"><Sel className="text-xs py-1.5" value={filtH.status} onChange={e=>setFiltH({...filtH,status:e.target.value})}><option value="">Todos</option><option value="PENDENTE_EXPEDICAO">Aguardando</option><option value="ENVIADO">Em Trânsito</option><option value="RETORNO_PARCIAL">Retorno Parcial</option><option value="RETORNADO">Concluído</option><option value="CANCELADO">Cancelado</option></Sel></th>
                         <th className="px-5 py-2"/>
                       </tr>
                     </thead>
@@ -2105,15 +2127,27 @@ export default function App(){
                           </td>
                           <td className="px-5 py-3.5 text-center"><StatusBadge status={r.status}/></td>
                           <td className="px-5 py-3.5 text-center">
-                            {r.status==='PENDENTE_EXPEDICAO'&&isPCP?(
-                              <Btn variant="secondary" size="sm" onClick={()=>{
-                                setRemEditando(r);
-                                setEditItens((r.itens||[]).map(it=>({...it,saldoDisponivel:(estoqueDb[it.codigoMP]?.saldo_disponivel||0)+it.quantidadeTotal})));
-                                setEditObs(r.observacao||'');setEditObsExp(r.obs_expedicao||'');
-                                setEditCliente(r.cliente||'');setEditProjeto(r.projeto||'');
-                                setModalEditRemessa(true);
-                              }}><Edit3 className="w-3.5 h-3.5"/>Editar</Btn>
-                            ):<span className="text-slate-300 text-xs">—</span>}
+                            <div className="flex items-center justify-center gap-1">
+                              {r.status==='PENDENTE_EXPEDICAO'&&isPCP&&(
+                                <Btn variant="secondary" size="sm" onClick={()=>{
+                                  setRemEditando(r);
+                                  setEditItens((r.itens||[]).map(it=>({...it,saldoDisponivel:(estoqueDb[it.codigoMP]?.saldo_disponivel||0)+it.quantidadeTotal})));
+                                  setEditObs(r.observacao||'');setEditObsExp(r.obs_expedicao||'');
+                                  setEditCliente(r.cliente||'');setEditProjeto(r.projeto||'');
+                                  setModalEditRemessa(true);
+                                }}><Edit3 className="w-3.5 h-3.5"/>Editar</Btn>
+                              )}
+                              {r.status==='PENDENTE_EXPEDICAO'&&(isPCP||isExp)&&(
+                                <Btn variant="danger" size="sm" onClick={()=>{
+                                  const motivo=window.prompt(`Motivo do cancelamento da remessa ${s(r.projeto)}:`);
+                                  if(motivo===null)return;
+                                  cancelarRemessa(r.id,motivo);
+                                }}>
+                                  <XCircle className="w-3.5 h-3.5"/>Cancelar
+                                </Btn>
+                              )}
+                              {!['PENDENTE_EXPEDICAO','CANCELADO'].includes(r.status)&&<span className="text-slate-300 text-xs">—</span>}
+                            </div>
                           </td>
                         </tr>
                       ))}
@@ -2243,7 +2277,7 @@ export default function App(){
                       return(
                         <div key={i} className={`bg-white rounded-2xl border overflow-hidden transition-all hover:shadow-sm ${isCritico?'border-red-300':'border-slate-200'}`}>
                           {/* Barra superior de status */}
-                          <div className={`h-1 w-full ${{PENDENTE_EXPEDICAO:'bg-blue-400',ENVIADO:'bg-amber-400',RETORNO_PARCIAL:'bg-orange-400',RETORNADO:'bg-emerald-400'}[p.status]||'bg-slate-200'}`}/>
+                          <div className={`h-1 w-full ${{PENDENTE_EXPEDICAO:'bg-blue-400',ENVIADO:'bg-amber-400',RETORNO_PARCIAL:'bg-orange-400',RETORNADO:'bg-emerald-400',CANCELADO:'bg-red-400'}[p.status]||'bg-slate-200'}`}/>
                           <div className="p-5">
                             {/* Header do card */}
                             <div className="flex items-start justify-between gap-3 mb-4">
@@ -2671,6 +2705,14 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
                             {!templateBuf&&<span className="text-amber-600 font-bold flex items-center gap-1.5"><AlertTriangle className="w-3.5 h-3.5"/>Modelo SGQ não carregado — carregue na barra lateral</span>}
                             {templateBuf&&<span className="text-emerald-600 font-bold flex items-center gap-1.5"><CheckCircle className="w-3.5 h-3.5"/>Modelo SGQ pronto: {s(nomeTemplate)}</span>}
                           </div>
+                          <Btn variant="secondary" size="lg" onClick={()=>{
+                            const motivo=window.prompt(`Motivo do cancelamento da remessa ${s(remSel?.projeto)}:`);
+                            if(motivo===null)return;
+                            cancelarRemessa(remSel.id,motivo);
+                            setRemSel(null);
+                          }} className="text-red-600 border-red-200 hover:bg-red-50">
+                            <XCircle className="w-5 h-5"/>Cancelar Remessa
+                          </Btn>
                           <Btn variant="dark" size="lg" onClick={concluirExp} disabled={!formExp.transporte||!formExp.destinatario}>
                             <FileSpreadsheet className="w-5 h-5"/>Confirmar Saída e Gerar SGQ
                           </Btn>
