@@ -538,8 +538,8 @@ export default function App(){
     if(!supabase)return;
     try{
       const[insR,rncR,chR]=await Promise.all([
-        supabase.from('inspecoes').select('*').order('data_criacao',{ascending:false}),
-        supabase.from('rncs').select('*').order('data_abertura',{ascending:false}),
+        supabase.from('inspecoes').select('id,numero,material,fornecedor,nota_fiscal,pedido,quantidade,unidade,resultado,observacoes,itens_ressalva,qtd_fotos,inspetor,data_inspecao,data_criacao,status,notificado_teams,rnc_id,criado_por,resolucao,descricao_material').order('data_criacao',{ascending:false}),
+        supabase.from('rncs').select('id,numero,inspecao_id,material,fornecedor,nota_fiscal,descricao_nc,causa_raiz,acao_corretiva,responsavel,prazo,status,gravidade,itens,qtd_fotos,criado_por,data_abertura,data_encerramento,email_enviado,email_destinatario,numero_global,numero_fornecedor,data_recebimento,qtd_reprovada,descricao_produto,acao_contencao,comentario_fornecedor,descricao_material,data_inspecao,numero_seq').order('data_abertura',{ascending:false}),
         supabase.from('chat_interno').select('*').order('data_envio',{ascending:true}),
       ]);
       if(insR.data)setInspecoesDb(insR.data);
@@ -547,6 +547,15 @@ export default function App(){
       if(chR.data)setChatInternoDb(chR.data);
       setDbOnline(true);
     }catch(e){setDbOnline(false);}
+  },[supabase]);
+
+  // Busca fotos (pesadas) sob demanda — só quando o usuário realmente precisa ver/usar as fotos
+  const buscarFotos=useCallback(async(tabela,id)=>{
+    if(!supabase||!id)return[];
+    try{
+      const{data}=await supabase.from(tabela).select('fotos').eq('id',id).single();
+      return Array.isArray(data?.fotos)?data.fotos:[];
+    }catch(e){return[];}
   },[supabase]);
 
   // Flag para carregar modelo só uma vez
@@ -1185,9 +1194,9 @@ export default function App(){
         addToast('URL de email não configurada. Configure em Qualidade → Configurações.','warning');
       }
       if(qualEmailUrl&&rnc){
-        // Buscar fotos da inspeção vinculada
+        // Buscar fotos da inspeção vinculada (sob demanda, não vem mais na listagem)
         const insp=inspecoesDb.find(i=>i.rnc_id===rncId);
-        const fotos=insp?.fotos||[];
+        const fotos=insp?await buscarFotos('inspecoes',insp.id):[];
 
         // Gerar Excel em memória para anexar no email
         let xlsBase64='';
@@ -3123,7 +3132,7 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
                           .map((ins,i)=>{
                             const resStyle={APROVADO:'bg-emerald-50 text-emerald-700 border-emerald-200',APROVADO_RESSALVA:'bg-amber-50 text-amber-700 border-amber-200',REPROVADO:'bg-red-50 text-red-700 border-red-200'}[ins.resultado]||'bg-slate-50 text-slate-600 border-slate-200';
                             const resLabel={APROVADO:'✅ Aprovado',APROVADO_RESSALVA:'⚠️ Ressalva',REPROVADO:'⛔ Reprovado'}[ins.resultado]||'Pendente';
-                            const fotos=Array.isArray(ins.fotos)?ins.fotos:[];
+                            const qtdFotos=ins.qtd_fotos||0;
                             return(
                               <tr key={i} className="hover:bg-slate-50/50 transition-colors">
                                 <td className="px-5 py-3.5 text-xs text-slate-500 whitespace-nowrap">{fmtDt(ins.data_inspecao||ins.data_criacao)}</td>
@@ -3136,8 +3145,8 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
                                   {ins.pedido&&<p className="text-[10px] text-slate-400">Ped: {s(ins.pedido)}</p>}
                                 </td>
                                 <td className="px-5 py-3.5 text-center">
-                                  {fotos.length>0
-                                    ?<span className="bg-indigo-50 text-indigo-700 text-[10px] font-bold px-2 py-1 rounded-full border border-indigo-100">{fotos.length} foto{fotos.length>1?'s':''}</span>
+                                  {qtdFotos>0
+                                    ?<span className="bg-indigo-50 text-indigo-700 text-[10px] font-bold px-2 py-1 rounded-full border border-indigo-100">{qtdFotos} foto{qtdFotos>1?'s':''}</span>
                                     :<span className="text-slate-300 text-xs">—</span>
                                   }
                                 </td>
@@ -3160,7 +3169,7 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
                                         <ShieldAlert className="w-3.5 h-3.5"/>Inspecionar
                                       </Btn>
                                     ):(
-                                      <Btn variant="ghost" size="sm" onClick={()=>{setInspecaoSel(ins);setModalInspecaoDetalhe(true);}}>
+                                      <Btn variant="ghost" size="sm" onClick={async()=>{const fotos=await buscarFotos('inspecoes',ins.id);setInspecaoSel({...ins,fotos});setModalInspecaoDetalhe(true);}}>
                                         <Eye className="w-3.5 h-3.5"/>
                                       </Btn>
                                     )}
@@ -3245,9 +3254,10 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
                               <Btn variant="secondary" size="sm" onClick={()=>{setPreviewRNCData({...rnc});setModalPreviewRNC(true);}}>
                                 <FileSearch className="w-3.5 h-3.5"/>Gerar KdB143
                               </Btn>
-                              {(rnc.fotos?.length>0||inspecoesDb.find(i=>i.rnc_id===rnc.id)?.fotos?.length>0)&&(
-                                <Btn variant="ghost" size="sm" onClick={()=>{
-                                  const fotos=rnc.fotos?.length>0?rnc.fotos:inspecoesDb.find(i=>i.rnc_id===rnc.id)?.fotos||[];
+                              {((rnc.qtd_fotos||0)>0||(inspecoesDb.find(i=>i.rnc_id===rnc.id)?.qtd_fotos||0)>0)&&(
+                                <Btn variant="ghost" size="sm" onClick={async()=>{
+                                  let fotos=(rnc.qtd_fotos||0)>0?await buscarFotos('rncs',rnc.id):[];
+                                  if(!fotos.length){const insp=inspecoesDb.find(i=>i.rnc_id===rnc.id);if(insp)fotos=await buscarFotos('inspecoes',insp.id);}
                                   gerarPDFFotos(rnc,fotos);
                                 }}>
                                   <Camera className="w-3.5 h-3.5 text-indigo-500"/>Fotos
@@ -3854,8 +3864,8 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
         footer={<div className="flex justify-between">
           <Btn variant="secondary" onClick={()=>setModalPreviewRNC(false)}>Cancelar</Btn>
           <div className="flex gap-2">
-            {(previewRNCData?.fotos?.length>0||inspecoesDb.find(i=>i.rnc_id===previewRNCData?.id)?.fotos?.length>0)&&(
-              <Btn variant="ghost" onClick={()=>{const fotos=previewRNCData?.fotos?.length>0?previewRNCData.fotos:inspecoesDb.find(i=>i.rnc_id===previewRNCData?.id)?.fotos||[];gerarPDFFotos(previewRNCData,fotos);}}>
+            {((previewRNCData?.qtd_fotos||0)>0||(inspecoesDb.find(i=>i.rnc_id===previewRNCData?.id)?.qtd_fotos||0)>0)&&(
+              <Btn variant="ghost" onClick={async()=>{let fotos=(previewRNCData?.qtd_fotos||0)>0?await buscarFotos('rncs',previewRNCData.id):[];if(!fotos.length){const insp=inspecoesDb.find(i=>i.rnc_id===previewRNCData?.id);if(insp)fotos=await buscarFotos('inspecoes',insp.id);}gerarPDFFotos(previewRNCData,fotos);}}>
                 <Camera className="w-4 h-4"/>PDF Fotos
               </Btn>
             )}
