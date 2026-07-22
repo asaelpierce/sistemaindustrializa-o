@@ -595,9 +595,9 @@ export default function App(){
   },[supabase,usuarioLogado?.perfil]);
 
   // fetchAll na inicialização + a cada 60s (dados pesados)
-  useEffect(()=>{if(supabase){fetchAll();fetchQual();const iv=setInterval(fetchAll,300000);return()=>clearInterval(iv);}},[supabase]);
-  // fetchQual a cada 5min (leve: inspeções, RNCs, chat)
-  useEffect(()=>{if(supabase){const iv=setInterval(fetchQual,300000);return()=>clearInterval(iv);}},[supabase,fetchQual]);
+  useEffect(()=>{if(supabase){fetchAll();fetchQual();const iv=setInterval(fetchAll,90000);return()=>clearInterval(iv);}},[supabase]);
+  // fetchQual a cada 20s (leve: inspeções, RNCs, chat)
+  useEffect(()=>{if(supabase){const iv=setInterval(fetchQual,20000);return()=>clearInterval(iv);}},[supabase,fetchQual]);
   useEffect(()=>{if(chatEndRef.current)chatEndRef.current.scrollIntoView({behavior:'smooth'});},[chatInternoDb,chatEqOpen]);
 
   const handleSort=(st,setSt,k)=>setSt(p=>({key:k,dir:p.key===k&&p.dir==='asc'?'desc':'asc'}));
