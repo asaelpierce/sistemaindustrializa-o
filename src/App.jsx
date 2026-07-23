@@ -1034,15 +1034,24 @@ export default function App(){
     if(isExp && !['PENDENTE_EXPEDICAO','ENVIADO'].includes(rem.status))
       return addToast('Não é possível cancelar uma remessa já concluída.','error');
 
-    const{error}=await supabase.from('remessas').update({
-      status:'CANCELADO',
-      editado_por:s(usuarioLogado?.nome),
-      data_edicao:new Date().toISOString(),
-      obs_expedicao: motivo ? `[CANCELADO: ${motivo}] ${s(rem.obs_expedicao||'')}`.trim() : s(rem.obs_expedicao||'')
-    }).eq('id',remId);
-    if(error) return addToast('Erro ao cancelar remessa.','error');
-    addToast('Remessa cancelada com sucesso.');
-    fetchAll();
+    setIsLoading(true);
+    try{
+      // Devolver ao estoque os materiais que tinham sido descontados na criação da remessa
+      for(const it of (rem.itens||[])){
+        const{data:cur}=await supabase.from('estoque_mp').select('saldo_disponivel').eq('codigo_mp',it.codigoMP).single();
+        await supabase.from('estoque_mp').update({saldo_disponivel:Number(((cur?.saldo_disponivel||0)+Number(it.quantidadeTotal||0)).toFixed(4))}).eq('codigo_mp',it.codigoMP);
+      }
+      const{error}=await supabase.from('remessas').update({
+        status:'CANCELADO',
+        editado_por:s(usuarioLogado?.nome),
+        data_edicao:new Date().toISOString(),
+        obs_expedicao: motivo ? `[CANCELADO: ${motivo}] ${s(rem.obs_expedicao||'')}`.trim() : s(rem.obs_expedicao||'')
+      }).eq('id',remId);
+      if(error){setIsLoading(false);return addToast('Erro ao cancelar remessa.','error');}
+      addToast('Remessa cancelada e saldo devolvido ao estoque.');
+      setIsLoading(false);
+      fetchAll();
+    }catch(e){setIsLoading(false);addToast('Erro ao cancelar remessa: '+e.message,'error');}
   };
 
   // ── Qualidade — funções ──────────────────────────────────────────────────
