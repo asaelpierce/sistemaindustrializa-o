@@ -428,6 +428,7 @@ export default function App(){
 
   // Expedição
   const [remSel,setRemSel]=useState(null);
+  const [remsAgrupadas,setRemsAgrupadas]=useState([]); // ids selecionados p/ agrupar em um único SGQ
   const [formExp,setFormExp]=useState({transporte:'',transportadora:'',quantidade:'',pesoTotal:'',destinatario:'',dataSaida:new Date().toISOString().split('T')[0]});
   const [templateBuf,setTemplateBuf]=useState(null);
   const [nomeTemplate,setNomeTemplate]=useState('');
@@ -737,14 +738,32 @@ export default function App(){
     }catch(e){addToast('Erro: '+e.message,'error');setIsLoading(false);}
   };
 
+  const exportarSGQManual = async(rem,itensOverride)=>{
+    if(!templateBuf) return addToast('Modelo SGQ não carregado. Vá em Sincronizar ERP para carregar o modelo.','error');
+    try{
+      const wb=new window.ExcelJS.Workbook();await wb.xlsx.load(templateBuf);const ws=wb.worksheets[0];
+      ws.getCell('B4').value=s(rem.projeto);ws.getCell('C4').value=s(rem.cliente);
+      ws.getCell('E8').value=`${s(rem.projeto)} — ${s(rem.cliente)}`;ws.getCell('G8').value=new Date().toISOString().split('T')[0];
+      const itensFinais=itensOverride||rem.itens||[];
+      itensFinais.forEach((it,i)=>{const r=12+i;ws.getCell(`C${r}`).value=s(it.codigoMP);ws.getCell(`E${r}`).value=s(it.descricao);ws.getCell(`F${r}`).value=Number(it.quantidadeTotal);ws.getCell(`G${r}`).value=s(it.um);ws.getCell(`H${r}`).value=s(rem.observacao);});
+      const buf=await wb.xlsx.writeBuffer();
+      const blob=new Blob([buf],{type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'});
+      const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=`SGQ_${s(rem.projeto)}.xlsx`;a.click();
+      addToast('Planilha SGQ exportada!');
+    }catch(e){addToast('Erro ao gerar SGQ: '+e.message,'error');}
+  };
+
   const concluirExp=async()=>{
     if(!templateBuf)return addToast('Modelo SGQ não carregado.','error');
     if(!formExp.transporte||!formExp.destinatario)return addToast('Preencha Transporte e Destinatário.','error');
+    const idsGrupo=remSel._grupoIds&&remSel._grupoIds.length>1?remSel._grupoIds:[remSel.id];
     setIsLoading(true);
     try{
-      // 1. Atualizar status no banco
-      const{error}=await supabase.from('remessas').update({status:'ENVIADO',data_envio:new Date().toISOString(),enviado_por:s(usuarioLogado?.nome),expedicao:formExp}).eq('id',remSel.id);
-      if(error)throw error;
+      // 1. Atualizar status no banco (todas as remessas do grupo, se agrupado)
+      for(const id of idsGrupo){
+        const{error}=await supabase.from('remessas').update({status:'ENVIADO',data_envio:new Date().toISOString(),enviado_por:s(usuarioLogado?.nome),expedicao:formExp,grupo_expedicao:idsGrupo.length>1?idsGrupo:null}).eq('id',id);
+        if(error)throw error;
+      }
 
       // 2. Gerar planilha SGQ
       const wb=new window.ExcelJS.Workbook();await wb.xlsx.load(templateBuf);const ws=wb.worksheets[0];
@@ -2146,6 +2165,9 @@ export default function App(){
                           <td className="px-5 py-3.5 text-center"><StatusBadge status={r.status}/></td>
                           <td className="px-5 py-3.5 text-center">
                             <div className="flex items-center justify-center gap-1">
+                              {isPCP&&(
+                                <Btn variant="ghost" size="sm" onClick={()=>exportarSGQManual(r)}><FileSpreadsheet className="w-3.5 h-3.5"/>SGQ</Btn>
+                              )}
                               {r.status==='PENDENTE_EXPEDICAO'&&isPCP&&(
                                 <Btn variant="secondary" size="sm" onClick={()=>{
                                   setRemEditando(r);
@@ -2525,6 +2547,26 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
                     </button>
                   </div>
 
+                  {/* Barra de agrupamento */}
+                  {remsAgrupadas.length>0&&(
+                    <div className="bg-violet-600 px-4 py-2.5 flex items-center justify-between gap-2 flex-shrink-0">
+                      <span className="text-white text-xs font-bold">{remsAgrupadas.length} selecionada{remsAgrupadas.length>1?'s':''} p/ agrupar</span>
+                      <div className="flex gap-1.5">
+                        {remsAgrupadas.length>=2&&(
+                          <button onClick={()=>{
+                            const selecionadas=remPend.filter(r=>remsAgrupadas.includes(r.id));
+                            const itensCombinados=[];
+                            selecionadas.forEach(r=>{(r.itens||[]).forEach(it=>{const ex=itensCombinados.find(x=>x.codigoMP===it.codigoMP);if(ex)ex.quantidadeTotal=Number(ex.quantidadeTotal)+Number(it.quantidadeTotal);else itensCombinados.push({...it});});});
+                            setRemSel({...selecionadas[0],itens:itensCombinados,_grupoIds:remsAgrupadas,_grupoLabel:selecionadas.map(r=>s(r.projeto)).join(' + ')});
+                            setFormExp({transporte:'',transportadora:'',quantidade:'',pesoTotal:'',destinatario:'',dataSaida:new Date().toISOString().split('T')[0]});
+                            setRemsAgrupadas([]);
+                          }} className="text-[10px] font-black bg-white text-violet-700 px-2.5 py-1 rounded-lg hover:bg-violet-50">Agrupar e Gerar 1 SGQ</button>
+                        )}
+                        <button onClick={()=>setRemsAgrupadas([])} className="text-[10px] font-bold text-violet-200 px-2 py-1 hover:text-white">Cancelar</button>
+                      </div>
+                    </div>
+                  )}
+
                   {/* Lista da fila */}
                   <div className="flex-1 overflow-y-auto custom-scrollbar bg-slate-50 p-3 space-y-2">
                     {remPend.length===0&&(
@@ -2548,6 +2590,18 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
                           <div className="p-4">
                             {/* Linha de badges */}
                             <div className="flex items-center gap-1.5 mb-3 flex-wrap">
+                              <input type="checkbox" className="w-3.5 h-3.5 text-violet-600 rounded border-slate-300 flex-shrink-0" checked={remsAgrupadas.includes(rem.id)}
+                                onClick={e=>e.stopPropagation()}
+                                onChange={e=>{
+                                  e.stopPropagation();
+                                  if(e.target.checked){
+                                    const outras=remPend.filter(r=>remsAgrupadas.includes(r.id));
+                                    if(outras.length>0&&outras[0].projeto!==rem.projeto){addToast('Só é possível agrupar remessas do mesmo Projeto BR.','warning');return;}
+                                    setRemsAgrupadas(p=>[...p,rem.id]);
+                                  }else{
+                                    setRemsAgrupadas(p=>p.filter(id=>id!==rem.id));
+                                  }
+                                }}/>
                               <span className={`text-[10px] font-black px-2 py-0.5 rounded-md ${isSelected?'bg-indigo-600 text-white':'bg-indigo-50 text-indigo-700 border border-indigo-100'}`}>
                                 {s(rem.projeto)}
                               </span>
@@ -2615,7 +2669,9 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
                               <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Processando OP</span>
                               <span className="bg-indigo-600 text-white text-[10px] font-black px-2.5 py-0.5 rounded-full">{s(remSel.projeto)}</span>
                               {remSel.remessa_pai_id&&<span className="bg-violet-600 text-white text-[9px] font-bold px-2 py-0.5 rounded-full">Complemento</span>}
+                              {remSel._grupoIds?.length>1&&<span className="bg-emerald-600 text-white text-[9px] font-bold px-2 py-0.5 rounded-full">Grupo: {remSel._grupoIds.length} remessas</span>}
                             </div>
+                            {remSel._grupoLabel&&<p className="text-emerald-400 text-[10px] font-bold mt-1">Combinando: {remSel._grupoLabel} — 1 SGQ único será gerado para o grupo</p>}
                             <h3 className="text-2xl font-black text-white uppercase tracking-tight leading-tight truncate">{s(remSel.produto_acabado)}</h3>
                             <p className="text-slate-400 text-xs font-medium mt-1 truncate">{s(produtosDb[remSel.produto_acabado]?.descricao||remSel.descricao_produto||'')}</p>
                           </div>
