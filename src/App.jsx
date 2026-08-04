@@ -670,8 +670,15 @@ export default function App(){
         // Re-executa a busca local agora que já está cadastrado
         setTimeout(()=>{ setCodigoBusca(cod); buscarProduto(); },800);
       }else if(data.tipo==='MP'){
-        addToast(`Código ${cod} é uma matéria-prima (não um produto acabado). Cadastrado no estoque.`,'info');
+        addToast(`Código ${cod} é um equipamento/item de terceiro (sem composição). Adicionado abaixo.`,'info');
         await fetchAll();
+        // Não tem "receita" (PA/composição) — trata o próprio item como produto de 1 material só,
+        // pra poder seguir o fluxo normal de criar a remessa
+        const r=data.resultado||{};
+        const qb=Number(parseN(qtdProd)||1);
+        const itemUnico={codigoMP:cod,quantidade:1,um:s(r.unidade)||'UN',saldoDisponivel:Number(r.saldo_disponivel||0),descricao:s(r.descricao)||'Equipamento/Item de terceiro',quantidadeTotal:qb,quantidadeOriginal:qb,quantidadeRetornada:0,rateiosExtras:[]};
+        setProdEncontrado({codigo_pa:cod,descricao:s(r.descricao)||'EQUIPAMENTO / ITEM DE TERCEIRO',materiais:[{codigoMP:cod,quantidade:1,um:s(r.unidade)||'UN'}]});
+        setItens([itemUnico]);setItensOrig([itemUnico]);
       }else{
         addToast(`Código ${cod} não encontrado no Sankhya. Verifique se está correto.`,'error');
       }
@@ -1879,7 +1886,7 @@ export default function App(){
                     <Field label="Projeto BR" required><Inp placeholder="BR-..." value={projeto} onChange={e=>setProjeto(e.target.value)} className="uppercase"/></Field>
                     <Field label="Cliente Final" required><Inp placeholder="Nome do cliente" value={cliente} onChange={e=>setCliente(e.target.value)}/></Field>
                     <Field label="Serviço" className={servico==='Outros'?'':'sm:col-span-2'}>
-                      <Sel value={servico} onChange={e=>setServico(e.target.value)}><option>Industrialização</option><option>Jateamento Interno</option><option>Jateamento Externo</option><option>Reforma</option><option>Autoclave</option><option>Montagem de Placas</option><option value="Outros">Outros</option></Sel>
+                      <Sel value={servico} onChange={e=>setServico(e.target.value)}><option>Industrialização</option><option>Jateamento Interno</option><option>Jateamento Externo</option><option>Jateamento Interno e Externo</option><option>Reforma</option><option>Autoclave</option><option>Montagem de Placas</option><option value="Outros">Outros</option></Sel>
                     </Field>
                     {servico==='Outros'&&<Field label="Especifique"><Inp placeholder="Descreva o serviço" value={outrosTexto} onChange={e=>setOutrosTexto(e.target.value)}/></Field>}
                     <div className="sm:col-span-2 lg:col-span-3 bg-slate-50 rounded-xl p-4 border border-slate-200">
@@ -4251,6 +4258,7 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
                   <option>Industrialização</option>
                   <option>Jateamento Interno</option>
                   <option>Jateamento Externo</option>
+                  <option>Jateamento Interno e Externo</option>
                   <option>Reforma</option>
                   <option>Autoclave</option>
                   <option>Montagem de Placas</option>
