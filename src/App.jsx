@@ -564,6 +564,8 @@ export default function App(){
     }catch(e){return[];}
   },[supabase]);
 
+  // ── Mestra PCP: agrega Pedidos de Venda + Faturamento do Portal de Engenharia por BR ──
+  const [mestraDb,setMestraDb]=useState([]);
   const [mestraFiltro,setMestraFiltro]=useState('TODOS'); // TODOS | FATURADO | PARCIAL | PENDENTE
   const mestraFiltrada=useMemo(()=>mestraDb.filter(r=>{
     if(mestraFiltro==='FATURADO')return r.percentualFaturado>=0.999;
@@ -572,8 +574,6 @@ export default function App(){
     return true;
   }),[mestraDb,mestraFiltro]);
 
-  // ── Mestra PCP: agrega Pedidos de Venda + Faturamento do Portal de Engenharia por BR ──
-  const [mestraDb,setMestraDb]=useState([]);
   const [mestraLoading,setMestraLoading]=useState(false);
   const [mestraErro,setMestraErro]=useState('');
   const [sincronizandoPedidos,setSincronizandoPedidos]=useState(false);
