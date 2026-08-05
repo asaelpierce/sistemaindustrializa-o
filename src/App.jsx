@@ -570,37 +570,40 @@ export default function App(){
   const [mestraNotasSel,setMestraNotasSel]=useState(null); // BR selecionado pra ver detalhamento de notas
   const [mestraDetalheTab,setMestraDetalheTab]=useState('ITENS'); // ITENS | NOTAS
   const mestraFiltrada=useMemo(()=>mestraDb.filter(r=>{
-    if(mestraFiltro==='FATURADO')return r.statusFaturamento==='COMPLETO';
-    if(mestraFiltro==='PARCIAL')return r.statusFaturamento==='PARCIAL';
-    if(mestraFiltro==='PENDENTE')return r.statusFaturamento==='PENDENTE';
+    if(mestraFiltro==='VENCIDO')return r.situacaoPrazo==='VENCIDO_SEM_AVISO';
+    if(mestraFiltro==='REPROGRAMADO')return r.situacaoPrazo==='REPROGRAMADO'||r.situacaoPrazo==='REPROG_VENCIDO';
+    if(mestraFiltro==='A_VENCER')return r.situacaoPrazo==='A_VENCER';
+    if(mestraFiltro==='ENTREGUE')return r.situacaoPrazo==='ENTREGUE';
     return true;
   }),[mestraDb,mestraFiltro]);
 
-  // Agrupamento mensal (por mês de negociação/emissão do pedido) — com subtotais
+  // Agrupamento pelo MÊS DE ENTREGA (compromisso) — é assim que o PCP enxerga
   const mestraPorMes=useMemo(()=>{
     const grupos={};
     mestraFiltrada.forEach(r=>{
-      const mes=r.mesReferencia||'sem-data';
-      if(!grupos[mes])grupos[mes]={mes,itens:[],valorTotal:0,valorFaturado:0,valorAtendido:0,valorAFaturar:0};
+      const mes=r.mesReferencia||'sem-prazo';
+      if(!grupos[mes])grupos[mes]={mes,itens:[],valorTotal:0,valorAtendido:0,valorAFaturar:0,valorVencido:0,valorReprogramado:0,valorAVencer:0};
       grupos[mes].itens.push(r);
       grupos[mes].valorTotal+=r.valorTotal;
-      grupos[mes].valorFaturado+=r.valorFaturado;
       grupos[mes].valorAtendido+=r.valorPedidoAtendido;
       grupos[mes].valorAFaturar+=r.valorAFaturar;
+      grupos[mes].valorVencido+=r.valorVencidoSemAviso;
+      grupos[mes].valorReprogramado+=r.valorReprogramado;
+      grupos[mes].valorAVencer+=r.valorAVencer;
     });
-    return Object.values(grupos).sort((a,b)=>b.mes.localeCompare(a.mes));
+    return Object.values(grupos).sort((a,b)=>a.mes.localeCompare(b.mes));
   },[mestraFiltrada]);
   const [mesesExpandidos,setMesesExpandidos]=useState(()=>new Set());
   const toggleMesExpandido=mes=>setMesesExpandidos(p=>{const n=new Set(p);n.has(mes)?n.delete(mes):n.add(mes);return n;});
 
-  // Dados pro gráfico mensal — base consistente: tudo derivado do valor do PEDIDO
-  // (comparar valor de pedido com valor de nota seria inválido, são universos diferentes)
+  // Gráfico por MÊS DE ENTREGA: mostra a saúde do compromisso, não o valor comercial
   const mestraChartData=useMemo(()=>{
-    return[...mestraPorMes].sort((a,b)=>a.mes.localeCompare(b.mes)).slice(-12).map(g=>({
-      name:g.mes==='sem-data'?'—':g.mes,
-      'Total Pedido':Math.round(g.valorTotal),
-      'Já Atendido':Math.round(g.valorAtendido),
-      'Saldo a Faturar':Math.round(g.valorAFaturar),
+    return[...mestraPorMes].filter(g=>g.mes!=='sem-prazo').slice(-14).map(g=>({
+      name:g.mes,
+      'Entregue':Math.round(g.valorAtendido),
+      'Vencido s/ aviso':Math.round(g.valorVencido),
+      'Reprogramado':Math.round(g.valorReprogramado),
+      'A vencer':Math.round(g.valorAVencer),
     }));
   },[mestraPorMes]);
 
@@ -652,14 +655,25 @@ export default function App(){
     if(!supabase)return;
     setMestraLoading(true);setMestraErro('');
     try{
-      const[pedidosRes,faturamentoRes,notaItensRes]=await Promise.all([
+      const[pedidosRes,faturamentoRes,notaItensRes,planRes]=await Promise.all([
         supabase.from('pedidos_itens').select('br,cliente_nome,vendedor_nome,valor_liquido,produto_descricao,cod_produto,quantidade,qtd_entregue,unidade,data_neg,data_prevista_entrega'),
         supabase.from('faturamento_resumo').select('br,cliente_nome,net_offer_value,valor_nota,tipmov,data_neg,numero_nota,data_faturamento').eq('tipmov','V'),
-        supabase.from('nota_venda_itens').select('br,produto_descricao,cod_produto,quantidade,valor_bruto')
+        supabase.from('nota_venda_itens').select('br,produto_descricao,cod_produto,quantidade,valor_bruto'),
+        supabase.from('ooh_planejamento').select('br,nova_data,data_original,justificativa,status,criado_em')
       ]);
       if(pedidosRes.error)throw pedidosRes.error;
       if(faturamentoRes.error)throw faturamentoRes.error;
       if(notaItensRes.error)throw notaItensRes.error;
+      if(planRes.error)throw planRes.error;
+
+      // Reprogramações do PCP: quando o PCP avalia que não entrega na data do sistema,
+      // ele informa uma nova data. Vale a reprogramação mais recente por projeto.
+      const reprogPorBR={};
+      (planRes.data||[]).forEach(pl=>{
+        const br=s(pl.br);if(!br||!pl.nova_data)return;
+        const atual=reprogPorBR[br];
+        if(!atual||s(pl.criado_em)>s(atual.criadoEm))reprogPorBR[br]={novaData:pl.nova_data,dataOriginal:pl.data_original,justificativa:pl.justificativa,criadoEm:pl.criado_em};
+      });
 
       const faturadoPorBR={};
       const brutoPorBR={};
@@ -699,10 +713,12 @@ export default function App(){
 
         if(!itensPedidoPorBR[br])itensPedidoPorBR[br]={};
         const cod=s(p.cod_produto)||s(p.produto_descricao);
-        if(!itensPedidoPorBR[br][cod])itensPedidoPorBR[br][cod]={codProduto:s(p.cod_produto),descricao:p.produto_descricao,unidade:p.unidade,qtdPedida:0,qtdEntregue:0,valorPedido:0};
+        if(!itensPedidoPorBR[br][cod])itensPedidoPorBR[br][cod]={codProduto:s(p.cod_produto),descricao:p.produto_descricao,unidade:p.unidade,qtdPedida:0,qtdEntregue:0,valorPedido:0,dataPrevista:p.data_prevista_entrega};
         itensPedidoPorBR[br][cod].qtdPedida+=Number(p.quantidade||0);
         itensPedidoPorBR[br][cod].qtdEntregue+=Number(p.qtd_entregue||0);
         itensPedidoPorBR[br][cod].valorPedido+=Number(p.valor_liquido||0);
+        // prazo mais apertado vence: se o mesmo produto vem em dois pedidos, manda o mais antigo
+        if(p.data_prevista_entrega&&(!itensPedidoPorBR[br][cod].dataPrevista||p.data_prevista_entrega<itensPedidoPorBR[br][cod].dataPrevista))itensPedidoPorBR[br][cod].dataPrevista=p.data_prevista_entrega;
       });
 
       // BRs que só existem no faturamento (pedido fora da janela sincronizada, ou contrato
@@ -711,9 +727,12 @@ export default function App(){
         if(!agrup[br])agrup[br]={br,cliente:clienteFaturadoPorBR[br],vendedor:null,valorTotal:0,dataNeg:dataFaturadoPorBR[br],dataPrevista:null,produtos:[],semPedidoSincronizado:true};
       });
 
+      const hojeIso=new Date().toISOString().slice(0,10);
+
       const lista=Object.values(agrup).map(r=>{
         const faturado=faturadoPorBR[r.br]||0;
         const bruto=brutoPorBR[r.br]||0;
+        const reprog=reprogPorBR[r.br]||null;
         // Combina itens pedidos + itens faturados (mesmo que um item só exista num dos dois lados)
         const codsPedido=Object.keys(itensPedidoPorBR[r.br]||{});
         const codsFaturado=Object.keys(itensFaturadosPorBR[r.br]||{});
@@ -726,14 +745,29 @@ export default function App(){
           // A quantidade das NFs entra como conferência/fallback quando o item não veio do pedido.
           const qtdEntregue=pedido?pedido.qtdEntregue:(fat?.qtdFaturada||0);
           const qtdFaltante=Math.max(0,qtdPedida-qtdEntregue);
+          const dataPrevista=pedido?.dataPrevista||null;
+          // Data que vale hoje: se o PCP reprogramou, é a nova data; senão, a do sistema.
+          const dataVigente=reprog?.novaData||dataPrevista;
+          const emAberto=qtdFaltante>0;
+          let situacaoPrazo;
+          if(!emAberto) situacaoPrazo='ENTREGUE';
+          else if(reprog) situacaoPrazo=(dataVigente&&dataVigente<hojeIso)?'REPROG_VENCIDO':'REPROGRAMADO';
+          else if(!dataVigente) situacaoPrazo='SEM_PRAZO';
+          else if(dataVigente<hojeIso) situacaoPrazo='VENCIDO_SEM_AVISO';
+          else situacaoPrazo='A_VENCER';
+          const valorPedido=pedido?.valorPedido||0;
+          const fracaoAberta=qtdPedida>0?Math.max(0,1-Math.min(1,qtdEntregue/qtdPedida)):0;
           return{
             codProduto:pedido?.codProduto||fat?.codProduto||cod,
             descricao:pedido?.descricao||fat?.descricao||'—',
             unidade:pedido?.unidade||'',
             qtdPedida,qtdEntregue,qtdFaltante,
             qtdNasNotas:fat?.qtdFaturada||0,
-            valorPedido:pedido?.valorPedido||0,
+            valorPedido,
+            valorEmAberto:valorPedido*fracaoAberta,
             valorFaturado:fat?.valorFaturado||0,
+            dataPrevista,dataVigente,situacaoPrazo,
+            diasAtraso:(emAberto&&dataVigente&&dataVigente<hojeIso)?Math.floor((new Date(hojeIso)-new Date(dataVigente))/86400000):0,
             status:qtdPedida<=0?'SEM_PEDIDO':qtdFaltante<=0?'COMPLETO':qtdEntregue>0?'PARCIAL':'PENDENTE'
           };
         }).sort((a,b)=>b.valorPedido-a.valorPedido);
@@ -753,6 +787,29 @@ export default function App(){
         const valorPedidoAtendido=itensDoPedido.reduce((acc,i)=>acc+i.valorPedido*(i.qtdPedida>0?Math.min(1,i.qtdEntregue/i.qtdPedida):0),0);
         const percentualAtendido=r.valorTotal>0?valorPedidoAtendido/r.valorTotal:(faturado>0?1:0);
 
+        // Visão de PRAZO (é o que o PCP precisa cobrar): do que está em aberto,
+        // quanto venceu sem ninguém informar nova data.
+        const somaAberto=f=>itensDoPedido.filter(f).reduce((a,i)=>a+i.valorEmAberto,0);
+        const valorVencidoSemAviso=somaAberto(i=>i.situacaoPrazo==='VENCIDO_SEM_AVISO');
+        const valorReprogramado=somaAberto(i=>i.situacaoPrazo==='REPROGRAMADO'||i.situacaoPrazo==='REPROG_VENCIDO');
+        const valorAVencer=somaAberto(i=>i.situacaoPrazo==='A_VENCER');
+        const valorSemPrazo=somaAberto(i=>i.situacaoPrazo==='SEM_PRAZO');
+
+        // Situação do projeto = a mais grave entre seus itens em aberto
+        const abertos=itensDoPedido.filter(i=>i.qtdFaltante>0);
+        let situacaoPrazoBR='ENTREGUE';
+        if(abertos.length>0){
+          if(abertos.some(i=>i.situacaoPrazo==='VENCIDO_SEM_AVISO')) situacaoPrazoBR='VENCIDO_SEM_AVISO';
+          else if(abertos.some(i=>i.situacaoPrazo==='REPROG_VENCIDO')) situacaoPrazoBR='REPROG_VENCIDO';
+          else if(abertos.some(i=>i.situacaoPrazo==='REPROGRAMADO')) situacaoPrazoBR='REPROGRAMADO';
+          else if(abertos.some(i=>i.situacaoPrazo==='SEM_PRAZO')) situacaoPrazoBR='SEM_PRAZO';
+          else situacaoPrazoBR='A_VENCER';
+        }
+        const maiorAtraso=abertos.reduce((m,i)=>Math.max(m,i.diasAtraso||0),0);
+        // Prazo vigente do projeto = o mais apertado entre os itens em aberto
+        const dataVigenteBR=abertos.map(i=>i.dataVigente).filter(Boolean).sort()[0]||null;
+        const dataPrevistaBR=itensDoPedido.map(i=>i.dataPrevista).filter(Boolean).sort()[0]||null;
+
         return{
           ...r,
           valorFaturado:faturado,
@@ -763,12 +820,17 @@ export default function App(){
           statusFaturamento,
           qtdItensPendentes:itensPendentes.length,
           qtdItensTotal:itensDoPedido.length,
+          situacaoPrazo:situacaoPrazoBR,
+          valorVencidoSemAviso,valorReprogramado,valorAVencer,valorSemPrazo,
+          maiorAtraso,dataVigente:dataVigenteBR,dataPrevistaOriginal:dataPrevistaBR,
+          reprogramacao:reprog,
           descricaoResumo:r.produtos.slice(0,1).join(', ')||(r.semPedidoSincronizado?'Pedido fora do período sincronizado':'—'),
           notas:(notasPorBR[r.br]||[]).sort((a,b)=>(b.dataFaturamento||'').localeCompare(a.dataFaturamento||'')),
           itens,
-          mesReferencia:s(r.dataNeg).slice(0,7)||'sem-data'
+          // Agrupamento passa a ser pelo MÊS DE ENTREGA (compromisso), não pelo mês do pedido
+          mesReferencia:s(dataVigenteBR||dataPrevistaBR).slice(0,7)||'sem-prazo'
         };
-      }).sort((a,b)=>(b.dataNeg||'').localeCompare(a.dataNeg||''));
+      }).sort((a,b)=>(a.dataVigente||a.dataPrevistaOriginal||'9999').localeCompare(b.dataVigente||b.dataPrevistaOriginal||'9999'));
 
       setMestraDb(lista);
     }catch(e){
@@ -2263,20 +2325,28 @@ export default function App(){
 
                 {mestraErro&&<div className="bg-red-50 border border-red-200 text-red-700 text-sm font-semibold rounded-xl px-4 py-3">{mestraErro}</div>}
 
-                {/* BLOCO 1 — Carteira de pedidos: base consistente (tudo vem do valor do pedido) */}
+                {/* BLOCO 1 — Compromisso de entrega: o que o PCP precisa cobrar */}
                 <div>
-                  <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">Carteira de Pedidos</p>
-                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-                    <button onClick={()=>setMestraFiltro('TODOS')} className="text-left">
-                      <KPICard label="Valor Total dos Pedidos" value={fmtMoeda(mestraDb.reduce((a,r)=>a+r.valorTotal,0))} icon={TrendingUp} color="indigo"/>
+                  <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">Compromisso de Entrega (saldo em aberto)</p>
+                  <div className="grid grid-cols-1 sm:grid-cols-4 gap-4">
+                    <button onClick={()=>setMestraFiltro('VENCIDO')} className="text-left">
+                      <KPICard label={`Vencido sem nova data ${mestraFiltro==='VENCIDO'?'(filtrando)':''}`} value={fmtMoeda(mestraDb.reduce((a,r)=>a+r.valorVencidoSemAviso,0))} icon={AlertTriangle} color="red" trendLabel={`${mestraDb.filter(r=>r.situacaoPrazo==='VENCIDO_SEM_AVISO').length} projetos — PCP precisa informar`}/>
                     </button>
-                    <button onClick={()=>setMestraFiltro(mestraFiltro==='FATURADO'?'TODOS':'FATURADO')} className="text-left">
-                      <KPICard label={`Já Atendido ${mestraFiltro==='FATURADO'?'(filtrando)':''}`} value={fmtMoeda(mestraDb.reduce((a,r)=>a+r.valorPedidoAtendido,0))} icon={CheckCircle} color="emerald" trendLabel={`${mestraDb.filter(r=>r.statusFaturamento==='COMPLETO').length} projetos completos`}/>
+                    <button onClick={()=>setMestraFiltro('REPROGRAMADO')} className="text-left">
+                      <KPICard label={`Reprogramado ${mestraFiltro==='REPROGRAMADO'?'(filtrando)':''}`} value={fmtMoeda(mestraDb.reduce((a,r)=>a+r.valorReprogramado,0))} icon={Clock} color="amber" trendLabel={`${mestraDb.filter(r=>r.situacaoPrazo==='REPROGRAMADO'||r.situacaoPrazo==='REPROG_VENCIDO').length} projetos com nova data`}/>
                     </button>
-                    <button onClick={()=>setMestraFiltro(mestraFiltro==='PENDENTE'?'TODOS':'PENDENTE')} className="text-left">
-                      <KPICard label={`Saldo a Faturar ${mestraFiltro==='PENDENTE'?'(filtrando)':''}`} value={fmtMoeda(mestraDb.reduce((a,r)=>a+r.valorAFaturar,0))} icon={Clock} color="amber" trendLabel={`${mestraDb.filter(r=>r.statusFaturamento==='PARCIAL').length} parciais · ${mestraDb.filter(r=>r.statusFaturamento==='PENDENTE').length} pendentes`}/>
+                    <button onClick={()=>setMestraFiltro('A_VENCER')} className="text-left">
+                      <KPICard label={`No prazo ${mestraFiltro==='A_VENCER'?'(filtrando)':''}`} value={fmtMoeda(mestraDb.reduce((a,r)=>a+r.valorAVencer,0))} icon={CheckCircle} color="indigo" trendLabel={`${mestraDb.filter(r=>r.situacaoPrazo==='A_VENCER').length} projetos a vencer`}/>
+                    </button>
+                    <button onClick={()=>setMestraFiltro('ENTREGUE')} className="text-left">
+                      <KPICard label={`Já entregue ${mestraFiltro==='ENTREGUE'?'(filtrando)':''}`} value={fmtMoeda(mestraDb.reduce((a,r)=>a+r.valorPedidoAtendido,0))} icon={PackageOpen} color="emerald" trendLabel={`${mestraDb.filter(r=>r.situacaoPrazo==='ENTREGUE').length} projetos concluídos`}/>
                     </button>
                   </div>
+                  {mestraDb.reduce((a,r)=>a+r.valorSemPrazo,0)>0&&(
+                    <p className="text-[11px] text-slate-400 mt-2">
+                      + {fmtMoeda(mestraDb.reduce((a,r)=>a+r.valorSemPrazo,0))} em itens sem data prevista cadastrada no Sankhya.
+                    </p>
+                  )}
                 </div>
 
                 {/* BLOCO 2 — Faturamento emitido: universo DIFERENTE da carteira acima */}
@@ -2300,18 +2370,19 @@ export default function App(){
                 {/* Gráfico: evolução mensal Total vs Faturado */}
                 {mestraChartData.length>0&&(
                   <div className="bg-white rounded-2xl border border-slate-200 p-5">
-                    <p className="text-xs font-black text-slate-600 uppercase tracking-wide mb-1">Carteira por Mês do Pedido</p>
-                    <p className="text-[11px] text-slate-400 mb-3">Quanto foi pedido, quanto já foi atendido e quanto ainda falta — tudo na base do valor do pedido.</p>
-                    <div style={{height:280}}>
+                    <p className="text-xs font-black text-slate-600 uppercase tracking-wide mb-1">Compromissos por Mês de Entrega</p>
+                    <p className="text-[11px] text-slate-400 mb-3">Agrupado pela data prometida (ou pela nova data, quando o PCP reprogramou). Vermelho = venceu e ninguém informou nova data.</p>
+                    <div style={{height:300}}>
                       <ResponsiveContainer width="100%" height="100%">
                         <BarChart data={mestraChartData} margin={{top:20,right:0,left:0,bottom:0}}>
                           <CartesianGrid strokeDasharray="3 3" vertical={false}/>
                           <XAxis dataKey="name" tick={{fontSize:10,fontWeight:'600',fill:'#64748b'}}/>
                           <Tooltip/>
                           <Legend/>
-                          <Bar dataKey="Total Pedido" fill="#6366f1" radius={[4,4,0,0]} maxBarSize={30}/>
-                          <Bar dataKey="Já Atendido" fill="#10b981" radius={[4,4,0,0]} maxBarSize={30}/>
-                          <Bar dataKey="Saldo a Faturar" fill="#f59e0b" radius={[4,4,0,0]} maxBarSize={30}/>
+                          <Bar dataKey="Entregue" stackId="a" fill="#10b981" maxBarSize={34}/>
+                          <Bar dataKey="Vencido s/ aviso" stackId="a" fill="#ef4444" maxBarSize={34}/>
+                          <Bar dataKey="Reprogramado" stackId="a" fill="#f59e0b" maxBarSize={34}/>
+                          <Bar dataKey="A vencer" stackId="a" fill="#6366f1" radius={[4,4,0,0]} maxBarSize={34}/>
                         </BarChart>
                       </ResponsiveContainer>
                     </div>
@@ -2319,7 +2390,7 @@ export default function App(){
                 )}
 
                 <div className="flex items-center gap-2 flex-wrap">
-                  {[{v:'TODOS',l:'Todos'},{v:'FATURADO',l:'Faturado'},{v:'PARCIAL',l:'Parcial'},{v:'PENDENTE',l:'Pendente'}].map(f=>(
+                  {[{v:'TODOS',l:'Todos'},{v:'VENCIDO',l:'Vencido s/ aviso'},{v:'REPROGRAMADO',l:'Reprogramado'},{v:'A_VENCER',l:'No prazo'},{v:'ENTREGUE',l:'Entregue'}].map(f=>(
                     <button key={f.v} onClick={()=>setMestraFiltro(f.v)} className={`text-xs font-bold px-3 py-1.5 rounded-full border transition-colors ${mestraFiltro===f.v?'bg-indigo-600 text-white border-indigo-600':'bg-white text-slate-600 border-slate-200 hover:border-indigo-300'}`}>{f.l}</button>
                   ))}
                   <span className="text-xs text-slate-400 ml-1">{mestraFiltrada.length} de {mestraDb.length} projetos</span>
@@ -2338,13 +2409,14 @@ export default function App(){
                         <button onClick={()=>toggleMesExpandido(grupo.mes)} className="w-full flex items-center justify-between px-5 py-3.5 bg-slate-50 hover:bg-slate-100 transition-colors">
                           <div className="flex items-center gap-2.5">
                             <ArrowDown className={`w-3.5 h-3.5 text-slate-400 transition-transform ${expandido?'':'-rotate-90'}`}/>
-                            <span className="text-sm font-black text-slate-800">{grupo.mes==='sem-data'?'Sem data':grupo.mes}</span>
+                            <span className="text-sm font-black text-slate-800">{grupo.mes==='sem-prazo'?'Sem data prevista':grupo.mes}</span>
                             <span className="text-[10px] font-bold text-slate-400 bg-white px-2 py-0.5 rounded-full border border-slate-200">{grupo.itens.length} projeto{grupo.itens.length>1?'s':''}</span>
                           </div>
                           <div className="flex items-center gap-4 text-xs font-bold">
-                            <span className="text-slate-600">{fmtMoeda(grupo.valorTotal)}</span>
-                            <span className="text-emerald-600">{fmtMoeda(grupo.valorAtendido)} atendido</span>
-                            <span className="text-amber-600">{fmtMoeda(grupo.valorAFaturar)} a faturar</span>
+                            {grupo.valorVencido>0&&<span className="text-red-600">{fmtMoeda(grupo.valorVencido)} vencido</span>}
+                            {grupo.valorReprogramado>0&&<span className="text-amber-600">{fmtMoeda(grupo.valorReprogramado)} reprog.</span>}
+                            {grupo.valorAVencer>0&&<span className="text-indigo-600">{fmtMoeda(grupo.valorAVencer)} a vencer</span>}
+                            <span className="text-emerald-600">{fmtMoeda(grupo.valorAtendido)} entregue</span>
                           </div>
                         </button>
                         {expandido&&(
@@ -2356,38 +2428,45 @@ export default function App(){
                                   <th className="px-5 py-2.5">Cliente</th>
                                   <th className="px-5 py-2.5">Vendedor</th>
                                   <th className="px-5 py-2.5">Descrição</th>
+                                  <th className="px-5 py-2.5 text-center">Prazo</th>
+                                  <th className="px-5 py-2.5 text-center">Situação</th>
                                   <th className="px-5 py-2.5 text-right">Valor Pedido</th>
-                                  <th className="px-5 py-2.5 text-right">Já Atendido</th>
-                                  <th className="px-5 py-2.5 text-right">Saldo a Faturar</th>
-                                  <th className="px-5 py-2.5 text-center">Status</th>
-                                  <th className="px-5 py-2.5 text-right border-l border-slate-200">NF Bruto</th>
-                                  <th className="px-5 py-2.5 text-right">NF Líquido</th>
+                                  <th className="px-5 py-2.5 text-right">Entregue</th>
+                                  <th className="px-5 py-2.5 text-right">Em aberto</th>
                                   <th className="px-5 py-2.5 text-center">Detalhe</th>
                                 </tr>
                               </thead>
                               <tbody className="divide-y divide-slate-100">
                                 {grupo.itens.map(r=>(
-                                  <tr key={r.br} className={`hover:bg-slate-50 ${r.semPedidoSincronizado?'bg-violet-50/30':''}`}>
+                                  <tr key={r.br} className={`hover:bg-slate-50 ${r.situacaoPrazo==='VENCIDO_SEM_AVISO'||r.situacaoPrazo==='REPROG_VENCIDO'?'bg-red-50/40':r.semPedidoSincronizado?'bg-violet-50/30':''}`}>
                                     <td className="px-5 py-2.5 font-bold text-indigo-700 whitespace-nowrap">{r.br}{r.semPedidoSincronizado&&<span className="ml-1.5 text-[9px] font-black text-violet-600 bg-violet-100 px-1.5 py-0.5 rounded-full" title="Pedido não encontrado no período sincronizado — só há registro de faturamento">sem pedido</span>}</td>
                                     <td className="px-5 py-2.5 text-slate-700 max-w-[140px] truncate" title={s(r.cliente)}>{s(r.cliente)}</td>
                                     <td className="px-5 py-2.5 text-slate-500 max-w-[110px] truncate" title={s(r.vendedor)}>{s(r.vendedor)}</td>
                                     <td className="px-5 py-2.5 text-slate-500 max-w-[180px] truncate" title={s(r.descricaoResumo)}>{s(r.descricaoResumo)}</td>
-                                    <td className="px-5 py-2.5 text-right font-semibold text-slate-700 whitespace-nowrap">{fmtMoeda(r.valorTotal)}</td>
-                                    <td className="px-5 py-2.5 text-right font-semibold text-emerald-600 whitespace-nowrap">{fmtMoeda(r.valorPedidoAtendido)}</td>
-                                    <td className="px-5 py-2.5 text-right font-semibold text-amber-600 whitespace-nowrap">{fmtMoeda(r.valorAFaturar)}</td>
+                                    <td className="px-5 py-2.5 text-center whitespace-nowrap">
+                                      {r.dataVigente?(
+                                        <span className={`text-[11px] font-bold ${r.situacaoPrazo==='VENCIDO_SEM_AVISO'||r.situacaoPrazo==='REPROG_VENCIDO'?'text-red-600':'text-slate-600'}`}>
+                                          {fmtDt(r.dataVigente)}
+                                          {r.reprogramacao&&r.dataPrevistaOriginal&&<span className="block text-[9px] text-slate-400 line-through">{fmtDt(r.dataPrevistaOriginal)}</span>}
+                                        </span>
+                                      ):<span className="text-slate-300">—</span>}
+                                    </td>
                                     <td className="px-5 py-2.5 text-center whitespace-nowrap">
                                       {(()=>{
                                         const cfg={
-                                          COMPLETO:{l:'Faturado',c:'bg-emerald-50 text-emerald-700 border-emerald-200'},
-                                          PARCIAL:{l:`Parcial (${r.qtdItensPendentes}/${r.qtdItensTotal} itens)`,c:'bg-amber-50 text-amber-700 border-amber-200'},
-                                          PENDENTE:{l:'Pendente',c:'bg-slate-100 text-slate-500 border-slate-200'},
-                                          SEM_PEDIDO:{l:'Sem pedido',c:'bg-violet-50 text-violet-700 border-violet-200'},
-                                        }[r.statusFaturamento]||{l:s(r.statusFaturamento),c:'bg-slate-100 text-slate-500 border-slate-200'};
+                                          ENTREGUE:{l:'Entregue',c:'bg-emerald-50 text-emerald-700 border-emerald-200'},
+                                          VENCIDO_SEM_AVISO:{l:`Vencido ${r.maiorAtraso}d`,c:'bg-red-50 text-red-700 border-red-200'},
+                                          REPROG_VENCIDO:{l:`Reprog. vencida ${r.maiorAtraso}d`,c:'bg-red-50 text-red-700 border-red-200'},
+                                          REPROGRAMADO:{l:'Reprogramado',c:'bg-amber-50 text-amber-700 border-amber-200'},
+                                          A_VENCER:{l:'No prazo',c:'bg-indigo-50 text-indigo-700 border-indigo-200'},
+                                          SEM_PRAZO:{l:'Sem prazo',c:'bg-slate-100 text-slate-500 border-slate-200'},
+                                        }[r.situacaoPrazo]||{l:s(r.situacaoPrazo),c:'bg-slate-100 text-slate-500 border-slate-200'};
                                         return <span className={`text-[9px] font-black px-2 py-0.5 rounded-full border ${cfg.c}`}>{cfg.l}</span>;
                                       })()}
                                     </td>
-                                    <td className="px-5 py-2.5 text-right font-semibold text-slate-400 whitespace-nowrap border-l border-slate-100">{r.valorBruto>0?fmtMoeda(r.valorBruto):'—'}</td>
-                                    <td className="px-5 py-2.5 text-right font-semibold text-violet-600 whitespace-nowrap">{r.valorFaturado>0?fmtMoeda(r.valorFaturado):'—'}</td>
+                                    <td className="px-5 py-2.5 text-right font-semibold text-slate-700 whitespace-nowrap">{fmtMoeda(r.valorTotal)}</td>
+                                    <td className="px-5 py-2.5 text-right font-semibold text-emerald-600 whitespace-nowrap">{fmtMoeda(r.valorPedidoAtendido)}</td>
+                                    <td className={`px-5 py-2.5 text-right font-semibold whitespace-nowrap ${r.valorVencidoSemAviso>0?'text-red-600':'text-slate-500'}`}>{r.valorAFaturar>0?fmtMoeda(r.valorAFaturar):'—'}</td>
                                     <td className="px-5 py-2.5 text-center">
                                       <button onClick={()=>setMestraNotasSel(r)} className="text-[10px] font-bold text-indigo-600 bg-indigo-50 border border-indigo-100 px-2.5 py-1 rounded-full hover:bg-indigo-100">
                                         Ver detalhe
@@ -2404,9 +2483,9 @@ export default function App(){
                   })}
                 </div>
                 <p className="text-xs text-slate-400">
-                  <strong>Carteira</strong> (Valor Pedido / Já Atendido / Saldo) vem toda de <code>pedidos_itens</code>, usando o campo QTDENTREGUE do Sankhya — por isso os três somam entre si.
-                  As colunas <strong>NF Bruto / NF Líquido</strong> vêm de <code>faturamento_resumo</code> e representam as notas emitidas, um universo diferente: uma nota pode faturar pedido de ano anterior.
-                  O status Faturado/Parcial/Pendente é sempre definido pela quantidade pendente dos itens, nunca por comparação de valores.
+                  O <strong>prazo</strong> vem da data prevista de entrega do Sankhya (DTPREVENT). Quando o PCP avalia que não vai conseguir entregar e informa uma nova data na tela OOH, ela passa a valer e a original aparece riscada.
+                  <strong className="text-red-500"> Vencido sem nova data</strong> é o que estourou o prazo sem ninguém reprogramar — é o indicador que o PCP precisa zerar.
+                  O agrupamento é pelo <strong>mês de entrega</strong> (compromisso), não pelo mês do pedido. Quanto já saiu vem do QTDENTREGUE do Sankhya.
                 </p>
               </div>
             )}
