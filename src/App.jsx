@@ -566,16 +566,36 @@ export default function App(){
 
   // ── Mestra PCP: agrega Pedidos de Venda + Faturamento do Portal de Engenharia por BR ──
   const [mestraDb,setMestraDb]=useState([]);
+  const [mestraNotasTotais,setMestraNotasTotais]=useState({bruto:0,liquido:0,brs:0});
   const [mestraFiltro,setMestraFiltro]=useState('TODOS'); // TODOS | FATURADO | PARCIAL | PENDENTE
   const [mestraNotasSel,setMestraNotasSel]=useState(null); // BR selecionado pra ver detalhamento de notas
   const [mestraDetalheTab,setMestraDetalheTab]=useState('ITENS'); // ITENS | NOTAS
-  const mestraFiltrada=useMemo(()=>mestraDb.filter(r=>{
+  const MESTRA_DATA_CORTE='2026-01'; // trabalhamos a partir de 01/01/2026 (por data de entrega)
+  const [mestraIncluirAnteriores,setMestraIncluirAnteriores]=useState(false);
+
+  // Base do período: tudo com entrega prometida de 2026 em diante.
+  // Compromissos mais antigos ficam escondidos por padrão, mas não são apagados.
+  const mestraBase=useMemo(()=>
+    mestraIncluirAnteriores?mestraDb:mestraDb.filter(r=>r.mesReferencia==='sem-prazo'||r.mesReferencia>=MESTRA_DATA_CORTE)
+  ,[mestraDb,mestraIncluirAnteriores]);
+
+  // Quanto está fora do período — mostrado como aviso pra não esconder atraso calado
+  const mestraForaDoPeriodo=useMemo(()=>{
+    const fora=mestraDb.filter(r=>r.mesReferencia!=='sem-prazo'&&r.mesReferencia<MESTRA_DATA_CORTE);
+    return{
+      pedidos:fora.length,
+      emAberto:fora.reduce((a,r)=>a+r.valorAFaturar,0),
+      vencido:fora.reduce((a,r)=>a+r.valorVencidoSemAviso,0)
+    };
+  },[mestraDb]);
+
+  const mestraFiltrada=useMemo(()=>mestraBase.filter(r=>{
     if(mestraFiltro==='VENCIDO')return r.situacaoPrazo==='VENCIDO_SEM_AVISO';
     if(mestraFiltro==='REPROGRAMADO')return r.situacaoPrazo==='REPROGRAMADO'||r.situacaoPrazo==='REPROG_VENCIDO';
     if(mestraFiltro==='A_VENCER')return r.situacaoPrazo==='A_VENCER';
     if(mestraFiltro==='ENTREGUE')return r.situacaoPrazo==='ENTREGUE';
     return true;
-  }),[mestraDb,mestraFiltro]);
+  }),[mestraBase,mestraFiltro]);
 
   // Agrupamento pelo MÊS DE ENTREGA (compromisso) — é assim que o PCP enxerga
   const mestraPorMes=useMemo(()=>{
@@ -656,7 +676,7 @@ export default function App(){
     setMestraLoading(true);setMestraErro('');
     try{
       const[pedidosRes,faturamentoRes,notaItensRes,planRes]=await Promise.all([
-        supabase.from('pedidos_itens').select('br,cliente_nome,vendedor_nome,valor_liquido,produto_descricao,cod_produto,quantidade,qtd_entregue,unidade,data_neg,data_prevista_entrega'),
+        supabase.from('pedidos_itens').select('br,nunota,numero_pedido,cliente_nome,vendedor_nome,valor_liquido,produto_descricao,cod_produto,quantidade,qtd_entregue,unidade,data_neg,data_prevista_entrega'),
         supabase.from('faturamento_resumo').select('br,cliente_nome,net_offer_value,valor_nota,tipmov,data_neg,numero_nota,data_faturamento').eq('tipmov','V'),
         supabase.from('nota_venda_itens').select('br,produto_descricao,cod_produto,quantidade,valor_bruto'),
         supabase.from('ooh_planejamento').select('br,nova_data,data_original,justificativa,status,criado_em')
@@ -701,44 +721,60 @@ export default function App(){
         itensFaturadosPorBR[br][cod].valorFaturado+=Number(it.valor_bruto||0);
       });
 
+      // Chave = BR + NUNOTA (pedido do Sankhya). O mesmo BR pode ter vários pedidos,
+      // com prazos e situações diferentes — tratá-los juntos escondia atrasos.
+      // (numero_pedido do cliente NÃO serve de chave: contratos guarda-chuva repetem
+      //  o mesmo número em BRs diferentes.)
       const agrup={};
-      const itensPedidoPorBR={};
+      const itensPedidoPorChave={};
       (pedidosRes.data||[]).forEach(p=>{
         const br=s(p.br);if(!br)return;
-        if(!agrup[br])agrup[br]={br,cliente:p.cliente_nome,vendedor:p.vendedor_nome,valorTotal:0,dataNeg:p.data_neg,dataPrevista:p.data_prevista_entrega,produtos:[]};
-        agrup[br].valorTotal+=Number(p.valor_liquido||0);
-        if(p.produto_descricao&&!agrup[br].produtos.includes(p.produto_descricao))agrup[br].produtos.push(p.produto_descricao);
-        // mantém a data de negociação mais antiga (data de emissão do pedido)
-        if(p.data_neg&&(!agrup[br].dataNeg||p.data_neg<agrup[br].dataNeg))agrup[br].dataNeg=p.data_neg;
+        const nunota=p.nunota==null?'':String(p.nunota);
+        const chave=`${br}|${nunota}`;
+        if(!agrup[chave])agrup[chave]={chave,br,nunota,numeroPedido:s(p.numero_pedido),cliente:p.cliente_nome,vendedor:p.vendedor_nome,valorTotal:0,dataNeg:p.data_neg,dataPrevista:p.data_prevista_entrega,produtos:[]};
+        agrup[chave].valorTotal+=Number(p.valor_liquido||0);
+        if(p.produto_descricao&&!agrup[chave].produtos.includes(p.produto_descricao))agrup[chave].produtos.push(p.produto_descricao);
+        if(p.data_neg&&(!agrup[chave].dataNeg||p.data_neg<agrup[chave].dataNeg))agrup[chave].dataNeg=p.data_neg;
 
-        if(!itensPedidoPorBR[br])itensPedidoPorBR[br]={};
+        if(!itensPedidoPorChave[chave])itensPedidoPorChave[chave]={};
         const cod=s(p.cod_produto)||s(p.produto_descricao);
-        if(!itensPedidoPorBR[br][cod])itensPedidoPorBR[br][cod]={codProduto:s(p.cod_produto),descricao:p.produto_descricao,unidade:p.unidade,qtdPedida:0,qtdEntregue:0,valorPedido:0,dataPrevista:p.data_prevista_entrega};
-        itensPedidoPorBR[br][cod].qtdPedida+=Number(p.quantidade||0);
-        itensPedidoPorBR[br][cod].qtdEntregue+=Number(p.qtd_entregue||0);
-        itensPedidoPorBR[br][cod].valorPedido+=Number(p.valor_liquido||0);
-        // prazo mais apertado vence: se o mesmo produto vem em dois pedidos, manda o mais antigo
-        if(p.data_prevista_entrega&&(!itensPedidoPorBR[br][cod].dataPrevista||p.data_prevista_entrega<itensPedidoPorBR[br][cod].dataPrevista))itensPedidoPorBR[br][cod].dataPrevista=p.data_prevista_entrega;
+        if(!itensPedidoPorChave[chave][cod])itensPedidoPorChave[chave][cod]={codProduto:s(p.cod_produto),descricao:p.produto_descricao,unidade:p.unidade,qtdPedida:0,qtdEntregue:0,valorPedido:0,dataPrevista:p.data_prevista_entrega};
+        itensPedidoPorChave[chave][cod].qtdPedida+=Number(p.quantidade||0);
+        itensPedidoPorChave[chave][cod].qtdEntregue+=Number(p.qtd_entregue||0);
+        itensPedidoPorChave[chave][cod].valorPedido+=Number(p.valor_liquido||0);
+        if(p.data_prevista_entrega&&(!itensPedidoPorChave[chave][cod].dataPrevista||p.data_prevista_entrega<itensPedidoPorChave[chave][cod].dataPrevista))itensPedidoPorChave[chave][cod].dataPrevista=p.data_prevista_entrega;
       });
+
+      // Quantos pedidos cada BR tem — pra sinalizar na tela quando estiver dividido
+      const pedidosPorBR={};
+      Object.values(agrup).forEach(a=>{pedidosPorBR[a.br]=(pedidosPorBR[a.br]||0)+1;});
 
       // BRs que só existem no faturamento (pedido fora da janela sincronizada, ou contrato
       // recorrente sem pedido individual) — sem isso, o valor faturado deles sumia da tela
       Object.keys(faturadoPorBR).forEach(br=>{
-        if(!agrup[br])agrup[br]={br,cliente:clienteFaturadoPorBR[br],vendedor:null,valorTotal:0,dataNeg:dataFaturadoPorBR[br],dataPrevista:null,produtos:[],semPedidoSincronizado:true};
+        if(!pedidosPorBR[br]){
+          const chave=`${br}|`;
+          agrup[chave]={chave,br,nunota:null,numeroPedido:null,cliente:clienteFaturadoPorBR[br],vendedor:null,valorTotal:0,dataNeg:dataFaturadoPorBR[br],dataPrevista:null,produtos:[],semPedidoSincronizado:true};
+          pedidosPorBR[br]=1;
+        }
       });
 
       const hojeIso=new Date().toISOString().slice(0,10);
 
       const lista=Object.values(agrup).map(r=>{
+        // Notas fiscais existem só no nível do BR — não dá pra ratear entre pedidos
+        // sem inventar dado. Guardamos como referência do BR e sinalizamos quando
+        // o BR está dividido em vários pedidos.
+        const brDividido=(pedidosPorBR[r.br]||1)>1;
         const faturado=faturadoPorBR[r.br]||0;
         const bruto=brutoPorBR[r.br]||0;
         const reprog=reprogPorBR[r.br]||null;
-        // Combina itens pedidos + itens faturados (mesmo que um item só exista num dos dois lados)
-        const codsPedido=Object.keys(itensPedidoPorBR[r.br]||{});
-        const codsFaturado=Object.keys(itensFaturadosPorBR[r.br]||{});
+        // Itens do PEDIDO vêm da chave (br+nunota); itens de NOTA são do BR inteiro
+        const codsPedido=Object.keys(itensPedidoPorChave[r.chave]||{});
+        const codsFaturado=r.semPedidoSincronizado?Object.keys(itensFaturadosPorBR[r.br]||{}):[];
         const todosOsCods=[...new Set([...codsPedido,...codsFaturado])];
         const itens=todosOsCods.map(cod=>{
-          const pedido=itensPedidoPorBR[r.br]?.[cod];
+          const pedido=itensPedidoPorChave[r.chave]?.[cod];
           const fat=itensFaturadosPorBR[r.br]?.[cod];
           const qtdPedida=pedido?.qtdPedida||0;
           // QTDENTREGUE do Sankhya é a fonte oficial de "quanto deste item já saiu".
@@ -812,6 +848,9 @@ export default function App(){
 
         return{
           ...r,
+          brDividido,
+          totalPedidosDoBR:pedidosPorBR[r.br]||1,
+          // Valores de NF são do BR inteiro (não rateáveis por pedido) — só pra referência
           valorFaturado:faturado,
           valorBruto:bruto,
           valorAFaturar:Math.max(0,r.valorTotal-valorPedidoAtendido),
@@ -832,6 +871,13 @@ export default function App(){
         };
       }).sort((a,b)=>(a.dataVigente||a.dataPrevistaOriginal||'9999').localeCompare(b.dataVigente||b.dataPrevistaOriginal||'9999'));
 
+      // Totais de nota fiscal calculados no nível do BR — somar as linhas duplicaria
+      // o valor nos BRs que têm mais de um pedido.
+      setMestraNotasTotais({
+        bruto:Object.values(brutoPorBR).reduce((a,v)=>a+v,0),
+        liquido:Object.values(faturadoPorBR).reduce((a,v)=>a+v,0),
+        brs:Object.keys(faturadoPorBR).length
+      });
       setMestraDb(lista);
     }catch(e){
       setMestraErro('Erro ao buscar dados do Portal de Engenharia: '+e.message);
@@ -2330,21 +2376,21 @@ export default function App(){
                   <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">Compromisso de Entrega (saldo em aberto)</p>
                   <div className="grid grid-cols-1 sm:grid-cols-4 gap-4">
                     <button onClick={()=>setMestraFiltro('VENCIDO')} className="text-left">
-                      <KPICard label={`Vencido sem nova data ${mestraFiltro==='VENCIDO'?'(filtrando)':''}`} value={fmtMoeda(mestraDb.reduce((a,r)=>a+r.valorVencidoSemAviso,0))} icon={AlertTriangle} color="red" trendLabel={`${mestraDb.filter(r=>r.situacaoPrazo==='VENCIDO_SEM_AVISO').length} projetos — PCP precisa informar`}/>
+                      <KPICard label={`Vencido sem nova data ${mestraFiltro==='VENCIDO'?'(filtrando)':''}`} value={fmtMoeda(mestraBase.reduce((a,r)=>a+r.valorVencidoSemAviso,0))} icon={AlertTriangle} color="red" trendLabel={`${mestraBase.filter(r=>r.situacaoPrazo==='VENCIDO_SEM_AVISO').length} projetos — PCP precisa informar`}/>
                     </button>
                     <button onClick={()=>setMestraFiltro('REPROGRAMADO')} className="text-left">
-                      <KPICard label={`Reprogramado ${mestraFiltro==='REPROGRAMADO'?'(filtrando)':''}`} value={fmtMoeda(mestraDb.reduce((a,r)=>a+r.valorReprogramado,0))} icon={Clock} color="amber" trendLabel={`${mestraDb.filter(r=>r.situacaoPrazo==='REPROGRAMADO'||r.situacaoPrazo==='REPROG_VENCIDO').length} projetos com nova data`}/>
+                      <KPICard label={`Reprogramado ${mestraFiltro==='REPROGRAMADO'?'(filtrando)':''}`} value={fmtMoeda(mestraBase.reduce((a,r)=>a+r.valorReprogramado,0))} icon={Clock} color="amber" trendLabel={`${mestraBase.filter(r=>r.situacaoPrazo==='REPROGRAMADO'||r.situacaoPrazo==='REPROG_VENCIDO').length} projetos com nova data`}/>
                     </button>
                     <button onClick={()=>setMestraFiltro('A_VENCER')} className="text-left">
-                      <KPICard label={`No prazo ${mestraFiltro==='A_VENCER'?'(filtrando)':''}`} value={fmtMoeda(mestraDb.reduce((a,r)=>a+r.valorAVencer,0))} icon={CheckCircle} color="indigo" trendLabel={`${mestraDb.filter(r=>r.situacaoPrazo==='A_VENCER').length} projetos a vencer`}/>
+                      <KPICard label={`No prazo ${mestraFiltro==='A_VENCER'?'(filtrando)':''}`} value={fmtMoeda(mestraBase.reduce((a,r)=>a+r.valorAVencer,0))} icon={CheckCircle} color="indigo" trendLabel={`${mestraBase.filter(r=>r.situacaoPrazo==='A_VENCER').length} projetos a vencer`}/>
                     </button>
                     <button onClick={()=>setMestraFiltro('ENTREGUE')} className="text-left">
-                      <KPICard label={`Já entregue ${mestraFiltro==='ENTREGUE'?'(filtrando)':''}`} value={fmtMoeda(mestraDb.reduce((a,r)=>a+r.valorPedidoAtendido,0))} icon={PackageOpen} color="emerald" trendLabel={`${mestraDb.filter(r=>r.situacaoPrazo==='ENTREGUE').length} projetos concluídos`}/>
+                      <KPICard label={`Já entregue ${mestraFiltro==='ENTREGUE'?'(filtrando)':''}`} value={fmtMoeda(mestraBase.reduce((a,r)=>a+r.valorPedidoAtendido,0))} icon={PackageOpen} color="emerald" trendLabel={`${mestraBase.filter(r=>r.situacaoPrazo==='ENTREGUE').length} projetos concluídos`}/>
                     </button>
                   </div>
-                  {mestraDb.reduce((a,r)=>a+r.valorSemPrazo,0)>0&&(
+                  {mestraBase.reduce((a,r)=>a+r.valorSemPrazo,0)>0&&(
                     <p className="text-[11px] text-slate-400 mt-2">
-                      + {fmtMoeda(mestraDb.reduce((a,r)=>a+r.valorSemPrazo,0))} em itens sem data prevista cadastrada no Sankhya.
+                      + {fmtMoeda(mestraBase.reduce((a,r)=>a+r.valorSemPrazo,0))} em itens sem data prevista cadastrada no Sankhya.
                     </p>
                   )}
                 </div>
@@ -2353,8 +2399,8 @@ export default function App(){
                 <div>
                   <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">Notas Fiscais Emitidas no Período</p>
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                    <KPICard label="Faturamento Bruto (VLRNOTA)" value={fmtMoeda(mestraDb.reduce((a,r)=>a+r.valorBruto,0))} icon={FileSpreadsheet} color="slate"/>
-                    <KPICard label="Faturamento Líquido (s/ impostos)" value={fmtMoeda(mestraDb.reduce((a,r)=>a+r.valorFaturado,0))} icon={Activity} color="violet"/>
+                    <KPICard label="Faturamento Bruto (VLRNOTA)" value={fmtMoeda(mestraNotasTotais.bruto)} icon={FileSpreadsheet} color="slate"/>
+                    <KPICard label="Faturamento Líquido (s/ impostos)" value={fmtMoeda(mestraNotasTotais.liquido)} icon={Activity} color="violet"/>
                   </div>
                   <div className="flex items-start gap-2 mt-2 bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2.5">
                     <Info className="w-3.5 h-3.5 text-slate-400 flex-shrink-0 mt-0.5"/>
@@ -2389,11 +2435,27 @@ export default function App(){
                   </div>
                 )}
 
+                {mestraForaDoPeriodo.pedidos>0&&(
+                  <div className="flex items-center justify-between gap-3 bg-slate-50 border border-slate-200 rounded-xl px-4 py-2.5">
+                    <div className="flex items-start gap-2">
+                      <Info className="w-3.5 h-3.5 text-slate-400 flex-shrink-0 mt-0.5"/>
+                      <p className="text-[11px] text-slate-500 leading-relaxed">
+                        {mestraIncluirAnteriores
+                          ?<>Mostrando também <strong>{mestraForaDoPeriodo.pedidos} pedidos com entrega prometida antes de 2026</strong>.</>
+                          :<>Exibindo entregas de <strong>01/01/2026 em diante</strong>. Ficaram de fora {mestraForaDoPeriodo.pedidos} pedidos com prazo anterior{mestraForaDoPeriodo.emAberto>0&&<>, sendo <strong className="text-red-600">{fmtMoeda(mestraForaDoPeriodo.emAberto)} ainda em aberto</strong></>}.</>}
+                      </p>
+                    </div>
+                    <button onClick={()=>setMestraIncluirAnteriores(v=>!v)} className="text-[10px] font-bold text-indigo-600 hover:underline whitespace-nowrap">
+                      {mestraIncluirAnteriores?'Ocultar anteriores':'Mostrar anteriores'}
+                    </button>
+                  </div>
+                )}
+
                 <div className="flex items-center gap-2 flex-wrap">
                   {[{v:'TODOS',l:'Todos'},{v:'VENCIDO',l:'Vencido s/ aviso'},{v:'REPROGRAMADO',l:'Reprogramado'},{v:'A_VENCER',l:'No prazo'},{v:'ENTREGUE',l:'Entregue'}].map(f=>(
                     <button key={f.v} onClick={()=>setMestraFiltro(f.v)} className={`text-xs font-bold px-3 py-1.5 rounded-full border transition-colors ${mestraFiltro===f.v?'bg-indigo-600 text-white border-indigo-600':'bg-white text-slate-600 border-slate-200 hover:border-indigo-300'}`}>{f.l}</button>
                   ))}
-                  <span className="text-xs text-slate-400 ml-1">{mestraFiltrada.length} de {mestraDb.length} projetos</span>
+                  <span className="text-xs text-slate-400 ml-1">{mestraFiltrada.length} de {mestraBase.length} pedidos · {new Set(mestraBase.map(r=>r.br)).size} projetos</span>
                   <button onClick={()=>setMesesExpandidos(new Set(mestraPorMes.map(g=>g.mes)))} className="text-[10px] font-bold text-indigo-600 ml-auto hover:underline">Expandir todos</button>
                   <button onClick={()=>setMesesExpandidos(new Set())} className="text-[10px] font-bold text-slate-400 hover:underline">Recolher todos</button>
                 </div>
@@ -2424,7 +2486,7 @@ export default function App(){
                             <table className="w-full text-sm">
                               <thead className="bg-slate-50/50 border-b border-slate-100">
                                 <tr className="text-left text-[10px] font-black text-slate-500 uppercase tracking-wider">
-                                  <th className="px-5 py-2.5">BR</th>
+                                  <th className="px-5 py-2.5">BR / Pedido</th>
                                   <th className="px-5 py-2.5">Cliente</th>
                                   <th className="px-5 py-2.5">Vendedor</th>
                                   <th className="px-5 py-2.5">Descrição</th>
@@ -2438,8 +2500,13 @@ export default function App(){
                               </thead>
                               <tbody className="divide-y divide-slate-100">
                                 {grupo.itens.map(r=>(
-                                  <tr key={r.br} className={`hover:bg-slate-50 ${r.situacaoPrazo==='VENCIDO_SEM_AVISO'||r.situacaoPrazo==='REPROG_VENCIDO'?'bg-red-50/40':r.semPedidoSincronizado?'bg-violet-50/30':''}`}>
-                                    <td className="px-5 py-2.5 font-bold text-indigo-700 whitespace-nowrap">{r.br}{r.semPedidoSincronizado&&<span className="ml-1.5 text-[9px] font-black text-violet-600 bg-violet-100 px-1.5 py-0.5 rounded-full" title="Pedido não encontrado no período sincronizado — só há registro de faturamento">sem pedido</span>}</td>
+                                  <tr key={r.chave} className={`hover:bg-slate-50 ${r.situacaoPrazo==='VENCIDO_SEM_AVISO'||r.situacaoPrazo==='REPROG_VENCIDO'?'bg-red-50/40':r.semPedidoSincronizado?'bg-violet-50/30':''}`}>
+                                    <td className="px-5 py-2.5 whitespace-nowrap">
+                                      <span className="font-bold text-indigo-700">{r.br}</span>
+                                      {r.brDividido&&<span className="ml-1.5 text-[9px] font-black text-slate-500 bg-slate-100 px-1.5 py-0.5 rounded-full" title={`Este BR tem ${r.totalPedidosDoBR} pedidos separados no Sankhya`}>{r.totalPedidosDoBR} pedidos</span>}
+                                      {r.semPedidoSincronizado&&<span className="ml-1.5 text-[9px] font-black text-violet-600 bg-violet-100 px-1.5 py-0.5 rounded-full">sem pedido</span>}
+                                      {r.nunota&&<span className="block text-[10px] text-slate-400 font-semibold">Pedido {r.nunota}{r.numeroPedido?` · OC ${r.numeroPedido}`:''}</span>}
+                                    </td>
                                     <td className="px-5 py-2.5 text-slate-700 max-w-[140px] truncate" title={s(r.cliente)}>{s(r.cliente)}</td>
                                     <td className="px-5 py-2.5 text-slate-500 max-w-[110px] truncate" title={s(r.vendedor)}>{s(r.vendedor)}</td>
                                     <td className="px-5 py-2.5 text-slate-500 max-w-[180px] truncate" title={s(r.descricaoResumo)}>{s(r.descricaoResumo)}</td>
@@ -2483,9 +2550,10 @@ export default function App(){
                   })}
                 </div>
                 <p className="text-xs text-slate-400">
-                  O <strong>prazo</strong> vem da data prevista de entrega do Sankhya (DTPREVENT). Quando o PCP avalia que não vai conseguir entregar e informa uma nova data na tela OOH, ela passa a valer e a original aparece riscada.
-                  <strong className="text-red-500"> Vencido sem nova data</strong> é o que estourou o prazo sem ninguém reprogramar — é o indicador que o PCP precisa zerar.
-                  O agrupamento é pelo <strong>mês de entrega</strong> (compromisso), não pelo mês do pedido. Quanto já saiu vem do QTDENTREGUE do Sankhya.
+                  <strong>Uma linha por pedido</strong> (NUNOTA do Sankhya), não por BR: o mesmo BR pode ter vários pedidos com prazos e situações diferentes, e juntá-los escondia atrasos. BRs divididos aparecem marcados.
+                  O <strong>prazo</strong> vem da data prevista de entrega (DTPREVENT); se o PCP informar nova data na tela OOH, ela passa a valer e a original aparece riscada.
+                  <strong className="text-red-500"> Vencido sem nova data</strong> é o que estourou sem ninguém reprogramar.
+                  Os valores de <strong>nota fiscal</strong> ficam no nível do BR — o Sankhya não amarra a nota ao pedido de origem, então não são rateados.
                 </p>
               </div>
             )}
@@ -5183,7 +5251,7 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
       </Modal>
 
       {/* ── MODAL MESTRA: Detalhamento por Item e Notas Fiscais ────────── */}
-      <Modal open={!!mestraNotasSel} onClose={()=>{setMestraNotasSel(null);setMestraDetalheTab('ITENS');}} title={`Detalhamento de ${s(mestraNotasSel?.br)}`} subtitle={`${s(mestraNotasSel?.cliente)} — pedido ${fmtMoeda(mestraNotasSel?.valorTotal)} / faturado líquido ${fmtMoeda(mestraNotasSel?.valorFaturado)}`} maxWidth="max-w-2xl">
+      <Modal open={!!mestraNotasSel} onClose={()=>{setMestraNotasSel(null);setMestraDetalheTab('ITENS');}} title={`${s(mestraNotasSel?.br)}${mestraNotasSel?.nunota?` · Pedido ${mestraNotasSel.nunota}`:''}`} subtitle={`${s(mestraNotasSel?.cliente)} — pedido ${fmtMoeda(mestraNotasSel?.valorTotal)} / entregue ${fmtMoeda(mestraNotasSel?.valorPedidoAtendido)}`} maxWidth="max-w-2xl">
         <div className="flex gap-2 mb-4">
           <button onClick={()=>setMestraDetalheTab('ITENS')} className={`text-xs font-bold px-3 py-1.5 rounded-full border ${mestraDetalheTab==='ITENS'?'bg-indigo-600 text-white border-indigo-600':'bg-white text-slate-600 border-slate-200'}`}>Itens (o que falta)</button>
           <button onClick={()=>setMestraDetalheTab('NOTAS')} className={`text-xs font-bold px-3 py-1.5 rounded-full border ${mestraDetalheTab==='NOTAS'?'bg-indigo-600 text-white border-indigo-600':'bg-white text-slate-600 border-slate-200'}`}>Notas Fiscais</button>
@@ -5223,6 +5291,14 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
 
         {mestraDetalheTab==='NOTAS'&&(
           <div className="space-y-2">
+            {mestraNotasSel?.brDividido&&(
+              <div className="flex items-start gap-2 bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2.5 mb-3">
+                <Info className="w-3.5 h-3.5 text-slate-400 flex-shrink-0 mt-0.5"/>
+                <p className="text-[11px] text-slate-500 leading-relaxed">
+                  Estas notas são de <strong>todo o BR {s(mestraNotasSel.br)}</strong> ({mestraNotasSel.totalPedidosDoBR} pedidos). O Sankhya não vincula a nota ao pedido de origem, então não dá pra separar por pedido sem risco de errar.
+                </p>
+              </div>
+            )}
             {(mestraNotasSel?.notas||[]).map((n,i)=>(
               <div key={i} className="flex items-center justify-between bg-slate-50 border border-slate-100 rounded-xl px-4 py-3">
                 <div>
