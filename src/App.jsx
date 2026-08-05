@@ -568,12 +568,38 @@ export default function App(){
   const [mestraDb,setMestraDb]=useState([]);
   const [mestraFiltro,setMestraFiltro]=useState('TODOS'); // TODOS | FATURADO | PARCIAL | PENDENTE
   const [mestraNotasSel,setMestraNotasSel]=useState(null); // BR selecionado pra ver detalhamento de notas
+  const [mestraDetalheTab,setMestraDetalheTab]=useState('ITENS'); // ITENS | NOTAS
   const mestraFiltrada=useMemo(()=>mestraDb.filter(r=>{
-    if(mestraFiltro==='FATURADO')return r.percentualFaturado>=0.999;
-    if(mestraFiltro==='PARCIAL')return r.percentualFaturado>0&&r.percentualFaturado<0.999;
-    if(mestraFiltro==='PENDENTE')return r.percentualFaturado<=0;
+    if(mestraFiltro==='FATURADO')return r.statusFaturamento==='COMPLETO';
+    if(mestraFiltro==='PARCIAL')return r.statusFaturamento==='PARCIAL';
+    if(mestraFiltro==='PENDENTE')return r.statusFaturamento==='PENDENTE';
     return true;
   }),[mestraDb,mestraFiltro]);
+
+  // Agrupamento mensal (por mês de negociação/emissão do pedido) — com subtotais
+  const mestraPorMes=useMemo(()=>{
+    const grupos={};
+    mestraFiltrada.forEach(r=>{
+      const mes=r.mesReferencia||'sem-data';
+      if(!grupos[mes])grupos[mes]={mes,itens:[],valorTotal:0,valorFaturado:0,valorAFaturar:0};
+      grupos[mes].itens.push(r);
+      grupos[mes].valorTotal+=r.valorTotal;
+      grupos[mes].valorFaturado+=r.valorFaturado;
+      grupos[mes].valorAFaturar+=r.valorAFaturar;
+    });
+    return Object.values(grupos).sort((a,b)=>b.mes.localeCompare(a.mes));
+  },[mestraFiltrada]);
+  const [mesesExpandidos,setMesesExpandidos]=useState(()=>new Set());
+  const toggleMesExpandido=mes=>setMesesExpandidos(p=>{const n=new Set(p);n.has(mes)?n.delete(mes):n.add(mes);return n;});
+
+  // Dados pro gráfico mensal (últimos 12 meses com dado)
+  const mestraChartData=useMemo(()=>{
+    return[...mestraPorMes].sort((a,b)=>a.mes.localeCompare(b.mes)).slice(-12).map(g=>({
+      name:g.mes==='sem-data'?'—':g.mes,
+      'Valor Total':Math.round(g.valorTotal),
+      'Faturado':Math.round(g.valorFaturado),
+    }));
+  },[mestraPorMes]);
 
   const [mestraLoading,setMestraLoading]=useState(false);
   const [mestraErro,setMestraErro]=useState('');
@@ -604,27 +630,43 @@ export default function App(){
     if(!supabase)return;
     setMestraLoading(true);setMestraErro('');
     try{
-      const[pedidosRes,faturamentoRes]=await Promise.all([
-        supabase.from('pedidos_itens').select('br,cliente_nome,vendedor_nome,valor_liquido,produto_descricao,data_neg,data_prevista_entrega'),
-        supabase.from('faturamento_resumo').select('br,cliente_nome,net_offer_value,tipmov,data_neg,numero_nota,data_faturamento').eq('tipmov','V')
+      const[pedidosRes,faturamentoRes,notaItensRes]=await Promise.all([
+        supabase.from('pedidos_itens').select('br,cliente_nome,vendedor_nome,valor_liquido,produto_descricao,cod_produto,quantidade,qtd_entregue,unidade,data_neg,data_prevista_entrega'),
+        supabase.from('faturamento_resumo').select('br,cliente_nome,net_offer_value,valor_nota,tipmov,data_neg,numero_nota,data_faturamento').eq('tipmov','V'),
+        supabase.from('nota_venda_itens').select('br,produto_descricao,cod_produto,quantidade,valor_bruto')
       ]);
       if(pedidosRes.error)throw pedidosRes.error;
       if(faturamentoRes.error)throw faturamentoRes.error;
+      if(notaItensRes.error)throw notaItensRes.error;
 
       const faturadoPorBR={};
+      const brutoPorBR={};
       const clienteFaturadoPorBR={};
       const dataFaturadoPorBR={};
       const notasPorBR={};
       (faturamentoRes.data||[]).forEach(f=>{
         const br=s(f.br);if(!br)return;
         faturadoPorBR[br]=(faturadoPorBR[br]||0)+Number(f.net_offer_value||0);
+        brutoPorBR[br]=(brutoPorBR[br]||0)+Number(f.valor_nota||0);
         if(!clienteFaturadoPorBR[br])clienteFaturadoPorBR[br]=f.cliente_nome;
         if(f.data_neg&&(!dataFaturadoPorBR[br]||f.data_neg<dataFaturadoPorBR[br]))dataFaturadoPorBR[br]=f.data_neg;
         if(!notasPorBR[br])notasPorBR[br]=[];
         notasPorBR[br].push({numeroNota:s(f.numero_nota),dataFaturamento:f.data_faturamento||f.data_neg,valor:Number(f.net_offer_value||0)});
       });
 
+      // Itens faturados por item (cod_produto), pra saber quanto de cada item já saiu
+      const itensFaturadosPorBR={};
+      (notaItensRes.data||[]).forEach(it=>{
+        const br=s(it.br);if(!br)return;
+        if(!itensFaturadosPorBR[br])itensFaturadosPorBR[br]={};
+        const cod=s(it.cod_produto)||s(it.produto_descricao);
+        if(!itensFaturadosPorBR[br][cod])itensFaturadosPorBR[br][cod]={codProduto:s(it.cod_produto),descricao:it.produto_descricao,qtdFaturada:0,valorFaturado:0};
+        itensFaturadosPorBR[br][cod].qtdFaturada+=Number(it.quantidade||0);
+        itensFaturadosPorBR[br][cod].valorFaturado+=Number(it.valor_bruto||0);
+      });
+
       const agrup={};
+      const itensPedidoPorBR={};
       (pedidosRes.data||[]).forEach(p=>{
         const br=s(p.br);if(!br)return;
         if(!agrup[br])agrup[br]={br,cliente:p.cliente_nome,vendedor:p.vendedor_nome,valorTotal:0,dataNeg:p.data_neg,dataPrevista:p.data_prevista_entrega,produtos:[]};
@@ -632,6 +674,13 @@ export default function App(){
         if(p.produto_descricao&&!agrup[br].produtos.includes(p.produto_descricao))agrup[br].produtos.push(p.produto_descricao);
         // mantém a data de negociação mais antiga (data de emissão do pedido)
         if(p.data_neg&&(!agrup[br].dataNeg||p.data_neg<agrup[br].dataNeg))agrup[br].dataNeg=p.data_neg;
+
+        if(!itensPedidoPorBR[br])itensPedidoPorBR[br]={};
+        const cod=s(p.cod_produto)||s(p.produto_descricao);
+        if(!itensPedidoPorBR[br][cod])itensPedidoPorBR[br][cod]={codProduto:s(p.cod_produto),descricao:p.produto_descricao,unidade:p.unidade,qtdPedida:0,qtdEntregue:0,valorPedido:0};
+        itensPedidoPorBR[br][cod].qtdPedida+=Number(p.quantidade||0);
+        itensPedidoPorBR[br][cod].qtdEntregue+=Number(p.qtd_entregue||0);
+        itensPedidoPorBR[br][cod].valorPedido+=Number(p.valor_liquido||0);
       });
 
       // BRs que só existem no faturamento (pedido fora da janela sincronizada, ou contrato
@@ -642,13 +691,60 @@ export default function App(){
 
       const lista=Object.values(agrup).map(r=>{
         const faturado=faturadoPorBR[r.br]||0;
+        const bruto=brutoPorBR[r.br]||0;
+        // Combina itens pedidos + itens faturados (mesmo que um item só exista num dos dois lados)
+        const codsPedido=Object.keys(itensPedidoPorBR[r.br]||{});
+        const codsFaturado=Object.keys(itensFaturadosPorBR[r.br]||{});
+        const todosOsCods=[...new Set([...codsPedido,...codsFaturado])];
+        const itens=todosOsCods.map(cod=>{
+          const pedido=itensPedidoPorBR[r.br]?.[cod];
+          const fat=itensFaturadosPorBR[r.br]?.[cod];
+          const qtdPedida=pedido?.qtdPedida||0;
+          // QTDENTREGUE do Sankhya é a fonte oficial de "quanto deste item já saiu".
+          // A quantidade das NFs entra como conferência/fallback quando o item não veio do pedido.
+          const qtdEntregue=pedido?pedido.qtdEntregue:(fat?.qtdFaturada||0);
+          const qtdFaltante=Math.max(0,qtdPedida-qtdEntregue);
+          return{
+            codProduto:pedido?.codProduto||fat?.codProduto||cod,
+            descricao:pedido?.descricao||fat?.descricao||'—',
+            unidade:pedido?.unidade||'',
+            qtdPedida,qtdEntregue,qtdFaltante,
+            qtdNasNotas:fat?.qtdFaturada||0,
+            valorPedido:pedido?.valorPedido||0,
+            valorFaturado:fat?.valorFaturado||0,
+            status:qtdPedida<=0?'SEM_PEDIDO':qtdFaltante<=0?'COMPLETO':qtdEntregue>0?'PARCIAL':'PENDENTE'
+          };
+        }).sort((a,b)=>b.valorPedido-a.valorPedido);
+
+        // Status do BR pela QUANTIDADE PENDENTE dos itens — não por valor.
+        // (Comparar valor do pedido com valor líquido da nota é inválido: o líquido
+        //  já teve impostos descontados, o que faria todo projeto parecer "parcial".)
+        const itensDoPedido=itens.filter(i=>i.qtdPedida>0);
+        const itensPendentes=itensDoPedido.filter(i=>i.qtdFaltante>0);
+        let statusFaturamento;
+        if(itensDoPedido.length===0) statusFaturamento='SEM_PEDIDO';
+        else if(itensPendentes.length===0) statusFaturamento='COMPLETO';
+        else if(itensDoPedido.some(i=>i.qtdEntregue>0)) statusFaturamento='PARCIAL';
+        else statusFaturamento='PENDENTE';
+
+        // Progresso ponderado pelo valor do pedido (base consistente: pedido x pedido)
+        const valorPedidoAtendido=itensDoPedido.reduce((acc,i)=>acc+i.valorPedido*(i.qtdPedida>0?Math.min(1,i.qtdEntregue/i.qtdPedida):0),0);
+        const percentualAtendido=r.valorTotal>0?valorPedidoAtendido/r.valorTotal:(faturado>0?1:0);
+
         return{
           ...r,
           valorFaturado:faturado,
-          valorAFaturar:Math.max(0,r.valorTotal-faturado),
-          percentualFaturado:r.valorTotal>0?faturado/r.valorTotal:(faturado>0?1:0),
+          valorBruto:bruto,
+          valorAFaturar:Math.max(0,r.valorTotal-valorPedidoAtendido),
+          valorPedidoAtendido,
+          percentualFaturado:percentualAtendido,
+          statusFaturamento,
+          qtdItensPendentes:itensPendentes.length,
+          qtdItensTotal:itensDoPedido.length,
           descricaoResumo:r.produtos.slice(0,1).join(', ')||(r.semPedidoSincronizado?'Pedido fora do período sincronizado':'—'),
-          notas:(notasPorBR[r.br]||[]).sort((a,b)=>(b.dataFaturamento||'').localeCompare(a.dataFaturamento||''))
+          notas:(notasPorBR[r.br]||[]).sort((a,b)=>(b.dataFaturamento||'').localeCompare(a.dataFaturamento||'')),
+          itens,
+          mesReferencia:s(r.dataNeg).slice(0,7)||'sem-data'
         };
       }).sort((a,b)=>(b.dataNeg||'').localeCompare(a.dataNeg||''));
 
@@ -2145,77 +2241,125 @@ export default function App(){
 
                 {mestraErro&&<div className="bg-red-50 border border-red-200 text-red-700 text-sm font-semibold rounded-xl px-4 py-3">{mestraErro}</div>}
 
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-                  <button onClick={()=>setMestraFiltro(mestraFiltro==='TODOS'?'TODOS':'TODOS')} className="text-left">
+                <div className="grid grid-cols-1 sm:grid-cols-4 gap-4">
+                  <button onClick={()=>setMestraFiltro('TODOS')} className="text-left">
                     <KPICard label="Valor Total (Pedidos)" value={fmtMoeda(mestraDb.reduce((a,r)=>a+r.valorTotal,0))} icon={TrendingUp} color="indigo"/>
                   </button>
+                  <button onClick={()=>{}} className="text-left cursor-default">
+                    <KPICard label="Valor Bruto Faturado" value={fmtMoeda(mestraDb.reduce((a,r)=>a+r.valorBruto,0))} icon={FileSpreadsheet} color="slate"/>
+                  </button>
                   <button onClick={()=>setMestraFiltro(mestraFiltro==='FATURADO'?'TODOS':'FATURADO')} className="text-left">
-                    <KPICard label={`Já Faturado ${mestraFiltro==='FATURADO'?'(filtrando)':''}`} value={fmtMoeda(mestraDb.reduce((a,r)=>a+r.valorFaturado,0))} icon={CheckCircle} color="emerald"/>
+                    <KPICard label={`Faturado Líquido ${mestraFiltro==='FATURADO'?'(filtrando)':''}`} value={fmtMoeda(mestraDb.reduce((a,r)=>a+r.valorFaturado,0))} icon={CheckCircle} color="emerald"/>
                   </button>
                   <button onClick={()=>setMestraFiltro(mestraFiltro==='PENDENTE'?'TODOS':'PENDENTE')} className="text-left">
-                    <KPICard label={`A Faturar ${mestraFiltro==='PENDENTE'?'(filtrando)':''}`} value={fmtMoeda(mestraDb.reduce((a,r)=>a+r.valorAFaturar,0))} icon={Clock} color="amber"/>
+                    <KPICard label={`A Faturar ${mestraFiltro==='PENDENTE'?'(filtrando)':''}`} value={fmtMoeda(mestraDb.reduce((a,r)=>a+r.valorAFaturar,0))} icon={Clock} color="amber" trendLabel={`${mestraDb.filter(r=>r.statusFaturamento==='PARCIAL').length} parciais · ${mestraDb.filter(r=>r.statusFaturamento==='PENDENTE').length} pendentes`}/>
                   </button>
                 </div>
+
+                {/* Gráfico: evolução mensal Total vs Faturado */}
+                {mestraChartData.length>0&&(
+                  <div className="bg-white rounded-2xl border border-slate-200 p-5">
+                    <p className="text-xs font-black text-slate-600 uppercase tracking-wide mb-3">Total Pedido x Faturado por Mês</p>
+                    <div style={{height:280}}>
+                      <ResponsiveContainer width="100%" height="100%">
+                        <BarChart data={mestraChartData} margin={{top:20,right:0,left:0,bottom:0}}>
+                          <CartesianGrid strokeDasharray="3 3" vertical={false}/>
+                          <XAxis dataKey="name" tick={{fontSize:10,fontWeight:'600',fill:'#64748b'}}/>
+                          <Tooltip/>
+                          <Legend/>
+                          <Bar dataKey="Valor Total" fill="#6366f1" radius={[4,4,0,0]} maxBarSize={36}/>
+                          <Bar dataKey="Faturado" fill="#10b981" radius={[4,4,0,0]} maxBarSize={36}/>
+                        </BarChart>
+                      </ResponsiveContainer>
+                    </div>
+                  </div>
+                )}
 
                 <div className="flex items-center gap-2 flex-wrap">
                   {[{v:'TODOS',l:'Todos'},{v:'FATURADO',l:'Faturado'},{v:'PARCIAL',l:'Parcial'},{v:'PENDENTE',l:'Pendente'}].map(f=>(
                     <button key={f.v} onClick={()=>setMestraFiltro(f.v)} className={`text-xs font-bold px-3 py-1.5 rounded-full border transition-colors ${mestraFiltro===f.v?'bg-indigo-600 text-white border-indigo-600':'bg-white text-slate-600 border-slate-200 hover:border-indigo-300'}`}>{f.l}</button>
                   ))}
                   <span className="text-xs text-slate-400 ml-1">{mestraFiltrada.length} de {mestraDb.length} projetos</span>
+                  <button onClick={()=>setMesesExpandidos(new Set(mestraPorMes.map(g=>g.mes)))} className="text-[10px] font-bold text-indigo-600 ml-auto hover:underline">Expandir todos</button>
+                  <button onClick={()=>setMesesExpandidos(new Set())} className="text-[10px] font-bold text-slate-400 hover:underline">Recolher todos</button>
                 </div>
 
-                <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
-                  <div className="overflow-x-auto custom-scrollbar">
-                    <table className="w-full text-sm">
-                      <thead className="bg-slate-50 border-b border-slate-200">
-                        <tr className="text-left text-[10px] font-black text-slate-500 uppercase tracking-wider">
-                          <th className="px-5 py-3.5">BR</th>
-                          <th className="px-5 py-3.5">Cliente</th>
-                          <th className="px-5 py-3.5">Vendedor</th>
-                          <th className="px-5 py-3.5">Descrição</th>
-                          <th className="px-5 py-3.5 text-right">Valor Total</th>
-                          <th className="px-5 py-3.5 text-right">Faturado</th>
-                          <th className="px-5 py-3.5 text-right">A Faturar</th>
-                          <th className="px-5 py-3.5 text-right">% Faturado</th>
-                          <th className="px-5 py-3.5 text-center">Notas</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-slate-100">
-                        {mestraLoading&&(
-                          <tr><td colSpan={9} className="px-5 py-10 text-center text-slate-400 font-semibold">Carregando dados do Portal de Engenharia...</td></tr>
+                {/* Tabela agrupada por mês — cada mês começa recolhido, mostrando só o subtotal */}
+                <div className="space-y-3">
+                  {mestraLoading&&<div className="bg-white rounded-2xl border border-slate-200 px-5 py-10 text-center text-slate-400 font-semibold">Carregando dados do Portal de Engenharia...</div>}
+                  {!mestraLoading&&mestraPorMes.length===0&&<div className="bg-white rounded-2xl border border-slate-200 px-5 py-10 text-center text-slate-400 font-semibold">Nenhum dado encontrado.</div>}
+                  {!mestraLoading&&mestraPorMes.map(grupo=>{
+                    const expandido=mesesExpandidos.has(grupo.mes);
+                    return(
+                      <div key={grupo.mes} className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
+                        <button onClick={()=>toggleMesExpandido(grupo.mes)} className="w-full flex items-center justify-between px-5 py-3.5 bg-slate-50 hover:bg-slate-100 transition-colors">
+                          <div className="flex items-center gap-2.5">
+                            <ArrowDown className={`w-3.5 h-3.5 text-slate-400 transition-transform ${expandido?'':'-rotate-90'}`}/>
+                            <span className="text-sm font-black text-slate-800">{grupo.mes==='sem-data'?'Sem data':grupo.mes}</span>
+                            <span className="text-[10px] font-bold text-slate-400 bg-white px-2 py-0.5 rounded-full border border-slate-200">{grupo.itens.length} projeto{grupo.itens.length>1?'s':''}</span>
+                          </div>
+                          <div className="flex items-center gap-4 text-xs font-bold">
+                            <span className="text-slate-600">{fmtMoeda(grupo.valorTotal)}</span>
+                            <span className="text-emerald-600">{fmtMoeda(grupo.valorFaturado)} faturado</span>
+                            <span className="text-amber-600">{fmtMoeda(grupo.valorAFaturar)} a faturar</span>
+                          </div>
+                        </button>
+                        {expandido&&(
+                          <div className="overflow-x-auto custom-scrollbar">
+                            <table className="w-full text-sm">
+                              <thead className="bg-slate-50/50 border-b border-slate-100">
+                                <tr className="text-left text-[10px] font-black text-slate-500 uppercase tracking-wider">
+                                  <th className="px-5 py-2.5">BR</th>
+                                  <th className="px-5 py-2.5">Cliente</th>
+                                  <th className="px-5 py-2.5">Vendedor</th>
+                                  <th className="px-5 py-2.5">Descrição</th>
+                                  <th className="px-5 py-2.5 text-right">Valor Total</th>
+                                  <th className="px-5 py-2.5 text-right">Bruto Faturado</th>
+                                  <th className="px-5 py-2.5 text-right">Líquido Faturado</th>
+                                  <th className="px-5 py-2.5 text-right">A Faturar</th>
+                                  <th className="px-5 py-2.5 text-center">Status</th>
+                                  <th className="px-5 py-2.5 text-center">Detalhe</th>
+                                </tr>
+                              </thead>
+                              <tbody className="divide-y divide-slate-100">
+                                {grupo.itens.map(r=>(
+                                  <tr key={r.br} className={`hover:bg-slate-50 ${r.semPedidoSincronizado?'bg-violet-50/30':''}`}>
+                                    <td className="px-5 py-2.5 font-bold text-indigo-700 whitespace-nowrap">{r.br}{r.semPedidoSincronizado&&<span className="ml-1.5 text-[9px] font-black text-violet-600 bg-violet-100 px-1.5 py-0.5 rounded-full" title="Pedido não encontrado no período sincronizado — só há registro de faturamento">sem pedido</span>}</td>
+                                    <td className="px-5 py-2.5 text-slate-700 max-w-[140px] truncate" title={s(r.cliente)}>{s(r.cliente)}</td>
+                                    <td className="px-5 py-2.5 text-slate-500 max-w-[110px] truncate" title={s(r.vendedor)}>{s(r.vendedor)}</td>
+                                    <td className="px-5 py-2.5 text-slate-500 max-w-[180px] truncate" title={s(r.descricaoResumo)}>{s(r.descricaoResumo)}</td>
+                                    <td className="px-5 py-2.5 text-right font-semibold text-slate-700 whitespace-nowrap">{fmtMoeda(r.valorTotal)}</td>
+                                    <td className="px-5 py-2.5 text-right font-semibold text-slate-500 whitespace-nowrap">{fmtMoeda(r.valorBruto)}</td>
+                                    <td className="px-5 py-2.5 text-right font-semibold text-emerald-600 whitespace-nowrap">{fmtMoeda(r.valorFaturado)}</td>
+                                    <td className="px-5 py-2.5 text-right font-semibold text-amber-600 whitespace-nowrap">{fmtMoeda(r.valorAFaturar)}</td>
+                                    <td className="px-5 py-2.5 text-center whitespace-nowrap">
+                                      {(()=>{
+                                        const cfg={
+                                          COMPLETO:{l:'Faturado',c:'bg-emerald-50 text-emerald-700 border-emerald-200'},
+                                          PARCIAL:{l:`Parcial (${r.qtdItensPendentes}/${r.qtdItensTotal} itens)`,c:'bg-amber-50 text-amber-700 border-amber-200'},
+                                          PENDENTE:{l:'Pendente',c:'bg-slate-100 text-slate-500 border-slate-200'},
+                                          SEM_PEDIDO:{l:'Sem pedido',c:'bg-violet-50 text-violet-700 border-violet-200'},
+                                        }[r.statusFaturamento]||{l:s(r.statusFaturamento),c:'bg-slate-100 text-slate-500 border-slate-200'};
+                                        return <span className={`text-[9px] font-black px-2 py-0.5 rounded-full border ${cfg.c}`}>{cfg.l}</span>;
+                                      })()}
+                                    </td>
+                                    <td className="px-5 py-2.5 text-center">
+                                      <button onClick={()=>setMestraNotasSel(r)} className="text-[10px] font-bold text-indigo-600 bg-indigo-50 border border-indigo-100 px-2.5 py-1 rounded-full hover:bg-indigo-100">
+                                        Ver detalhe
+                                      </button>
+                                    </td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
                         )}
-                        {!mestraLoading&&mestraFiltrada.length===0&&(
-                          <tr><td colSpan={9} className="px-5 py-10 text-center text-slate-400 font-semibold">Nenhum dado encontrado.</td></tr>
-                        )}
-                        {!mestraLoading&&mestraFiltrada.map(r=>(
-                          <tr key={r.br} className={`hover:bg-slate-50 ${r.semPedidoSincronizado?'bg-violet-50/30':''}`}>
-                            <td className="px-5 py-3 font-bold text-indigo-700">{r.br}{r.semPedidoSincronizado&&<span className="ml-1.5 text-[9px] font-black text-violet-600 bg-violet-100 px-1.5 py-0.5 rounded-full" title="Pedido não encontrado no período sincronizado — só há registro de faturamento">sem pedido</span>}</td>
-                            <td className="px-5 py-3 text-slate-700">{s(r.cliente)}</td>
-                            <td className="px-5 py-3 text-slate-500">{s(r.vendedor)}</td>
-                            <td className="px-5 py-3 text-slate-500 max-w-xs truncate" title={s(r.descricaoResumo)}>{s(r.descricaoResumo)}</td>
-                            <td className="px-5 py-3 text-right font-semibold text-slate-700">{fmtMoeda(r.valorTotal)}</td>
-                            <td className="px-5 py-3 text-right font-semibold text-emerald-600">{fmtMoeda(r.valorFaturado)}</td>
-                            <td className="px-5 py-3 text-right font-semibold text-amber-600">{fmtMoeda(r.valorAFaturar)}</td>
-                            <td className="px-5 py-3 text-right">
-                              <span className={`text-[10px] font-black px-2 py-0.5 rounded-full ${r.percentualFaturado>=1?'bg-emerald-50 text-emerald-700':r.percentualFaturado>0?'bg-amber-50 text-amber-700':'bg-slate-100 text-slate-500'}`}>
-                                {(r.percentualFaturado*100).toFixed(0)}%
-                              </span>
-                            </td>
-                            <td className="px-5 py-3 text-center">
-                              {(r.notas?.length>0)?(
-                                <button onClick={()=>setMestraNotasSel(r)} className="text-[10px] font-bold text-indigo-600 bg-indigo-50 border border-indigo-100 px-2.5 py-1 rounded-full hover:bg-indigo-100">
-                                  {r.notas.length} nota{r.notas.length>1?'s':''}
-                                </button>
-                              ):<span className="text-slate-300 text-xs">—</span>}
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
+                      </div>
+                    );
+                  })}
                 </div>
                 <p className="text-xs text-slate-400">
-                  Fonte: <code>pedidos_itens</code> (valor total) e <code>faturamento_resumo</code> (faturado, nível de nota, líquido de impostos, sem duplicidade), sincronizadas direto do Sankhya. Campos como Status OP, Andamento e Escopo ainda não estão disponíveis aqui — evolução planejada.
+                  Fonte: <code>pedidos_itens</code> (valor e quantidades), <code>nota_venda_itens</code> (itens das notas) e <code>faturamento_resumo</code> (valores de nota). O status <strong>Faturado / Parcial / Pendente</strong> é definido pela <strong>quantidade ainda pendente nos itens do pedido</strong> (campo QTDENTREGUE do Sankhya) — não pela comparação de valores, já que o valor líquido da nota tem impostos descontados e não é comparável com o valor do pedido.
                 </p>
               </div>
             )}
@@ -4912,22 +5056,61 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
         )}
       </Modal>
 
-      {/* ── MODAL MESTRA: Detalhamento de Notas Fiscais por BR ────────── */}
-      <Modal open={!!mestraNotasSel} onClose={()=>setMestraNotasSel(null)} title={`Notas de ${s(mestraNotasSel?.br)}`} subtitle={`${s(mestraNotasSel?.cliente)} — total faturado: ${fmtMoeda(mestraNotasSel?.valorFaturado)}`} maxWidth="max-w-lg">
-        <div className="space-y-2">
-          {(mestraNotasSel?.notas||[]).map((n,i)=>(
-            <div key={i} className="flex items-center justify-between bg-slate-50 border border-slate-100 rounded-xl px-4 py-3">
-              <div>
-                <p className="text-sm font-bold text-slate-900">NF {n.numeroNota||'—'}</p>
-                <p className="text-xs text-slate-500">{fmtDt(n.dataFaturamento)}</p>
-              </div>
-              <p className="text-sm font-black text-emerald-600">{fmtMoeda(n.valor)}</p>
-            </div>
-          ))}
-          {(!mestraNotasSel?.notas||mestraNotasSel.notas.length===0)&&(
-            <p className="text-sm text-slate-400 text-center py-6">Nenhuma nota encontrada.</p>
-          )}
+      {/* ── MODAL MESTRA: Detalhamento por Item e Notas Fiscais ────────── */}
+      <Modal open={!!mestraNotasSel} onClose={()=>{setMestraNotasSel(null);setMestraDetalheTab('ITENS');}} title={`Detalhamento de ${s(mestraNotasSel?.br)}`} subtitle={`${s(mestraNotasSel?.cliente)} — pedido ${fmtMoeda(mestraNotasSel?.valorTotal)} / faturado líquido ${fmtMoeda(mestraNotasSel?.valorFaturado)}`} maxWidth="max-w-2xl">
+        <div className="flex gap-2 mb-4">
+          <button onClick={()=>setMestraDetalheTab('ITENS')} className={`text-xs font-bold px-3 py-1.5 rounded-full border ${mestraDetalheTab==='ITENS'?'bg-indigo-600 text-white border-indigo-600':'bg-white text-slate-600 border-slate-200'}`}>Itens (o que falta)</button>
+          <button onClick={()=>setMestraDetalheTab('NOTAS')} className={`text-xs font-bold px-3 py-1.5 rounded-full border ${mestraDetalheTab==='NOTAS'?'bg-indigo-600 text-white border-indigo-600':'bg-white text-slate-600 border-slate-200'}`}>Notas Fiscais</button>
         </div>
+
+        {mestraDetalheTab==='ITENS'&&(
+          <div className="space-y-2">
+            {(mestraNotasSel?.itens||[]).map((it,i)=>{
+              const cfg={
+                COMPLETO:{label:'Faturado',cls:'bg-emerald-50 text-emerald-700 border-emerald-200'},
+                PARCIAL:{label:'Parcial',cls:'bg-amber-50 text-amber-700 border-amber-200'},
+                PENDENTE:{label:'Pendente',cls:'bg-slate-100 text-slate-500 border-slate-200'},
+                SEM_PEDIDO:{label:'Sem pedido vinculado',cls:'bg-violet-50 text-violet-700 border-violet-200'},
+              }[it.status]||{label:it.status,cls:'bg-slate-100 text-slate-500 border-slate-200'};
+              return(
+                <div key={i} className="bg-slate-50 border border-slate-100 rounded-xl px-4 py-3">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <p className="text-sm font-bold text-slate-900 truncate">{s(it.codProduto)} — {s(it.descricao)}</p>
+                      <p className="text-xs text-slate-500 mt-0.5">
+                        Pedido: {fmtD(it.qtdPedida)} {it.unidade} · Entregue: {fmtD(it.qtdEntregue)} {it.unidade} · Falta: <span className={`font-bold ${it.qtdFaltante>0?'text-amber-600':'text-emerald-600'}`}>{fmtD(it.qtdFaltante)} {it.unidade}</span>
+                      </p>
+                      {it.qtdPedida>0&&it.qtdNasNotas>0&&Math.abs(it.qtdNasNotas-it.qtdEntregue)>0.01&&(
+                        <p className="text-[10px] text-slate-400 mt-0.5">Nas notas fiscais: {fmtD(it.qtdNasNotas)} {it.unidade}</p>
+                      )}
+                    </div>
+                    <span className={`text-[9px] font-black px-2 py-0.5 rounded-full border whitespace-nowrap ${cfg.cls}`}>{cfg.label}</span>
+                  </div>
+                </div>
+              );
+            })}
+            {(!mestraNotasSel?.itens||mestraNotasSel.itens.length===0)&&(
+              <p className="text-sm text-slate-400 text-center py-6">Nenhum item encontrado.</p>
+            )}
+          </div>
+        )}
+
+        {mestraDetalheTab==='NOTAS'&&(
+          <div className="space-y-2">
+            {(mestraNotasSel?.notas||[]).map((n,i)=>(
+              <div key={i} className="flex items-center justify-between bg-slate-50 border border-slate-100 rounded-xl px-4 py-3">
+                <div>
+                  <p className="text-sm font-bold text-slate-900">NF {n.numeroNota||'—'}</p>
+                  <p className="text-xs text-slate-500">{fmtDt(n.dataFaturamento)}</p>
+                </div>
+                <p className="text-sm font-black text-emerald-600">{fmtMoeda(n.valor)}</p>
+              </div>
+            ))}
+            {(!mestraNotasSel?.notas||mestraNotasSel.notas.length===0)&&(
+              <p className="text-sm text-slate-400 text-center py-6">Nenhuma nota encontrada.</p>
+            )}
+          </div>
+        )}
       </Modal>
 
       {/* ── MODAL OOH: Reprogramar / Antecipar ────────────────────────── */}
