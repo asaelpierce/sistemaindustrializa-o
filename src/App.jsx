@@ -581,14 +581,16 @@ export default function App(){
     if(!supabase)return;
     setSincronizandoPedidos(true);
     try{
-      const[r1,r2]=await Promise.all([
+      const[r1,r2,r3]=await Promise.all([
         fetch(`${SUPABASE_URL}/functions/v1/pedidos-itens-sync`,{method:'POST',headers:{'Content-Type':'application/json','apikey':SUPABASE_KEY},body:JSON.stringify({})}),
-        fetch(`${SUPABASE_URL}/functions/v1/nota-venda-itens-sync`,{method:'POST',headers:{'Content-Type':'application/json','apikey':SUPABASE_KEY},body:JSON.stringify({})})
+        fetch(`${SUPABASE_URL}/functions/v1/nota-venda-itens-sync`,{method:'POST',headers:{'Content-Type':'application/json','apikey':SUPABASE_KEY},body:JSON.stringify({})}),
+        fetch(`${SUPABASE_URL}/functions/v1/faturamento-resumo-sync`,{method:'POST',headers:{'Content-Type':'application/json','apikey':SUPABASE_KEY},body:JSON.stringify({})})
       ]);
-      const[d1,d2]=await Promise.all([r1.json(),r2.json()]);
+      const[d1,d2,d3]=await Promise.all([r1.json(),r2.json(),r3.json()]);
       if(!d1.ok)throw new Error('Pedidos: '+d1.erro);
-      if(!d2.ok)throw new Error('Faturamento: '+d2.erro);
-      addToast(`Sincronizado! ${d1.itens_sincronizados} pedidos, ${d2.itens_sincronizados} itens faturados.`);
+      if(!d2.ok)throw new Error('Nota de venda: '+d2.erro);
+      if(!d3.ok)throw new Error('Faturamento resumo: '+d3.erro);
+      addToast(`Sincronizado! ${d1.itens_sincronizados} pedidos, ${d3.registros_sincronizados} notas conferidas.`);
       await Promise.all([fetchMestra(),fetchOOH()]);
     }catch(e){
       addToast('Erro ao sincronizar com o Sankhya: '+e.message,'error');
@@ -603,7 +605,7 @@ export default function App(){
     try{
       const[pedidosRes,faturamentoRes]=await Promise.all([
         supabase.from('pedidos_itens').select('br,cliente_nome,vendedor_nome,valor_liquido,produto_descricao,data_neg,data_prevista_entrega'),
-        supabase.from('nota_venda_itens').select('br,valor_bruto')
+        supabase.from('faturamento_resumo').select('br,net_offer_value')
       ]);
       if(pedidosRes.error)throw pedidosRes.error;
       if(faturamentoRes.error)throw faturamentoRes.error;
@@ -611,7 +613,7 @@ export default function App(){
       const faturadoPorBR={};
       (faturamentoRes.data||[]).forEach(f=>{
         const br=s(f.br);if(!br)return;
-        faturadoPorBR[br]=(faturadoPorBR[br]||0)+Number(f.valor_bruto||0);
+        faturadoPorBR[br]=(faturadoPorBR[br]||0)+Number(f.net_offer_value||0);
       });
 
       const agrup={};
@@ -660,7 +662,7 @@ export default function App(){
     try{
       const[pedidosRes,faturamentoRes,planejamentoRes]=await Promise.all([
         supabase.from('pedidos_itens').select('br,cliente_nome,vendedor_nome,valor_liquido,produto_descricao,data_prevista_entrega,cod_produto,quantidade'),
-        supabase.from('nota_venda_itens').select('br,valor_bruto'),
+        supabase.from('faturamento_resumo').select('br,net_offer_value'),
         supabase.from('ooh_planejamento').select('*')
       ]);
       if(pedidosRes.error)throw pedidosRes.error;
@@ -668,7 +670,7 @@ export default function App(){
       if(planejamentoRes.error)throw planejamentoRes.error;
 
       const faturadoPorBR={};
-      (faturamentoRes.data||[]).forEach(f=>{const br=s(f.br);if(!br)return;faturadoPorBR[br]=(faturadoPorBR[br]||0)+Number(f.valor_bruto||0);});
+      (faturamentoRes.data||[]).forEach(f=>{const br=s(f.br);if(!br)return;faturadoPorBR[br]=(faturadoPorBR[br]||0)+Number(f.net_offer_value||0);});
 
       const agrup={};
       const itensPorBR={};
@@ -2190,7 +2192,7 @@ export default function App(){
                   </div>
                 </div>
                 <p className="text-xs text-slate-400">
-                  Fonte: tabelas <code>pedidos_itens</code> e <code>nota_venda_itens</code>, sincronizadas direto do Sankhya (clique em "Sincronizar Sankhya" pra atualizar). Campos como Status OP, Andamento e Escopo ainda não estão disponíveis aqui — evolução planejada.
+                  Fonte: <code>pedidos_itens</code> (valor total) e <code>faturamento_resumo</code> (faturado, nível de nota, líquido de impostos, sem duplicidade), sincronizadas direto do Sankhya. Campos como Status OP, Andamento e Escopo ainda não estão disponíveis aqui — evolução planejada.
                 </p>
               </div>
             )}
@@ -2254,7 +2256,7 @@ export default function App(){
                   </div>
                 </div>
                 <p className="text-xs text-slate-400">
-                  Fonte: <code>pedidos_itens</code> sincronizado direto do Sankhya, cruzado com <code>nota_venda_itens</code> pra saber o que já foi atendido (faturado). Reprogramações ficam salvas aqui no Sistema de Industrialização.
+                  Fonte: <code>pedidos_itens</code> sincronizado direto do Sankhya, cruzado com <code>faturamento_resumo</code> (nível de nota, líquido de impostos) pra saber o que já foi atendido. Reprogramações ficam salvas aqui no Sistema de Industrialização.
                 </p>
 
                 {/* ── Previsão de Matéria-Prima ── */}
