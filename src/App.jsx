@@ -567,6 +567,7 @@ export default function App(){
   // ── Mestra PCP: agrega Pedidos de Venda + Faturamento do Portal de Engenharia por BR ──
   const [mestraDb,setMestraDb]=useState([]);
   const [mestraFiltro,setMestraFiltro]=useState('TODOS'); // TODOS | FATURADO | PARCIAL | PENDENTE
+  const [mestraNotasSel,setMestraNotasSel]=useState(null); // BR selecionado pra ver detalhamento de notas
   const mestraFiltrada=useMemo(()=>mestraDb.filter(r=>{
     if(mestraFiltro==='FATURADO')return r.percentualFaturado>=0.999;
     if(mestraFiltro==='PARCIAL')return r.percentualFaturado>0&&r.percentualFaturado<0.999;
@@ -605,15 +606,22 @@ export default function App(){
     try{
       const[pedidosRes,faturamentoRes]=await Promise.all([
         supabase.from('pedidos_itens').select('br,cliente_nome,vendedor_nome,valor_liquido,produto_descricao,data_neg,data_prevista_entrega'),
-        supabase.from('faturamento_resumo').select('br,net_offer_value')
+        supabase.from('faturamento_resumo').select('br,cliente_nome,net_offer_value,tipmov,data_neg,numero_nota,data_faturamento').eq('tipmov','V')
       ]);
       if(pedidosRes.error)throw pedidosRes.error;
       if(faturamentoRes.error)throw faturamentoRes.error;
 
       const faturadoPorBR={};
+      const clienteFaturadoPorBR={};
+      const dataFaturadoPorBR={};
+      const notasPorBR={};
       (faturamentoRes.data||[]).forEach(f=>{
         const br=s(f.br);if(!br)return;
         faturadoPorBR[br]=(faturadoPorBR[br]||0)+Number(f.net_offer_value||0);
+        if(!clienteFaturadoPorBR[br])clienteFaturadoPorBR[br]=f.cliente_nome;
+        if(f.data_neg&&(!dataFaturadoPorBR[br]||f.data_neg<dataFaturadoPorBR[br]))dataFaturadoPorBR[br]=f.data_neg;
+        if(!notasPorBR[br])notasPorBR[br]=[];
+        notasPorBR[br].push({numeroNota:s(f.numero_nota),dataFaturamento:f.data_faturamento||f.data_neg,valor:Number(f.net_offer_value||0)});
       });
 
       const agrup={};
@@ -626,14 +634,21 @@ export default function App(){
         if(p.data_neg&&(!agrup[br].dataNeg||p.data_neg<agrup[br].dataNeg))agrup[br].dataNeg=p.data_neg;
       });
 
+      // BRs que só existem no faturamento (pedido fora da janela sincronizada, ou contrato
+      // recorrente sem pedido individual) — sem isso, o valor faturado deles sumia da tela
+      Object.keys(faturadoPorBR).forEach(br=>{
+        if(!agrup[br])agrup[br]={br,cliente:clienteFaturadoPorBR[br],vendedor:null,valorTotal:0,dataNeg:dataFaturadoPorBR[br],dataPrevista:null,produtos:[],semPedidoSincronizado:true};
+      });
+
       const lista=Object.values(agrup).map(r=>{
         const faturado=faturadoPorBR[r.br]||0;
         return{
           ...r,
           valorFaturado:faturado,
           valorAFaturar:Math.max(0,r.valorTotal-faturado),
-          percentualFaturado:r.valorTotal>0?faturado/r.valorTotal:0,
-          descricaoResumo:r.produtos.slice(0,1).join(', ')||'—'
+          percentualFaturado:r.valorTotal>0?faturado/r.valorTotal:(faturado>0?1:0),
+          descricaoResumo:r.produtos.slice(0,1).join(', ')||(r.semPedidoSincronizado?'Pedido fora do período sincronizado':'—'),
+          notas:(notasPorBR[r.br]||[]).sort((a,b)=>(b.dataFaturamento||'').localeCompare(a.dataFaturamento||''))
         };
       }).sort((a,b)=>(b.dataNeg||'').localeCompare(a.dataNeg||''));
 
@@ -662,7 +677,7 @@ export default function App(){
     try{
       const[pedidosRes,faturamentoRes,planejamentoRes]=await Promise.all([
         supabase.from('pedidos_itens').select('br,cliente_nome,vendedor_nome,valor_liquido,produto_descricao,data_prevista_entrega,cod_produto,quantidade'),
-        supabase.from('faturamento_resumo').select('br,net_offer_value'),
+        supabase.from('faturamento_resumo').select('br,net_offer_value,tipmov').eq('tipmov','V'),
         supabase.from('ooh_planejamento').select('*')
       ]);
       if(pedidosRes.error)throw pedidosRes.error;
@@ -2162,18 +2177,19 @@ export default function App(){
                           <th className="px-5 py-3.5 text-right">Faturado</th>
                           <th className="px-5 py-3.5 text-right">A Faturar</th>
                           <th className="px-5 py-3.5 text-right">% Faturado</th>
+                          <th className="px-5 py-3.5 text-center">Notas</th>
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-slate-100">
                         {mestraLoading&&(
-                          <tr><td colSpan={8} className="px-5 py-10 text-center text-slate-400 font-semibold">Carregando dados do Portal de Engenharia...</td></tr>
+                          <tr><td colSpan={9} className="px-5 py-10 text-center text-slate-400 font-semibold">Carregando dados do Portal de Engenharia...</td></tr>
                         )}
                         {!mestraLoading&&mestraFiltrada.length===0&&(
-                          <tr><td colSpan={8} className="px-5 py-10 text-center text-slate-400 font-semibold">Nenhum dado encontrado.</td></tr>
+                          <tr><td colSpan={9} className="px-5 py-10 text-center text-slate-400 font-semibold">Nenhum dado encontrado.</td></tr>
                         )}
                         {!mestraLoading&&mestraFiltrada.map(r=>(
-                          <tr key={r.br} className="hover:bg-slate-50">
-                            <td className="px-5 py-3 font-bold text-indigo-700">{r.br}</td>
+                          <tr key={r.br} className={`hover:bg-slate-50 ${r.semPedidoSincronizado?'bg-violet-50/30':''}`}>
+                            <td className="px-5 py-3 font-bold text-indigo-700">{r.br}{r.semPedidoSincronizado&&<span className="ml-1.5 text-[9px] font-black text-violet-600 bg-violet-100 px-1.5 py-0.5 rounded-full" title="Pedido não encontrado no período sincronizado — só há registro de faturamento">sem pedido</span>}</td>
                             <td className="px-5 py-3 text-slate-700">{s(r.cliente)}</td>
                             <td className="px-5 py-3 text-slate-500">{s(r.vendedor)}</td>
                             <td className="px-5 py-3 text-slate-500 max-w-xs truncate" title={s(r.descricaoResumo)}>{s(r.descricaoResumo)}</td>
@@ -2184,6 +2200,13 @@ export default function App(){
                               <span className={`text-[10px] font-black px-2 py-0.5 rounded-full ${r.percentualFaturado>=1?'bg-emerald-50 text-emerald-700':r.percentualFaturado>0?'bg-amber-50 text-amber-700':'bg-slate-100 text-slate-500'}`}>
                                 {(r.percentualFaturado*100).toFixed(0)}%
                               </span>
+                            </td>
+                            <td className="px-5 py-3 text-center">
+                              {(r.notas?.length>0)?(
+                                <button onClick={()=>setMestraNotasSel(r)} className="text-[10px] font-bold text-indigo-600 bg-indigo-50 border border-indigo-100 px-2.5 py-1 rounded-full hover:bg-indigo-100">
+                                  {r.notas.length} nota{r.notas.length>1?'s':''}
+                                </button>
+                              ):<span className="text-slate-300 text-xs">—</span>}
                             </td>
                           </tr>
                         ))}
@@ -4887,6 +4910,24 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
             />
           </div>
         )}
+      </Modal>
+
+      {/* ── MODAL MESTRA: Detalhamento de Notas Fiscais por BR ────────── */}
+      <Modal open={!!mestraNotasSel} onClose={()=>setMestraNotasSel(null)} title={`Notas de ${s(mestraNotasSel?.br)}`} subtitle={`${s(mestraNotasSel?.cliente)} — total faturado: ${fmtMoeda(mestraNotasSel?.valorFaturado)}`} maxWidth="max-w-lg">
+        <div className="space-y-2">
+          {(mestraNotasSel?.notas||[]).map((n,i)=>(
+            <div key={i} className="flex items-center justify-between bg-slate-50 border border-slate-100 rounded-xl px-4 py-3">
+              <div>
+                <p className="text-sm font-bold text-slate-900">NF {n.numeroNota||'—'}</p>
+                <p className="text-xs text-slate-500">{fmtDt(n.dataFaturamento)}</p>
+              </div>
+              <p className="text-sm font-black text-emerald-600">{fmtMoeda(n.valor)}</p>
+            </div>
+          ))}
+          {(!mestraNotasSel?.notas||mestraNotasSel.notas.length===0)&&(
+            <p className="text-sm text-slate-400 text-center py-6">Nenhuma nota encontrada.</p>
+          )}
+        </div>
       </Modal>
 
       {/* ── MODAL OOH: Reprogramar / Antecipar ────────────────────────── */}
