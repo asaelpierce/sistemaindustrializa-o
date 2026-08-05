@@ -581,10 +581,11 @@ export default function App(){
     const grupos={};
     mestraFiltrada.forEach(r=>{
       const mes=r.mesReferencia||'sem-data';
-      if(!grupos[mes])grupos[mes]={mes,itens:[],valorTotal:0,valorFaturado:0,valorAFaturar:0};
+      if(!grupos[mes])grupos[mes]={mes,itens:[],valorTotal:0,valorFaturado:0,valorAtendido:0,valorAFaturar:0};
       grupos[mes].itens.push(r);
       grupos[mes].valorTotal+=r.valorTotal;
       grupos[mes].valorFaturado+=r.valorFaturado;
+      grupos[mes].valorAtendido+=r.valorPedidoAtendido;
       grupos[mes].valorAFaturar+=r.valorAFaturar;
     });
     return Object.values(grupos).sort((a,b)=>b.mes.localeCompare(a.mes));
@@ -592,12 +593,14 @@ export default function App(){
   const [mesesExpandidos,setMesesExpandidos]=useState(()=>new Set());
   const toggleMesExpandido=mes=>setMesesExpandidos(p=>{const n=new Set(p);n.has(mes)?n.delete(mes):n.add(mes);return n;});
 
-  // Dados pro gráfico mensal (últimos 12 meses com dado)
+  // Dados pro gráfico mensal — base consistente: tudo derivado do valor do PEDIDO
+  // (comparar valor de pedido com valor de nota seria inválido, são universos diferentes)
   const mestraChartData=useMemo(()=>{
     return[...mestraPorMes].sort((a,b)=>a.mes.localeCompare(b.mes)).slice(-12).map(g=>({
       name:g.mes==='sem-data'?'—':g.mes,
-      'Valor Total':Math.round(g.valorTotal),
-      'Faturado':Math.round(g.valorFaturado),
+      'Total Pedido':Math.round(g.valorTotal),
+      'Já Atendido':Math.round(g.valorAtendido),
+      'Saldo a Faturar':Math.round(g.valorAFaturar),
     }));
   },[mestraPorMes]);
 
@@ -617,7 +620,26 @@ export default function App(){
       if(!d1.ok)throw new Error('Pedidos: '+d1.erro);
       if(!d2.ok)throw new Error('Nota de venda: '+d2.erro);
       if(!d3.ok)throw new Error('Faturamento resumo: '+d3.erro);
-      addToast(`Sincronizado! ${d1.itens_sincronizados} pedidos, ${d3.registros_sincronizados} notas conferidas.`);
+
+      // Auto-correção: projetos que têm nota mas cujo pedido é de ano anterior à janela
+      // sincronizada ficariam "sem pedido" na carteira. Busca esses pedidos por projeto,
+      // sem filtro de data, pra carteira ficar completa.
+      let complementoMsg='';
+      try{
+        const[{data:brsFat},{data:brsPed}]=await Promise.all([
+          supabase.from('faturamento_resumo').select('br').eq('tipmov','V').not('br','is',null),
+          supabase.from('pedidos_itens').select('br').not('br','is',null)
+        ]);
+        const comPedido=new Set((brsPed||[]).map(x=>s(x.br)));
+        const faltantes=[...new Set((brsFat||[]).map(x=>s(x.br)).filter(b=>b&&!comPedido.has(b)))];
+        if(faltantes.length>0){
+          const rc=await fetch(`${SUPABASE_URL}/functions/v1/pedidos-itens-sync`,{method:'POST',headers:{'Content-Type':'application/json','apikey':SUPABASE_KEY},body:JSON.stringify({brs:faltantes})});
+          const dc=await rc.json();
+          if(dc.ok)complementoMsg=` +${dc.itens_sincronizados} itens de ${dc.brs_encontrados||0} projetos anteriores.`;
+        }
+      }catch(_e){/* complemento é best-effort: não invalida a sincronização principal */}
+
+      addToast(`Sincronizado! ${d1.itens_sincronizados} pedidos, ${d3.registros_sincronizados} notas conferidas.${complementoMsg}`);
       await Promise.all([fetchMestra(),fetchOOH()]);
     }catch(e){
       addToast('Erro ao sincronizar com o Sankhya: '+e.message,'error');
@@ -2241,25 +2263,45 @@ export default function App(){
 
                 {mestraErro&&<div className="bg-red-50 border border-red-200 text-red-700 text-sm font-semibold rounded-xl px-4 py-3">{mestraErro}</div>}
 
-                <div className="grid grid-cols-1 sm:grid-cols-4 gap-4">
-                  <button onClick={()=>setMestraFiltro('TODOS')} className="text-left">
-                    <KPICard label="Valor Total (Pedidos)" value={fmtMoeda(mestraDb.reduce((a,r)=>a+r.valorTotal,0))} icon={TrendingUp} color="indigo"/>
-                  </button>
-                  <button onClick={()=>{}} className="text-left cursor-default">
-                    <KPICard label="Valor Bruto Faturado" value={fmtMoeda(mestraDb.reduce((a,r)=>a+r.valorBruto,0))} icon={FileSpreadsheet} color="slate"/>
-                  </button>
-                  <button onClick={()=>setMestraFiltro(mestraFiltro==='FATURADO'?'TODOS':'FATURADO')} className="text-left">
-                    <KPICard label={`Faturado Líquido ${mestraFiltro==='FATURADO'?'(filtrando)':''}`} value={fmtMoeda(mestraDb.reduce((a,r)=>a+r.valorFaturado,0))} icon={CheckCircle} color="emerald"/>
-                  </button>
-                  <button onClick={()=>setMestraFiltro(mestraFiltro==='PENDENTE'?'TODOS':'PENDENTE')} className="text-left">
-                    <KPICard label={`A Faturar ${mestraFiltro==='PENDENTE'?'(filtrando)':''}`} value={fmtMoeda(mestraDb.reduce((a,r)=>a+r.valorAFaturar,0))} icon={Clock} color="amber" trendLabel={`${mestraDb.filter(r=>r.statusFaturamento==='PARCIAL').length} parciais · ${mestraDb.filter(r=>r.statusFaturamento==='PENDENTE').length} pendentes`}/>
-                  </button>
+                {/* BLOCO 1 — Carteira de pedidos: base consistente (tudo vem do valor do pedido) */}
+                <div>
+                  <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">Carteira de Pedidos</p>
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                    <button onClick={()=>setMestraFiltro('TODOS')} className="text-left">
+                      <KPICard label="Valor Total dos Pedidos" value={fmtMoeda(mestraDb.reduce((a,r)=>a+r.valorTotal,0))} icon={TrendingUp} color="indigo"/>
+                    </button>
+                    <button onClick={()=>setMestraFiltro(mestraFiltro==='FATURADO'?'TODOS':'FATURADO')} className="text-left">
+                      <KPICard label={`Já Atendido ${mestraFiltro==='FATURADO'?'(filtrando)':''}`} value={fmtMoeda(mestraDb.reduce((a,r)=>a+r.valorPedidoAtendido,0))} icon={CheckCircle} color="emerald" trendLabel={`${mestraDb.filter(r=>r.statusFaturamento==='COMPLETO').length} projetos completos`}/>
+                    </button>
+                    <button onClick={()=>setMestraFiltro(mestraFiltro==='PENDENTE'?'TODOS':'PENDENTE')} className="text-left">
+                      <KPICard label={`Saldo a Faturar ${mestraFiltro==='PENDENTE'?'(filtrando)':''}`} value={fmtMoeda(mestraDb.reduce((a,r)=>a+r.valorAFaturar,0))} icon={Clock} color="amber" trendLabel={`${mestraDb.filter(r=>r.statusFaturamento==='PARCIAL').length} parciais · ${mestraDb.filter(r=>r.statusFaturamento==='PENDENTE').length} pendentes`}/>
+                    </button>
+                  </div>
+                </div>
+
+                {/* BLOCO 2 — Faturamento emitido: universo DIFERENTE da carteira acima */}
+                <div>
+                  <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">Notas Fiscais Emitidas no Período</p>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <KPICard label="Faturamento Bruto (VLRNOTA)" value={fmtMoeda(mestraDb.reduce((a,r)=>a+r.valorBruto,0))} icon={FileSpreadsheet} color="slate"/>
+                    <KPICard label="Faturamento Líquido (s/ impostos)" value={fmtMoeda(mestraDb.reduce((a,r)=>a+r.valorFaturado,0))} icon={Activity} color="violet"/>
+                  </div>
+                  <div className="flex items-start gap-2 mt-2 bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2.5">
+                    <Info className="w-3.5 h-3.5 text-slate-400 flex-shrink-0 mt-0.5"/>
+                    <p className="text-[11px] text-slate-500 leading-relaxed">
+                      Este bloco <strong>não se subtrai da carteira acima</strong>: são universos diferentes. Uma nota emitida agora pode faturar um pedido de anos anteriores, e parte da carteira só será faturada em períodos futuros.
+                      {mestraDb.filter(r=>r.semPedidoSincronizado).length>0&&(
+                        <> Ainda há <strong>{mestraDb.filter(r=>r.semPedidoSincronizado).length} projeto(s) com nota mas sem pedido localizado</strong> — clique em Sincronizar Sankhya para buscá-los.</>
+                      )}
+                    </p>
+                  </div>
                 </div>
 
                 {/* Gráfico: evolução mensal Total vs Faturado */}
                 {mestraChartData.length>0&&(
                   <div className="bg-white rounded-2xl border border-slate-200 p-5">
-                    <p className="text-xs font-black text-slate-600 uppercase tracking-wide mb-3">Total Pedido x Faturado por Mês</p>
+                    <p className="text-xs font-black text-slate-600 uppercase tracking-wide mb-1">Carteira por Mês do Pedido</p>
+                    <p className="text-[11px] text-slate-400 mb-3">Quanto foi pedido, quanto já foi atendido e quanto ainda falta — tudo na base do valor do pedido.</p>
                     <div style={{height:280}}>
                       <ResponsiveContainer width="100%" height="100%">
                         <BarChart data={mestraChartData} margin={{top:20,right:0,left:0,bottom:0}}>
@@ -2267,8 +2309,9 @@ export default function App(){
                           <XAxis dataKey="name" tick={{fontSize:10,fontWeight:'600',fill:'#64748b'}}/>
                           <Tooltip/>
                           <Legend/>
-                          <Bar dataKey="Valor Total" fill="#6366f1" radius={[4,4,0,0]} maxBarSize={36}/>
-                          <Bar dataKey="Faturado" fill="#10b981" radius={[4,4,0,0]} maxBarSize={36}/>
+                          <Bar dataKey="Total Pedido" fill="#6366f1" radius={[4,4,0,0]} maxBarSize={30}/>
+                          <Bar dataKey="Já Atendido" fill="#10b981" radius={[4,4,0,0]} maxBarSize={30}/>
+                          <Bar dataKey="Saldo a Faturar" fill="#f59e0b" radius={[4,4,0,0]} maxBarSize={30}/>
                         </BarChart>
                       </ResponsiveContainer>
                     </div>
@@ -2300,7 +2343,7 @@ export default function App(){
                           </div>
                           <div className="flex items-center gap-4 text-xs font-bold">
                             <span className="text-slate-600">{fmtMoeda(grupo.valorTotal)}</span>
-                            <span className="text-emerald-600">{fmtMoeda(grupo.valorFaturado)} faturado</span>
+                            <span className="text-emerald-600">{fmtMoeda(grupo.valorAtendido)} atendido</span>
                             <span className="text-amber-600">{fmtMoeda(grupo.valorAFaturar)} a faturar</span>
                           </div>
                         </button>
@@ -2313,11 +2356,12 @@ export default function App(){
                                   <th className="px-5 py-2.5">Cliente</th>
                                   <th className="px-5 py-2.5">Vendedor</th>
                                   <th className="px-5 py-2.5">Descrição</th>
-                                  <th className="px-5 py-2.5 text-right">Valor Total</th>
-                                  <th className="px-5 py-2.5 text-right">Bruto Faturado</th>
-                                  <th className="px-5 py-2.5 text-right">Líquido Faturado</th>
-                                  <th className="px-5 py-2.5 text-right">A Faturar</th>
+                                  <th className="px-5 py-2.5 text-right">Valor Pedido</th>
+                                  <th className="px-5 py-2.5 text-right">Já Atendido</th>
+                                  <th className="px-5 py-2.5 text-right">Saldo a Faturar</th>
                                   <th className="px-5 py-2.5 text-center">Status</th>
+                                  <th className="px-5 py-2.5 text-right border-l border-slate-200">NF Bruto</th>
+                                  <th className="px-5 py-2.5 text-right">NF Líquido</th>
                                   <th className="px-5 py-2.5 text-center">Detalhe</th>
                                 </tr>
                               </thead>
@@ -2329,8 +2373,7 @@ export default function App(){
                                     <td className="px-5 py-2.5 text-slate-500 max-w-[110px] truncate" title={s(r.vendedor)}>{s(r.vendedor)}</td>
                                     <td className="px-5 py-2.5 text-slate-500 max-w-[180px] truncate" title={s(r.descricaoResumo)}>{s(r.descricaoResumo)}</td>
                                     <td className="px-5 py-2.5 text-right font-semibold text-slate-700 whitespace-nowrap">{fmtMoeda(r.valorTotal)}</td>
-                                    <td className="px-5 py-2.5 text-right font-semibold text-slate-500 whitespace-nowrap">{fmtMoeda(r.valorBruto)}</td>
-                                    <td className="px-5 py-2.5 text-right font-semibold text-emerald-600 whitespace-nowrap">{fmtMoeda(r.valorFaturado)}</td>
+                                    <td className="px-5 py-2.5 text-right font-semibold text-emerald-600 whitespace-nowrap">{fmtMoeda(r.valorPedidoAtendido)}</td>
                                     <td className="px-5 py-2.5 text-right font-semibold text-amber-600 whitespace-nowrap">{fmtMoeda(r.valorAFaturar)}</td>
                                     <td className="px-5 py-2.5 text-center whitespace-nowrap">
                                       {(()=>{
@@ -2343,6 +2386,8 @@ export default function App(){
                                         return <span className={`text-[9px] font-black px-2 py-0.5 rounded-full border ${cfg.c}`}>{cfg.l}</span>;
                                       })()}
                                     </td>
+                                    <td className="px-5 py-2.5 text-right font-semibold text-slate-400 whitespace-nowrap border-l border-slate-100">{r.valorBruto>0?fmtMoeda(r.valorBruto):'—'}</td>
+                                    <td className="px-5 py-2.5 text-right font-semibold text-violet-600 whitespace-nowrap">{r.valorFaturado>0?fmtMoeda(r.valorFaturado):'—'}</td>
                                     <td className="px-5 py-2.5 text-center">
                                       <button onClick={()=>setMestraNotasSel(r)} className="text-[10px] font-bold text-indigo-600 bg-indigo-50 border border-indigo-100 px-2.5 py-1 rounded-full hover:bg-indigo-100">
                                         Ver detalhe
@@ -2359,7 +2404,9 @@ export default function App(){
                   })}
                 </div>
                 <p className="text-xs text-slate-400">
-                  Fonte: <code>pedidos_itens</code> (valor e quantidades), <code>nota_venda_itens</code> (itens das notas) e <code>faturamento_resumo</code> (valores de nota). O status <strong>Faturado / Parcial / Pendente</strong> é definido pela <strong>quantidade ainda pendente nos itens do pedido</strong> (campo QTDENTREGUE do Sankhya) — não pela comparação de valores, já que o valor líquido da nota tem impostos descontados e não é comparável com o valor do pedido.
+                  <strong>Carteira</strong> (Valor Pedido / Já Atendido / Saldo) vem toda de <code>pedidos_itens</code>, usando o campo QTDENTREGUE do Sankhya — por isso os três somam entre si.
+                  As colunas <strong>NF Bruto / NF Líquido</strong> vêm de <code>faturamento_resumo</code> e representam as notas emitidas, um universo diferente: uma nota pode faturar pedido de ano anterior.
+                  O status Faturado/Parcial/Pendente é sempre definido pela quantidade pendente dos itens, nunca por comparação de valores.
                 </p>
               </div>
             )}
