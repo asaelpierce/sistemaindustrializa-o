@@ -375,6 +375,7 @@ function Toast({message,type='success',onClose}){
 // ============================================================================
 export default function App(){
   const [supabase,setSupa]=useState(null);
+  
   const [dbOnline,setDbOnline]=useState(false);
   const [usuarioLogado,setUsuarioLogado]=useState(null);
   const [emailLogin,setEmailLogin]=useState('');
@@ -516,6 +517,7 @@ export default function App(){
 
   const s=v=>(v===null||v===undefined)?'':String(v);
   const fmtD=(v,u='')=>{if(v===undefined||v===null||isNaN(v)||v==='')return'—';const n=parseFloat(v);const st=Number.isInteger(n)?n.toString():n.toFixed(2).replace('.',',');return u?`${st} ${u}`:st;};
+  const fmtMoeda=v=>{const n=Number(v)||0;return n.toLocaleString('pt-BR',{style:'currency',currency:'BRL',maximumFractionDigits:0});};
   const fmtDt=v=>v?new Date(v).toLocaleDateString('pt-BR'):'—';
   const parseN=v=>{if(typeof v==='number')return v;if(!v)return 0;let st=s(v?.result||v).trim();if(st.includes('.')&&st.includes(',')){if(st.indexOf('.')<st.indexOf(','))st=st.replace(/\./g,'').replace(',','.');else st=st.replace(/,/g,'');}else st=st.replace(',','.');return parseFloat(st)||0;};
   const normKey=k=>s(k).toUpperCase().trim().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/\s+/g,'_').replace(/[.-]/g,'');
@@ -530,7 +532,10 @@ export default function App(){
       {id:'supabase-lib',src:'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2'}
     ];
     scripts.forEach(sc=>{if(!document.getElementById(sc.id)){const el=document.createElement('script');el.id=sc.id;el.src=sc.src;el.async=true;document.body.appendChild(el);}});
-    const chk=setInterval(()=>{if(window.supabase){try{const cl=window.supabase.createClient(SUPABASE_URL,SUPABASE_KEY);setSupa(cl);clearInterval(chk);}catch(e){}}},500);
+    const chk=setInterval(()=>{if(window.supabase){try{
+      const cl=window.supabase.createClient(SUPABASE_URL,SUPABASE_KEY);setSupa(cl);
+      clearInterval(chk);
+    }catch(e){}}},500);
     return()=>clearInterval(chk);
   },[]);
 
@@ -558,6 +563,244 @@ export default function App(){
       return Array.isArray(data?.fotos)?data.fotos:[];
     }catch(e){return[];}
   },[supabase]);
+
+  const [mestraFiltro,setMestraFiltro]=useState('TODOS'); // TODOS | FATURADO | PARCIAL | PENDENTE
+  const mestraFiltrada=useMemo(()=>mestraDb.filter(r=>{
+    if(mestraFiltro==='FATURADO')return r.percentualFaturado>=0.999;
+    if(mestraFiltro==='PARCIAL')return r.percentualFaturado>0&&r.percentualFaturado<0.999;
+    if(mestraFiltro==='PENDENTE')return r.percentualFaturado<=0;
+    return true;
+  }),[mestraDb,mestraFiltro]);
+
+  // ── Mestra PCP: agrega Pedidos de Venda + Faturamento do Portal de Engenharia por BR ──
+  const [mestraDb,setMestraDb]=useState([]);
+  const [mestraLoading,setMestraLoading]=useState(false);
+  const [mestraErro,setMestraErro]=useState('');
+  const [sincronizandoPedidos,setSincronizandoPedidos]=useState(false);
+  const sincronizarPedidosEFaturamento=async()=>{
+    if(!supabase)return;
+    setSincronizandoPedidos(true);
+    try{
+      const[r1,r2]=await Promise.all([
+        fetch(`${SUPABASE_URL}/functions/v1/pedidos-itens-sync`,{method:'POST',headers:{'Content-Type':'application/json','apikey':SUPABASE_KEY},body:JSON.stringify({})}),
+        fetch(`${SUPABASE_URL}/functions/v1/nota-venda-itens-sync`,{method:'POST',headers:{'Content-Type':'application/json','apikey':SUPABASE_KEY},body:JSON.stringify({})})
+      ]);
+      const[d1,d2]=await Promise.all([r1.json(),r2.json()]);
+      if(!d1.ok)throw new Error('Pedidos: '+d1.erro);
+      if(!d2.ok)throw new Error('Faturamento: '+d2.erro);
+      addToast(`Sincronizado! ${d1.itens_sincronizados} pedidos, ${d2.itens_sincronizados} itens faturados.`);
+      await Promise.all([fetchMestra(),fetchOOH()]);
+    }catch(e){
+      addToast('Erro ao sincronizar com o Sankhya: '+e.message,'error');
+    }finally{
+      setSincronizandoPedidos(false);
+    }
+  };
+
+  const fetchMestra=useCallback(async()=>{
+    if(!supabase)return;
+    setMestraLoading(true);setMestraErro('');
+    try{
+      const[pedidosRes,faturamentoRes]=await Promise.all([
+        supabase.from('pedidos_itens').select('br,cliente_nome,vendedor_nome,valor_liquido,produto_descricao,data_neg,data_prevista_entrega'),
+        supabase.from('nota_venda_itens').select('br,valor_bruto')
+      ]);
+      if(pedidosRes.error)throw pedidosRes.error;
+      if(faturamentoRes.error)throw faturamentoRes.error;
+
+      const faturadoPorBR={};
+      (faturamentoRes.data||[]).forEach(f=>{
+        const br=s(f.br);if(!br)return;
+        faturadoPorBR[br]=(faturadoPorBR[br]||0)+Number(f.valor_bruto||0);
+      });
+
+      const agrup={};
+      (pedidosRes.data||[]).forEach(p=>{
+        const br=s(p.br);if(!br)return;
+        if(!agrup[br])agrup[br]={br,cliente:p.cliente_nome,vendedor:p.vendedor_nome,valorTotal:0,dataNeg:p.data_neg,dataPrevista:p.data_prevista_entrega,produtos:[]};
+        agrup[br].valorTotal+=Number(p.valor_liquido||0);
+        if(p.produto_descricao&&!agrup[br].produtos.includes(p.produto_descricao))agrup[br].produtos.push(p.produto_descricao);
+        // mantém a data de negociação mais antiga (data de emissão do pedido)
+        if(p.data_neg&&(!agrup[br].dataNeg||p.data_neg<agrup[br].dataNeg))agrup[br].dataNeg=p.data_neg;
+      });
+
+      const lista=Object.values(agrup).map(r=>{
+        const faturado=faturadoPorBR[r.br]||0;
+        return{
+          ...r,
+          valorFaturado:faturado,
+          valorAFaturar:Math.max(0,r.valorTotal-faturado),
+          percentualFaturado:r.valorTotal>0?faturado/r.valorTotal:0,
+          descricaoResumo:r.produtos.slice(0,1).join(', ')||'—'
+        };
+      }).sort((a,b)=>(b.dataNeg||'').localeCompare(a.dataNeg||''));
+
+      setMestraDb(lista);
+    }catch(e){
+      setMestraErro('Erro ao buscar dados do Portal de Engenharia: '+e.message);
+    }finally{
+      setMestraLoading(false);
+    }
+  },[supabase]);
+
+  useEffect(()=>{if(supabase&&aba==='MESTRA'&&mestraDb.length===0)fetchMestra();},[supabase,aba]);
+
+  // ── OOH: Planejamento mensal (projetos do Portal de Engenharia + reprogramações locais) ──
+  const [oohMesRef,setOohMesRef]=useState(new Date().toISOString().slice(0,7)); // YYYY-MM
+  const [oohProjetos,setOohProjetos]=useState([]);
+  const [oohPlanejamento,setOohPlanejamento]=useState([]);
+  const [oohLoading,setOohLoading]=useState(false);
+  const [oohErro,setOohErro]=useState('');
+  const [oohModalBR,setOohModalBR]=useState(null);
+  const [oohForm,setOohForm]=useState({status:'REPROGRAMADO',novaData:'',justificativa:''});
+
+  const fetchOOH=useCallback(async()=>{
+    if(!supabase)return;
+    setOohLoading(true);setOohErro('');
+    try{
+      const[pedidosRes,faturamentoRes,planejamentoRes]=await Promise.all([
+        supabase.from('pedidos_itens').select('br,cliente_nome,vendedor_nome,valor_liquido,produto_descricao,data_prevista_entrega,cod_produto,quantidade'),
+        supabase.from('nota_venda_itens').select('br,valor_bruto'),
+        supabase.from('ooh_planejamento').select('*')
+      ]);
+      if(pedidosRes.error)throw pedidosRes.error;
+      if(faturamentoRes.error)throw faturamentoRes.error;
+      if(planejamentoRes.error)throw planejamentoRes.error;
+
+      const faturadoPorBR={};
+      (faturamentoRes.data||[]).forEach(f=>{const br=s(f.br);if(!br)return;faturadoPorBR[br]=(faturadoPorBR[br]||0)+Number(f.valor_bruto||0);});
+
+      const agrup={};
+      const itensPorBR={};
+      (pedidosRes.data||[]).forEach(p=>{
+        const br=s(p.br);if(!br||!p.data_prevista_entrega)return;
+        if(!agrup[br])agrup[br]={br,cliente:p.cliente_nome,vendedor:p.vendedor_nome,valorTotal:0,dataPrevista:p.data_prevista_entrega,produtos:[]};
+        agrup[br].valorTotal+=Number(p.valor_liquido||0);
+        if(p.produto_descricao&&!agrup[br].produtos.includes(p.produto_descricao))agrup[br].produtos.push(p.produto_descricao);
+        if(p.data_prevista_entrega<agrup[br].dataPrevista)agrup[br].dataPrevista=p.data_prevista_entrega;
+        if(!itensPorBR[br])itensPorBR[br]=[];
+        if(p.cod_produto)itensPorBR[br].push({codProduto:s(p.cod_produto),quantidade:Number(p.quantidade||0)});
+      });
+
+      const planPorBR={};
+      (planejamentoRes.data||[]).forEach(pl=>{planPorBR[`${pl.br}|${pl.mes_referencia}`]=pl;});
+
+      const lista=Object.values(agrup).map(r=>{
+        const faturado=faturadoPorBR[r.br]||0;
+        const percentualFaturado=r.valorTotal>0?faturado/r.valorTotal:0;
+        const mesPrevisto=s(r.dataPrevista).slice(0,7);
+        const plano=planPorBR[`${r.br}|${mesPrevisto}`]||null;
+        return{...r,valorFaturado:faturado,percentualFaturado,atendido:percentualFaturado>=0.999,mesPrevisto,plano,descricaoResumo:r.produtos.slice(0,1).join(', ')||'—',itens:itensPorBR[r.br]||[]};
+      });
+      setOohProjetos(lista);
+      setOohPlanejamento(planejamentoRes.data||[]);
+    }catch(e){
+      setOohErro('Erro ao buscar planejamento: '+e.message);
+    }finally{
+      setOohLoading(false);
+    }
+  },[supabase]);
+
+  useEffect(()=>{if(supabase&&aba==='OOH'&&oohProjetos.length===0)fetchOOH();},[supabase,aba]);
+
+  // Projetos do mês selecionado + atrasados (não atendidos de meses anteriores)
+  const oohDoMes=useMemo(()=>oohProjetos.filter(p=>p.mesPrevisto===oohMesRef&&!p.atendido),[oohProjetos,oohMesRef]);
+  const oohAtrasados=useMemo(()=>oohProjetos.filter(p=>p.mesPrevisto<oohMesRef&&!p.atendido),[oohProjetos,oohMesRef]);
+
+  // Projetos "efetivos" do mês: os previstos originalmente (que não foram reprogramados pra fora)
+  // + os antecipados de outros meses pra este mês
+  const oohEfetivosDoMes=useMemo(()=>{
+    const previstos=oohProjetos.filter(p=>p.mesPrevisto===oohMesRef&&!p.atendido&&p.plano?.status!=='REPROGRAMADO');
+    const antecipados=oohProjetos.filter(p=>p.mesPrevisto!==oohMesRef&&!p.atendido&&p.plano?.status==='ANTECIPADO'&&s(p.plano?.nova_data).slice(0,7)===oohMesRef);
+    return[...previstos,...antecipados];
+  },[oohProjetos,oohMesRef]);
+
+  // Previsão de consumo de matéria-prima: soma (quantidade do item × qtd de MP por unidade, via composição) por código de MP
+  const previsaoMP=useMemo(()=>{
+    const necessidade={};
+    oohEfetivosDoMes.forEach(proj=>{
+      (proj.itens||[]).forEach(it=>{
+        const prod=produtosDb[it.codProduto];
+        if(!prod||!Array.isArray(prod.materiais))return;
+        prod.materiais.forEach(m=>{
+          const qtdNecessaria=Number(m.quantidade||0)*it.quantidade;
+          if(!necessidade[m.codigoMP])necessidade[m.codigoMP]={codigoMP:m.codigoMP,um:m.um,necessario:0,projetos:new Set()};
+          necessidade[m.codigoMP].necessario+=qtdNecessaria;
+          necessidade[m.codigoMP].projetos.add(proj.br);
+        });
+      });
+    });
+    return Object.values(necessidade).map(n=>{
+      const saldo=estoqueDb[n.codigoMP]?.saldo_disponivel||0;
+      const descricao=estoqueDb[n.codigoMP]?.descricao||'—';
+      return{...n,projetos:[...n.projetos],saldo,falta:Math.max(0,n.necessario-saldo),descricao};
+    }).sort((a,b)=>b.falta-a.falta);
+  },[oohEfetivosDoMes,produtosDb,estoqueDb]);
+
+  // ── Produção por Setor: Ordem de Produção própria, por BR (independente de remessas) ──
+  const SETORES=['VULCANIZACAO','CALDEIRARIA','REVESTIMENTO','CORTE'];
+  const SETOR_LABEL={VULCANIZACAO:'Vulcanização',CALDEIRARIA:'Caldeiraria',REVESTIMENTO:'Revestimento',CORTE:'Corte'};
+  const [ordensProducao,setOrdensProducao]=useState([]);
+  const [setorSelecionado,setSetorSelecionado]=useState('TODOS');
+  const [novaOPForm,setNovaOPForm]=useState({br:'',cliente:'',setor:'',descricao:''});
+
+  const fetchOrdensProducao=useCallback(async()=>{
+    if(!supabase)return;
+    try{
+      const{data,error}=await supabase.from('ordens_producao').select('*').order('criado_em',{ascending:false});
+      if(error)throw error;
+      setOrdensProducao(data||[]);
+    }catch(e){addToast('Erro ao buscar ordens de produção: '+e.message,'error');}
+  },[supabase]);
+  useEffect(()=>{if(supabase&&aba==='PRODUCAO'&&ordensProducao.length===0)fetchOrdensProducao();},[supabase,aba]);
+
+  const criarOrdemProducao=async()=>{
+    if(!novaOPForm.br||!novaOPForm.setor)return addToast('Informe o BR e o setor.','error');
+    try{
+      const id=`OP-${Date.now()}`;
+      const{error}=await supabase.from('ordens_producao').insert([{
+        id,br:s(novaOPForm.br).toUpperCase(),cliente:s(novaOPForm.cliente),setor:novaOPForm.setor,
+        descricao:s(novaOPForm.descricao)||null,status:'FILA',criado_por:s(usuarioLogado?.nome)
+      }]);
+      if(error)throw error;
+      addToast('Ordem de produção criada!');
+      setNovaOPForm({br:'',cliente:'',setor:'',descricao:''});
+      fetchOrdensProducao();
+    }catch(e){addToast('Erro: '+e.message,'error');}
+  };
+
+  const atualizarStatusProducao=async(opId,novoStatus,obs)=>{
+    try{
+      const{error}=await supabase.from('ordens_producao').update({
+        status:novoStatus,observacao:obs||null,
+        atualizado_em:new Date().toISOString(),atualizado_por:s(usuarioLogado?.nome)
+      }).eq('id',opId);
+      if(error)throw error;
+      addToast('Status atualizado!');
+      fetchOrdensProducao();
+    }catch(e){addToast('Erro: '+e.message,'error');}
+  };
+
+
+
+
+  const salvarPlanejamentoOOH=async()=>{
+    if(!oohModalBR)return;
+    if(!oohForm.novaData)return addToast('Informe a nova data.','error');
+    if(!oohForm.justificativa.trim())return addToast('Justifique o motivo.','error');
+    try{
+      const id=`OOH-${oohModalBR.br}-${oohModalBR.mesPrevisto}`.replace(/[^A-Za-z0-9-]/g,'_');
+      const{error}=await supabase.from('ooh_planejamento').upsert({
+        id,br:oohModalBR.br,mes_referencia:oohModalBR.mesPrevisto,status:oohForm.status,
+        data_original:oohModalBR.dataPrevista,nova_data:oohForm.novaData,justificativa:oohForm.justificativa,
+        criado_por:s(usuarioLogado?.nome),atualizado_em:new Date().toISOString()
+      },{onConflict:'br,mes_referencia'});
+      if(error)throw error;
+      addToast('Planejamento atualizado!');
+      setOohModalBR(null);setOohForm({status:'REPROGRAMADO',novaData:'',justificativa:''});
+      fetchOOH();
+    }catch(e){addToast('Erro ao salvar: '+e.message,'error');}
+  };
 
   // Flag para carregar modelo só uma vez
   const modeloCarregadoRef=React.useRef(false);
@@ -1506,7 +1749,9 @@ export default function App(){
   }),[projAgrup,filtC]);
 
   const navItems=[
-    ...(isAdmin?[{id:'DASHBOARD',label:'Painel Executivo',icon:LayoutDashboard,group:'Visão Geral'}]:[]),
+    ...(isAdmin?[{id:'DASHBOARD',label:'Painel Executivo',icon:LayoutDashboard,group:'Visão Geral'},{id:'MESTRA',label:'Mestra PCP',icon:FileSpreadsheet,group:'Visão Geral'}]:[]),
+    ...(isPCP?[{id:'OOH',label:'Planejamento (OOH)',icon:Calendar,group:'PCP'}]:[]),
+    ...((isPCP||isExp)?[{id:'PRODUCAO',label:'Produção por Setor',icon:Factory,group:'PCP'}]:[]),
     ...(isPCP?[{id:'NOVA_OP',label:'Nova Remessa',icon:PackageOpen,group:'PCP'},{id:'HISTORICO_PCP',label:'Histórico de Envios',icon:History,group:'PCP'},{id:'UPLOAD_ESTOQUE',label:'Sincronizar ERP',icon:UploadCloud,group:'PCP'}]:[]),
     ...(isExp?[{id:'EXPEDICAO',label:'Fila de Expedição',icon:Truck,group:'Logística',badge:remPend.length||null},{id:'FORNECEDORES',label:'Retorno de Peças',icon:RotateCcw,group:'Logística'},{id:'CONTROLE_GERAL',label:'Controle Geral',icon:ListChecks,group:'Logística'}]:[]),
     ...(isAdmin?[{id:'IA_ANALISTA',label:'Analista IA',icon:Bot,group:'Inteligência'},{id:'AUDITORIA',label:'Auditoria BOM',icon:FileSearch,group:'Inteligência'},{id:'GESTAO_USUARIOS',label:'Gestão de Acessos',icon:Users,group:'Sistema'}]:[]),
@@ -1872,6 +2117,255 @@ export default function App(){
                     </table>
                   </div>
                 </div>
+              </div>
+            )}
+
+            {/* ── MESTRA PCP (Pedidos de Venda + Faturamento, via Portal de Engenharia) ── */}
+            {aba==='MESTRA'&&isAdmin&&(
+              <div className="space-y-6">
+                <SectionHeader title="Mestra PCP" subtitle="Pedidos de Venda x Faturamento por Projeto BR — dados sincronizados do Portal de Engenharia"
+                  actions={<div className="flex gap-2"><Btn variant="dark" size="sm" onClick={sincronizarPedidosEFaturamento} disabled={sincronizandoPedidos}><RefreshCw className={`w-4 h-4 ${sincronizandoPedidos?'animate-spin':''}`}/>Sincronizar Sankhya</Btn><Btn variant="secondary" size="sm" onClick={fetchMestra} disabled={mestraLoading}><RefreshCw className={`w-4 h-4 ${mestraLoading?'animate-spin':''}`}/>Recarregar</Btn></div>}/>
+
+                {mestraErro&&<div className="bg-red-50 border border-red-200 text-red-700 text-sm font-semibold rounded-xl px-4 py-3">{mestraErro}</div>}
+
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                  <button onClick={()=>setMestraFiltro(mestraFiltro==='TODOS'?'TODOS':'TODOS')} className="text-left">
+                    <KPICard label="Valor Total (Pedidos)" value={fmtMoeda(mestraDb.reduce((a,r)=>a+r.valorTotal,0))} icon={TrendingUp} color="indigo"/>
+                  </button>
+                  <button onClick={()=>setMestraFiltro(mestraFiltro==='FATURADO'?'TODOS':'FATURADO')} className="text-left">
+                    <KPICard label={`Já Faturado ${mestraFiltro==='FATURADO'?'(filtrando)':''}`} value={fmtMoeda(mestraDb.reduce((a,r)=>a+r.valorFaturado,0))} icon={CheckCircle} color="emerald"/>
+                  </button>
+                  <button onClick={()=>setMestraFiltro(mestraFiltro==='PENDENTE'?'TODOS':'PENDENTE')} className="text-left">
+                    <KPICard label={`A Faturar ${mestraFiltro==='PENDENTE'?'(filtrando)':''}`} value={fmtMoeda(mestraDb.reduce((a,r)=>a+r.valorAFaturar,0))} icon={Clock} color="amber"/>
+                  </button>
+                </div>
+
+                <div className="flex items-center gap-2 flex-wrap">
+                  {[{v:'TODOS',l:'Todos'},{v:'FATURADO',l:'Faturado'},{v:'PARCIAL',l:'Parcial'},{v:'PENDENTE',l:'Pendente'}].map(f=>(
+                    <button key={f.v} onClick={()=>setMestraFiltro(f.v)} className={`text-xs font-bold px-3 py-1.5 rounded-full border transition-colors ${mestraFiltro===f.v?'bg-indigo-600 text-white border-indigo-600':'bg-white text-slate-600 border-slate-200 hover:border-indigo-300'}`}>{f.l}</button>
+                  ))}
+                  <span className="text-xs text-slate-400 ml-1">{mestraFiltrada.length} de {mestraDb.length} projetos</span>
+                </div>
+
+                <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
+                  <div className="overflow-x-auto custom-scrollbar">
+                    <table className="w-full text-sm">
+                      <thead className="bg-slate-50 border-b border-slate-200">
+                        <tr className="text-left text-[10px] font-black text-slate-500 uppercase tracking-wider">
+                          <th className="px-5 py-3.5">BR</th>
+                          <th className="px-5 py-3.5">Cliente</th>
+                          <th className="px-5 py-3.5">Vendedor</th>
+                          <th className="px-5 py-3.5">Descrição</th>
+                          <th className="px-5 py-3.5 text-right">Valor Total</th>
+                          <th className="px-5 py-3.5 text-right">Faturado</th>
+                          <th className="px-5 py-3.5 text-right">A Faturar</th>
+                          <th className="px-5 py-3.5 text-right">% Faturado</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100">
+                        {mestraLoading&&(
+                          <tr><td colSpan={8} className="px-5 py-10 text-center text-slate-400 font-semibold">Carregando dados do Portal de Engenharia...</td></tr>
+                        )}
+                        {!mestraLoading&&mestraFiltrada.length===0&&(
+                          <tr><td colSpan={8} className="px-5 py-10 text-center text-slate-400 font-semibold">Nenhum dado encontrado.</td></tr>
+                        )}
+                        {!mestraLoading&&mestraFiltrada.map(r=>(
+                          <tr key={r.br} className="hover:bg-slate-50">
+                            <td className="px-5 py-3 font-bold text-indigo-700">{r.br}</td>
+                            <td className="px-5 py-3 text-slate-700">{s(r.cliente)}</td>
+                            <td className="px-5 py-3 text-slate-500">{s(r.vendedor)}</td>
+                            <td className="px-5 py-3 text-slate-500 max-w-xs truncate" title={s(r.descricaoResumo)}>{s(r.descricaoResumo)}</td>
+                            <td className="px-5 py-3 text-right font-semibold text-slate-700">{fmtMoeda(r.valorTotal)}</td>
+                            <td className="px-5 py-3 text-right font-semibold text-emerald-600">{fmtMoeda(r.valorFaturado)}</td>
+                            <td className="px-5 py-3 text-right font-semibold text-amber-600">{fmtMoeda(r.valorAFaturar)}</td>
+                            <td className="px-5 py-3 text-right">
+                              <span className={`text-[10px] font-black px-2 py-0.5 rounded-full ${r.percentualFaturado>=1?'bg-emerald-50 text-emerald-700':r.percentualFaturado>0?'bg-amber-50 text-amber-700':'bg-slate-100 text-slate-500'}`}>
+                                {(r.percentualFaturado*100).toFixed(0)}%
+                              </span>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+                <p className="text-xs text-slate-400">
+                  Fonte: tabelas <code>pedidos_itens</code> e <code>nota_venda_itens</code>, sincronizadas direto do Sankhya (clique em "Sincronizar Sankhya" pra atualizar). Campos como Status OP, Andamento e Escopo ainda não estão disponíveis aqui — evolução planejada.
+                </p>
+              </div>
+            )}
+
+            {/* ── OOH: Planejamento mensal ─────────────────────────────── */}
+            {aba==='OOH'&&(
+              <div className="space-y-6">
+                <SectionHeader title="Planejamento (OOH)" subtitle="Projetos previstos por mês — reprograme, antecipe ou justifique atrasos"
+                  actions={<div className="flex gap-2"><Btn variant="dark" size="sm" onClick={sincronizarPedidosEFaturamento} disabled={sincronizandoPedidos}><RefreshCw className={`w-4 h-4 ${sincronizandoPedidos?'animate-spin':''}`}/>Sincronizar Sankhya</Btn><Btn variant="secondary" size="sm" onClick={fetchOOH} disabled={oohLoading}><RefreshCw className={`w-4 h-4 ${oohLoading?'animate-spin':''}`}/>Recarregar</Btn></div>}/>
+
+                {oohErro&&<div className="bg-red-50 border border-red-200 text-red-700 text-sm font-semibold rounded-xl px-4 py-3">{oohErro}</div>}
+
+                <div className="flex items-center gap-3">
+                  <label className="text-xs font-black text-slate-500 uppercase">Mês de referência</label>
+                  <Inp type="month" value={oohMesRef} onChange={e=>setOohMesRef(e.target.value)} className="w-44"/>
+                </div>
+
+                {oohAtrasados.length>0&&(
+                  <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4">
+                    <p className="text-xs font-black text-amber-700 uppercase tracking-wide mb-3">⚠ Projetos de meses anteriores ainda não atendidos ({oohAtrasados.length})</p>
+                    <div className="space-y-2">
+                      {oohAtrasados.map(p=>(
+                        <div key={p.br} className="bg-white rounded-xl border border-amber-100 px-4 py-3 flex items-center justify-between gap-3 flex-wrap">
+                          <div>
+                            <p className="font-bold text-slate-900 text-sm">{p.br} — {s(p.cliente)}</p>
+                            <p className="text-xs text-slate-500">Previsto: {fmtDt(p.dataPrevista)} ({p.mesPrevisto}) · {s(p.descricaoResumo)}</p>
+                            {p.plano&&<p className="text-xs font-bold text-violet-600 mt-1">{p.plano.status==='REPROGRAMADO'?'Reprogramado':'Antecipado'} para {fmtDt(p.plano.nova_data)} — "{p.plano.justificativa}"</p>}
+                          </div>
+                          <Btn variant="secondary" size="sm" onClick={()=>{setOohModalBR(p);setOohForm({status:'REPROGRAMADO',novaData:p.plano?.nova_data||'',justificativa:p.plano?.justificativa||''});}}>
+                            {p.plano?'Editar':'Reprogramar'}
+                          </Btn>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
+                  <div className="px-5 py-3.5 border-b border-slate-100 bg-slate-50">
+                    <p className="text-xs font-black text-slate-600 uppercase tracking-wide">Projetos previstos para {oohMesRef} ({oohDoMes.length})</p>
+                  </div>
+                  <div className="divide-y divide-slate-100">
+                    {oohLoading&&<div className="px-5 py-10 text-center text-slate-400 font-semibold">Carregando...</div>}
+                    {!oohLoading&&oohDoMes.length===0&&<div className="px-5 py-10 text-center text-slate-400 font-semibold">Nenhum projeto previsto para este mês.</div>}
+                    {!oohLoading&&oohDoMes.map(p=>(
+                      <div key={p.br} className="px-5 py-3.5 flex items-center justify-between gap-3 flex-wrap hover:bg-slate-50">
+                        <div>
+                          <p className="font-bold text-slate-900 text-sm">{p.br} — {s(p.cliente)}</p>
+                          <p className="text-xs text-slate-500">Previsto: {fmtDt(p.dataPrevista)} · {fmtMoeda(p.valorTotal)} · {s(p.descricaoResumo)}</p>
+                          {p.plano&&(
+                            <p className={`text-xs font-bold mt-1 ${p.plano.status==='ANTECIPADO'?'text-emerald-600':'text-violet-600'}`}>
+                              {p.plano.status==='ANTECIPADO'?'Antecipado':'Reprogramado'} para {fmtDt(p.plano.nova_data)} — "{p.plano.justificativa}"
+                            </p>
+                          )}
+                        </div>
+                        <Btn variant="ghost" size="sm" onClick={()=>{setOohModalBR(p);setOohForm({status:p.plano?.status||'REPROGRAMADO',novaData:p.plano?.nova_data||'',justificativa:p.plano?.justificativa||''});}}>
+                          {p.plano?'Editar':'Reprogramar / Antecipar'}
+                        </Btn>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+                <p className="text-xs text-slate-400">
+                  Fonte: <code>pedidos_itens</code> sincronizado direto do Sankhya, cruzado com <code>nota_venda_itens</code> pra saber o que já foi atendido (faturado). Reprogramações ficam salvas aqui no Sistema de Industrialização.
+                </p>
+
+                {/* ── Previsão de Matéria-Prima ── */}
+                <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
+                  <div className="px-5 py-3.5 border-b border-slate-100 bg-slate-50 flex items-center justify-between">
+                    <p className="text-xs font-black text-slate-600 uppercase tracking-wide">Previsão de Matéria-Prima para {oohMesRef} ({oohEfetivosDoMes.length} projetos considerados)</p>
+                    {previsaoMP.filter(m=>m.falta>0).length>0&&<span className="text-[10px] font-black text-red-600 bg-red-50 px-2 py-1 rounded-full">{previsaoMP.filter(m=>m.falta>0).length} materiais com risco de falta</span>}
+                  </div>
+                  <div className="overflow-x-auto custom-scrollbar">
+                    <table className="w-full text-sm">
+                      <thead className="bg-slate-50/50 border-b border-slate-100">
+                        <tr className="text-left text-[10px] font-black text-slate-500 uppercase tracking-wider">
+                          <th className="px-5 py-2.5">Código MP</th>
+                          <th className="px-5 py-2.5">Descrição</th>
+                          <th className="px-5 py-2.5 text-right">Necessário</th>
+                          <th className="px-5 py-2.5 text-right">Saldo Atual</th>
+                          <th className="px-5 py-2.5 text-right">Falta</th>
+                          <th className="px-5 py-2.5">Projetos</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100">
+                        {previsaoMP.length===0&&(
+                          <tr><td colSpan={6} className="px-5 py-8 text-center text-slate-400 font-semibold">Nenhuma composição encontrada para os projetos deste mês (produto pode não estar sincronizado do Sankhya ainda).</td></tr>
+                        )}
+                        {previsaoMP.map(m=>(
+                          <tr key={m.codigoMP} className={m.falta>0?'bg-red-50/40':''}>
+                            <td className="px-5 py-2.5 font-bold text-slate-800">{m.codigoMP}</td>
+                            <td className="px-5 py-2.5 text-slate-600 max-w-xs truncate" title={m.descricao}>{m.descricao}</td>
+                            <td className="px-5 py-2.5 text-right font-semibold">{fmtD(m.necessario,m.um)}</td>
+                            <td className="px-5 py-2.5 text-right text-slate-500">{fmtD(m.saldo,m.um)}</td>
+                            <td className="px-5 py-2.5 text-right font-black">{m.falta>0?<span className="text-red-600">{fmtD(m.falta,m.um)}</span>:<span className="text-emerald-600">OK</span>}</td>
+                            <td className="px-5 py-2.5 text-slate-400 text-xs">{m.projetos.slice(0,3).join(', ')}{m.projetos.length>3?` +${m.projetos.length-3}`:''}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+                <p className="text-xs text-slate-400">
+                  Previsão = quantidade de cada projeto × composição do produto (sincronizada do Sankhya) − saldo disponível em estoque. Considera reprogramações/antecipações do plano acima.
+                </p>
+              </div>
+            )}
+
+            {/* ── PRODUÇÃO POR SETOR (Ordem de Produção própria, base pro chão de fábrica) ── */}
+            {aba==='PRODUCAO'&&(
+              <div className="space-y-6">
+                <SectionHeader title="Produção por Setor" subtitle="PCP direciona cada BR (ou parte dele) para o(s) setor(es) responsável(is) e acompanha o avanço"/>
+
+                <div className="bg-white rounded-2xl border border-slate-200 p-4">
+                  <p className="text-xs font-black text-slate-500 uppercase tracking-wide mb-3">Direcionar novo projeto para produção</p>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3 items-end">
+                    <Field label="Projeto BR"><Inp placeholder="BR14170/26" value={novaOPForm.br} onChange={e=>setNovaOPForm({...novaOPForm,br:e.target.value})} className="uppercase"/></Field>
+                    <Field label="Cliente"><Inp placeholder="Opcional" value={novaOPForm.cliente} onChange={e=>setNovaOPForm({...novaOPForm,cliente:e.target.value})}/></Field>
+                    <Field label="Setor">
+                      <Sel value={novaOPForm.setor} onChange={e=>setNovaOPForm({...novaOPForm,setor:e.target.value})}>
+                        <option value="">Selecione...</option>
+                        {SETORES.map(st=><option key={st} value={st}>{SETOR_LABEL[st]}</option>)}
+                      </Sel>
+                    </Field>
+                    <Field label="Descrição (opcional)"><Inp placeholder="ex: só as chapas" value={novaOPForm.descricao} onChange={e=>setNovaOPForm({...novaOPForm,descricao:e.target.value})}/></Field>
+                    <Btn variant="dark" onClick={criarOrdemProducao}><PackageOpen className="w-4 h-4"/>Direcionar</Btn>
+                  </div>
+                  <p className="text-[11px] text-slate-400 mt-2">Dica: se dois setores trabalham no mesmo BR, crie uma ordem pra cada um, usando a descrição pra diferenciar (ex: "Corte" e "Vulcanização" no mesmo BR14170).</p>
+                </div>
+
+                <div className="flex items-center gap-2 flex-wrap">
+                  <button onClick={()=>setSetorSelecionado('TODOS')} className={`text-xs font-bold px-3 py-1.5 rounded-full border ${setorSelecionado==='TODOS'?'bg-indigo-600 text-white border-indigo-600':'bg-white text-slate-600 border-slate-200'}`}>Todos</button>
+                  {SETORES.map(st=>(
+                    <button key={st} onClick={()=>setSetorSelecionado(st)} className={`text-xs font-bold px-3 py-1.5 rounded-full border ${setorSelecionado===st?'bg-indigo-600 text-white border-indigo-600':'bg-white text-slate-600 border-slate-200'}`}>{SETOR_LABEL[st]}</button>
+                  ))}
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+                  {SETORES.filter(st=>setorSelecionado==='TODOS'||setorSelecionado===st).map(setor=>{
+                    const opsDoSetor=ordensProducao.filter(o=>o.setor===setor&&o.status!=='CONCLUIDO');
+                    return(
+                      <div key={setor} className="bg-slate-50 rounded-2xl border border-slate-200 flex flex-col">
+                        <div className="px-4 py-3 border-b border-slate-200 flex items-center justify-between">
+                          <p className="text-xs font-black text-slate-700 uppercase tracking-wide">{SETOR_LABEL[setor]}</p>
+                          <span className="text-[10px] font-bold text-slate-400 bg-white px-2 py-0.5 rounded-full border border-slate-200">{opsDoSetor.length}</span>
+                        </div>
+                        <div className="p-3 space-y-2.5 flex-1 overflow-y-auto max-h-[70vh] custom-scrollbar">
+                          {opsDoSetor.length===0&&<p className="text-xs text-slate-400 text-center py-6">Nenhum projeto</p>}
+                          {opsDoSetor.map(o=>{
+                            const stBadge={FILA:{l:'Na Fila',c:'bg-slate-200 text-slate-600'},EM_PRODUCAO:{l:'Em Produção',c:'bg-blue-100 text-blue-700'},PROBLEMA:{l:'Problema',c:'bg-red-100 text-red-700'}}[o.status||'FILA'];
+                            return(
+                              <div key={o.id} className={`bg-white rounded-xl border p-3 ${o.status==='PROBLEMA'?'border-red-300':'border-slate-200'}`}>
+                                <p className="text-xs font-bold text-slate-900">{s(o.br)}</p>
+                                {o.cliente&&<p className="text-[11px] text-slate-500 truncate">{s(o.cliente)}</p>}
+                                {o.descricao&&<p className="text-[10px] text-slate-400 mt-0.5">{s(o.descricao)}</p>}
+                                <div className="flex items-center gap-1.5 mt-2 flex-wrap">
+                                  <span className={`text-[9px] font-black px-2 py-0.5 rounded-full ${stBadge.c}`}>{stBadge.l}</span>
+                                </div>
+                                {o.observacao&&<p className="text-[10px] text-red-600 font-semibold mt-1.5 bg-red-50 rounded-lg px-2 py-1">{o.observacao}</p>}
+                                <div className="flex gap-1 mt-2">
+                                  {o.status!=='EM_PRODUCAO'&&<button onClick={()=>atualizarStatusProducao(o.id,'EM_PRODUCAO')} className="text-[9px] font-bold bg-blue-50 text-blue-700 px-2 py-1 rounded-lg hover:bg-blue-100">Iniciar</button>}
+                                  <button onClick={()=>atualizarStatusProducao(o.id,'CONCLUIDO')} className="text-[9px] font-bold bg-emerald-50 text-emerald-700 px-2 py-1 rounded-lg hover:bg-emerald-100">Concluir</button>
+                                  <button onClick={()=>{const obs=window.prompt('Descreva o problema:');if(obs)atualizarStatusProducao(o.id,'PROBLEMA',obs);}} className="text-[9px] font-bold bg-red-50 text-red-700 px-2 py-1 rounded-lg hover:bg-red-100">Problema</button>
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+                <p className="text-xs text-slate-400">
+                  Ordens de Produção são independentes das remessas de logística — é o acompanhamento interno do chão de fábrica. Próxima fase (item 4): tela dedicada por posto de trabalho, em modo "quiosque".
+                </p>
               </div>
             )}
 
@@ -4391,6 +4885,28 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
             />
           </div>
         )}
+      </Modal>
+
+      {/* ── MODAL OOH: Reprogramar / Antecipar ────────────────────────── */}
+      <Modal open={!!oohModalBR} onClose={()=>setOohModalBR(null)} title={`${s(oohModalBR?.br)} — ${s(oohModalBR?.cliente)}`} subtitle={`Previsto: ${fmtDt(oohModalBR?.dataPrevista)}`} maxWidth="max-w-lg">
+        <div className="space-y-4">
+          <Field label="O que vai acontecer com esse projeto?">
+            <Sel value={oohForm.status} onChange={e=>setOohForm({...oohForm,status:e.target.value})}>
+              <option value="REPROGRAMADO">Reprogramar (atrasar / mover pra outro mês)</option>
+              <option value="ANTECIPADO">Antecipar (puxar pra este mês)</option>
+            </Sel>
+          </Field>
+          <Field label="Nova data prevista">
+            <Inp type="date" value={oohForm.novaData} onChange={e=>setOohForm({...oohForm,novaData:e.target.value})}/>
+          </Field>
+          <Field label="Justificativa">
+            <textarea value={oohForm.justificativa} onChange={e=>setOohForm({...oohForm,justificativa:e.target.value})} rows={3} className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100 outline-none" placeholder="Explique o motivo (ex: aguardando matéria-prima do fornecedor X)"/>
+          </Field>
+          <div className="flex justify-end gap-2 pt-2">
+            <Btn variant="ghost" onClick={()=>setOohModalBR(null)}>Cancelar</Btn>
+            <Btn variant="dark" onClick={salvarPlanejamentoOOH}>Salvar</Btn>
+          </div>
+        </div>
       </Modal>
 
       {/* ── FLOATING WIDGETS ─────────────────────────────────────────────── */}
