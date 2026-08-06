@@ -297,11 +297,17 @@ function OOHProjetoRow({p,onAndamento,onReprogramar}){
   const txt=v=>(v===null||v===undefined)?'':String(v);
   const dt=v=>v?new Date(v).toLocaleDateString('pt-BR'):'—';
   const moeda=v=>{const n=Number(v)||0;return n.toLocaleString('pt-BR',{style:'currency',currency:'BRL',maximumFractionDigits:0});};
+  const sitCfg={PENDENTE:{l:'Pendente (comercial)',c:'bg-orange-50 text-orange-700 border-orange-200'},CANCELADO:{l:'Cancelado',c:'bg-slate-200 text-slate-500 border-slate-300'}}[p.situacaoEspecial?.status];
   return(
     <div className="px-5 py-3.5 flex items-center justify-between gap-3 flex-wrap hover:bg-slate-50">
       <div>
-        <p className="font-bold text-slate-900 text-sm">{p.br} — {txt(p.cliente)}</p>
+        <p className="font-bold text-slate-900 text-sm flex items-center gap-1.5 flex-wrap">
+          {p.br} — {txt(p.cliente)}
+          {sitCfg&&<span className={`text-[9px] font-black px-2 py-0.5 rounded-full border ${sitCfg.c}`} title={p.situacaoEspecial?.motivo}>{sitCfg.l}</span>}
+          {p.precisaEntrarNaEsteira&&<span className="text-[9px] font-black px-2 py-0.5 rounded-full border bg-red-50 text-red-700 border-red-200" title="Faltam 20 dias ou menos pra data prevista — colocar na esteira de fabricação">⚠ Entrar na esteira</span>}
+        </p>
         <p className="text-xs text-slate-500">Previsto: {dt(p.dataPrevista)} · {moeda(p.valorTotal)} · {txt(p.descricaoResumo)}</p>
+        <p className="text-[11px] text-slate-400">MP tem que estar pronta até <strong className="text-slate-500">{dt(p.dataMPPronta)}</strong></p>
         {p.plano&&(
           <p className={`text-xs font-bold mt-1 ${p.plano.status==='ANTECIPADO'?'text-emerald-600':'text-violet-600'}`}>
             {p.plano.status==='ANTECIPADO'?'Antecipado':'Reprogramado'} para {dt(p.plano.nova_data)} — "{p.plano.justificativa}"
@@ -644,6 +650,35 @@ export default function App(){
   const [mestraNotasTotais,setMestraNotasTotais]=useState({bruto:0,liquido:0,brs:0});
   const [mestraFiltro,setMestraFiltro]=useState('TODOS'); // TODOS | FATURADO | PARCIAL | PENDENTE
   const [mestraNotasSel,setMestraNotasSel]=useState(null); // BR selecionado pra ver detalhamento de notas
+  const [mestraSituacaoModal,setMestraSituacaoModal]=useState(null); // pedido sendo marcado como pendente/cancelado/desconsiderar
+  const [mestraSituacaoForm,setMestraSituacaoForm]=useState({status:'PENDENTE',motivo:''});
+  const salvarSituacaoEspecial=async()=>{
+    if(!mestraSituacaoModal)return;
+    if(!mestraSituacaoForm.motivo.trim())return addToast('Informe o motivo.','error');
+    try{
+      const{error}=await supabase.from('situacao_especial_pedido').upsert({
+        br:mestraSituacaoModal.br,
+        nunota:mestraSituacaoModal.nunota?Number(mestraSituacaoModal.nunota):null,
+        status:mestraSituacaoForm.status,
+        motivo:mestraSituacaoForm.motivo.trim(),
+        criado_por:usuarioLogado?.nome||'PCP',
+      },{onConflict:'br,nunota'});
+      if(error)throw error;
+      addToast('Situação salva.');
+      setMestraSituacaoModal(null);
+      fetchMestra();
+    }catch(e){addToast('Erro ao salvar: '+e.message,'error');}
+  };
+  const removerSituacaoEspecial=async(br,nunota)=>{
+    try{
+      let q=supabase.from('situacao_especial_pedido').delete().eq('br',br);
+      q=nunota?q.eq('nunota',Number(nunota)):q.is('nunota',null);
+      const{error}=await q;
+      if(error)throw error;
+      addToast('Situação removida — voltou ao cálculo normal.');
+      fetchMestra();
+    }catch(e){addToast('Erro ao remover: '+e.message,'error');}
+  };
   const [mestraDetalheTab,setMestraDetalheTab]=useState('ITENS'); // ITENS | NOTAS
   const MESTRA_DATA_CORTE='2026-01'; // trabalhamos a partir de 01/01/2026 (por data de entrega)
   const [mestraIncluirAnteriores,setMestraIncluirAnteriores]=useState(false);
@@ -914,16 +949,31 @@ export default function App(){
     if(!supabase)return;
     setMestraLoading(true);setMestraErro('');
     try{
-      const[pedidosRes,faturamentoRes,notaItensRes,planRes]=await Promise.all([
+      const[pedidosRes,faturamentoRes,notaItensRes,planRes,situacaoRes]=await Promise.all([
         supabase.from('pedidos_itens').select('br,nunota,numero_pedido,cliente_nome,vendedor_nome,valor_liquido,produto_descricao,cod_produto,quantidade,qtd_entregue,unidade,data_neg,data_prevista_entrega'),
         supabase.from('faturamento_resumo').select('br,cliente_nome,net_offer_value,valor_nota,tipmov,data_neg,numero_nota,data_faturamento').eq('tipmov','V'),
         supabase.from('nota_venda_itens').select('br,produto_descricao,cod_produto,quantidade,valor_bruto'),
-        supabase.from('ooh_planejamento').select('br,nova_data,data_original,justificativa,status,criado_em')
+        supabase.from('ooh_planejamento').select('br,nova_data,data_original,justificativa,status,criado_em'),
+        supabase.from('situacao_especial_pedido').select('*')
       ]);
       if(pedidosRes.error)throw pedidosRes.error;
       if(faturamentoRes.error)throw faturamentoRes.error;
       if(notaItensRes.error)throw notaItensRes.error;
       if(planRes.error)throw planRes.error;
+      if(situacaoRes.error)throw situacaoRes.error;
+
+      // Marcação manual do PCP por pedido: PENDENTE (parado por decisão comercial/cliente),
+      // CANCELADO, ou DESCONSIDERAR (erro de dado no Sankhya — some do cálculo inteiro).
+      // Chave: nunota específico se houver, senão aplica pro BR inteiro.
+      const situacaoPorNunota={};
+      const situacaoPorBR={};
+      (situacaoRes.data||[]).forEach(sp=>{
+        if(sp.nunota)situacaoPorNunota[sp.nunota]=sp;
+        else situacaoPorBR[s(sp.br)]=sp;
+      });
+      const situacaoDoPedido=(br,nunota)=>situacaoPorNunota[nunota]||situacaoPorBR[s(br)]||null;
+      const nunotasDesconsiderados=new Set(Object.values(situacaoPorNunota).filter(sp=>sp.status==='DESCONSIDERAR').map(sp=>sp.nunota));
+      const brsDesconsiderados=new Set(Object.values(situacaoPorBR).filter(sp=>sp.status==='DESCONSIDERAR').map(sp=>s(sp.br)));
 
       // Reprogramações do PCP: quando o PCP avalia que não entrega na data do sistema,
       // ele informa uma nova data. Vale a reprogramação mais recente por projeto.
@@ -969,11 +1019,17 @@ export default function App(){
       (pedidosRes.data||[]).forEach(p=>{
         const br=s(p.br);if(!br)return;
         const nunota=p.nunota==null?'':String(p.nunota);
+        // DESCONSIDERAR = o PCP marcou este pedido (ou BR inteiro) como erro de dado —
+        // some do cálculo por completo, como se não existisse.
+        if(nunotasDesconsiderados.has(p.nunota)||brsDesconsiderados.has(br))return;
         const chave=`${br}|${nunota}`;
-        if(!agrup[chave])agrup[chave]={chave,br,nunota,numeroPedido:s(p.numero_pedido),cliente:p.cliente_nome,vendedor:p.vendedor_nome,valorTotal:0,dataNeg:p.data_neg,dataPrevista:p.data_prevista_entrega,produtos:[]};
+        if(!agrup[chave])agrup[chave]={chave,br,nunota,numeroPedido:s(p.numero_pedido),cliente:p.cliente_nome,vendedor:p.vendedor_nome,valorTotal:0,dataNeg:p.data_neg,dataPrevista:p.data_prevista_entrega,produtos:[],temItemServico:false};
         agrup[chave].valorTotal+=Number(p.valor_liquido||0);
         if(p.produto_descricao&&!agrup[chave].produtos.includes(p.produto_descricao))agrup[chave].produtos.push(p.produto_descricao);
         if(p.data_neg&&(!agrup[chave].dataNeg||p.data_neg<agrup[chave].dataNeg))agrup[chave].dataNeg=p.data_neg;
+        // "SERVIÇO" é responsabilidade comercial, não do PCP — não conta como atraso de
+        // produção, mas continua contando no faturamento por mês de negociação normalmente.
+        if(s(p.produto_descricao).toUpperCase().startsWith('SERVI'))agrup[chave].temItemServico=true;
 
         if(!itensPedidoPorChave[chave])itensPedidoPorChave[chave]={};
         const cod=s(p.cod_produto)||s(p.produto_descricao);
@@ -1085,6 +1141,24 @@ export default function App(){
         const dataVigenteBR=abertos.map(i=>i.dataVigente).filter(Boolean).sort()[0]||null;
         const dataPrevistaBR=itensDoPedido.map(i=>i.dataPrevista).filter(Boolean).sort()[0]||null;
 
+        // Overrides manuais do PCP e regra de negócio de SERVIÇO — nesses casos o pedido
+        // sai do cálculo de risco (vencido/reprogramado/a vencer) mesmo que ainda tenha
+        // quantidade em aberto, porque não é mais (ou nunca foi) responsabilidade do PCP.
+        const situacaoEspecial=situacaoDoPedido(r.br,r.nunota);
+        let situacaoPrazoFinal=situacaoPrazoBR;
+        let valorVencidoFinal=valorVencidoSemAviso,valorReprogFinal=valorReprogramado,valorAVencerFinal=valorAVencer,valorSemPrazoFinal=valorSemPrazo;
+        let valorServico=0,valorPendenteEspecial=0,valorCanceladoEspecial=0;
+        if(situacaoEspecial&&abertos.length>0){
+          const valorAberto=valorVencidoSemAviso+valorReprogramado+valorAVencer+valorSemPrazo;
+          situacaoPrazoFinal=situacaoEspecial.status; // 'PENDENTE' ou 'CANCELADO'
+          valorVencidoFinal=0;valorReprogFinal=0;valorAVencerFinal=0;valorSemPrazoFinal=0;
+          if(situacaoEspecial.status==='PENDENTE')valorPendenteEspecial=valorAberto;else valorCanceladoEspecial=valorAberto;
+        }else if(r.temItemServico&&abertos.length>0){
+          valorServico=valorVencidoSemAviso+valorReprogramado+valorAVencer+valorSemPrazo;
+          situacaoPrazoFinal='SERVICO';
+          valorVencidoFinal=0;valorReprogFinal=0;valorAVencerFinal=0;valorSemPrazoFinal=0;
+        }
+
         return{
           ...r,
           brDividido,
@@ -1098,8 +1172,10 @@ export default function App(){
           statusFaturamento,
           qtdItensPendentes:itensPendentes.length,
           qtdItensTotal:itensDoPedido.length,
-          situacaoPrazo:situacaoPrazoBR,
-          valorVencidoSemAviso,valorReprogramado,valorAVencer,valorSemPrazo,
+          situacaoPrazo:situacaoPrazoFinal,
+          valorVencidoSemAviso:valorVencidoFinal,valorReprogramado:valorReprogFinal,valorAVencer:valorAVencerFinal,valorSemPrazo:valorSemPrazoFinal,
+          valorServico,valorPendenteEspecial,valorCanceladoEspecial,
+          situacaoEspecial,
           maiorAtraso,dataVigente:dataVigenteBR,dataPrevistaOriginal:dataPrevistaBR,
           reprogramacao:reprog,
           descricaoResumo:r.produtos.slice(0,1).join(', ')||(r.semPedidoSincronizado?'Pedido fora do período sincronizado':'—'),
@@ -1143,23 +1219,36 @@ export default function App(){
     if(!supabase)return;
     setOohLoading(true);setOohErro('');
     try{
-      const[pedidosRes,planejamentoRes,andamentoRes]=await Promise.all([
-        supabase.from('pedidos_itens').select('br,cliente_nome,vendedor_nome,valor_liquido,produto_descricao,data_prevista_entrega,cod_produto,quantidade,qtd_entregue'),
+      const[pedidosRes,planejamentoRes,andamentoRes,situacaoRes]=await Promise.all([
+        supabase.from('pedidos_itens').select('br,nunota,cliente_nome,vendedor_nome,valor_liquido,produto_descricao,data_prevista_entrega,cod_produto,quantidade,qtd_entregue'),
         supabase.from('ooh_planejamento').select('*'),
-        supabase.from('andamento_producao').select('*')
+        supabase.from('andamento_producao').select('*'),
+        supabase.from('situacao_especial_pedido').select('*')
       ]);
       if(pedidosRes.error)throw pedidosRes.error;
       if(planejamentoRes.error)throw planejamentoRes.error;
       if(andamentoRes.error)throw andamentoRes.error;
+      if(situacaoRes.error)throw situacaoRes.error;
 
       const andamentoPorBR={};
       (andamentoRes.data||[]).forEach(a=>{andamentoPorBR[s(a.br)]=a.andamento;});
+
+      // Mesma marcação manual do PCP usada no Mestra: DESCONSIDERAR some do cálculo,
+      // PENDENTE/CANCELADO saem da lista de atrasados (não é mais compromisso ativo).
+      const situacaoPorNunota={};
+      const situacaoPorBR={};
+      (situacaoRes.data||[]).forEach(sp=>{
+        if(sp.nunota)situacaoPorNunota[sp.nunota]=sp;
+        else situacaoPorBR[s(sp.br)]=sp;
+      });
+      const situacaoDoPedidoOOH=(br,nunota)=>situacaoPorNunota[nunota]||situacaoPorBR[s(br)]||null;
 
       const agrup={};
       const itensPorBR={};
       (pedidosRes.data||[]).forEach(p=>{
         const br=s(p.br);if(!br||!p.data_prevista_entrega)return;
-        if(!agrup[br])agrup[br]={br,cliente:p.cliente_nome,vendedor:p.vendedor_nome,valorTotal:0,valorEntregue:0,dataPrevista:p.data_prevista_entrega,produtos:[]};
+        if(situacaoDoPedidoOOH(br,p.nunota)?.status==='DESCONSIDERAR')return;
+        if(!agrup[br])agrup[br]={br,cliente:p.cliente_nome,vendedor:p.vendedor_nome,valorTotal:0,valorEntregue:0,dataPrevista:p.data_prevista_entrega,produtos:[],situacaoEspecial:null};
         const qtd=Number(p.quantidade||0);
         const qtdEnt=Number(p.qtd_entregue||0);
         agrup[br].valorTotal+=Number(p.valor_liquido||0);
@@ -1168,12 +1257,17 @@ export default function App(){
         agrup[br].valorEntregue+=Number(p.valor_liquido||0)*(qtd>0?Math.min(1,qtdEnt/qtd):0);
         if(p.produto_descricao&&!agrup[br].produtos.includes(p.produto_descricao))agrup[br].produtos.push(p.produto_descricao);
         if(p.data_prevista_entrega<agrup[br].dataPrevista)agrup[br].dataPrevista=p.data_prevista_entrega;
+        const sit=situacaoDoPedidoOOH(br,p.nunota);
+        if(sit&&!agrup[br].situacaoEspecial)agrup[br].situacaoEspecial=sit;
         if(!itensPorBR[br])itensPorBR[br]=[];
         if(p.cod_produto)itensPorBR[br].push({codProduto:s(p.cod_produto),quantidade:qtd});
       });
 
       const planPorBR={};
       (planejamentoRes.data||[]).forEach(pl=>{planPorBR[`${pl.br}|${pl.mes_referencia}`]=pl;});
+
+      const somarDias=(iso,dias)=>{if(!iso)return null;const d=new Date(iso+'T00:00:00Z');d.setUTCDate(d.getUTCDate()+dias);return d.toISOString().slice(0,10);};
+      const hojeOOH=new Date().toISOString().slice(0,10);
 
       const lista=Object.values(agrup).map(r=>{
         const percentualFaturado=r.valorTotal>0?r.valorEntregue/r.valorTotal:0;
@@ -1182,9 +1276,18 @@ export default function App(){
         // Semana ISO da data que vale (reprogramada, se houver, senão a original) — mesma
         // granularidade que a aba "SEMANAS" da planilha do PCP.
         const dataVigenteOOH=plano?.nova_data||r.dataPrevista;
-        return{...r,valorFaturado:r.valorEntregue,percentualFaturado,atendido:percentualFaturado>=0.999,mesPrevisto,plano,
+        // Pendente/Cancelado = não é mais compromisso ativo, sai da lista de atrasados
+        // mesmo sem ter sido fisicamente entregue.
+        const atendido=percentualFaturado>=0.999||(r.situacaoEspecial&&(r.situacaoEspecial.status==='CANCELADO'||r.situacaoEspecial.status==='PENDENTE'));
+        // Data de referência = material tem que estar pronto 5 dias antes do CP.
+        // Alerta de esteira = 20 dias antes do CP, pra entrar na fila de fabricação a tempo.
+        const dataMPPronta=somarDias(dataVigenteOOH,-5);
+        const dataAlertaEsteira=somarDias(dataVigenteOOH,-20);
+        const precisaEntrarNaEsteira=!atendido&&dataAlertaEsteira&&hojeOOH>=dataAlertaEsteira;
+        return{...r,valorFaturado:r.valorEntregue,percentualFaturado,atendido,mesPrevisto,plano,
           andamento:andamentoPorBR[r.br]||'A_INICIAR',
           semanaISO:semanaISODoAno(dataVigenteOOH),
+          dataMPPronta,dataAlertaEsteira,precisaEntrarNaEsteira,
           descricaoResumo:r.produtos.slice(0,1).join(', ')||'—',itens:itensPorBR[r.br]||[]};
       });
       setOohProjetos(lista);
@@ -1236,7 +1339,8 @@ export default function App(){
     const reprogramados=oohDoMes.filter(p=>p.plano).length;
     const emProducao=oohDoMes.filter(p=>p.andamento==='EM_ANDAMENTO'||p.andamento==='CONCLUIDO').length;
     const aIniciar=oohDoMes.filter(p=>p.andamento==='A_INICIAR').length;
-    return{valorPrevisto,valorAtrasado,reprogramados,emProducao,aIniciar,totalProjetos:oohDoMes.length};
+    const precisamEsteira=[...oohDoMes,...oohAtrasados].filter(p=>p.precisaEntrarNaEsteira).length;
+    return{valorPrevisto,valorAtrasado,reprogramados,emProducao,aIniciar,precisamEsteira,totalProjetos:oohDoMes.length};
   },[oohDoMes,oohAtrasados]);
 
   // Projetos "efetivos" do mês: os previstos originalmente (que não foram reprogramados pra fora)
@@ -2948,8 +3052,18 @@ export default function App(){
                                           REPROGRAMADO:{l:'Reprogramado',c:'bg-amber-50 text-amber-700 border-amber-200'},
                                           A_VENCER:{l:'No prazo',c:'bg-blue-50 text-blue-700 border-blue-200'},
                                           SEM_PRAZO:{l:'Sem prazo',c:'bg-slate-100 text-slate-500 border-slate-200'},
+                                          PENDENTE:{l:'Pendente (comercial)',c:'bg-orange-50 text-orange-700 border-orange-200'},
+                                          CANCELADO:{l:'Cancelado',c:'bg-slate-200 text-slate-500 border-slate-300 line-through'},
+                                          SERVICO:{l:'Serviço (comercial)',c:'bg-violet-50 text-violet-700 border-violet-200'},
                                         }[r.situacaoPrazo]||{l:s(r.situacaoPrazo),c:'bg-slate-100 text-slate-500 border-slate-200'};
-                                        return <span className={`text-[9px] font-black px-2 py-0.5 rounded-full border ${cfg.c}`}>{cfg.l}</span>;
+                                        return(
+                                          <span className="inline-flex items-center gap-1">
+                                            <span className={`text-[9px] font-black px-2 py-0.5 rounded-full border ${cfg.c}`} title={r.situacaoEspecial?.motivo||''}>{cfg.l}</span>
+                                            <button onClick={()=>{setMestraSituacaoModal(r);setMestraSituacaoForm({status:r.situacaoEspecial?.status||'PENDENTE',motivo:r.situacaoEspecial?.motivo||''});}} title="Marcar como Pendente/Cancelado/Desconsiderar" className="text-slate-300 hover:text-slate-600">
+                                              <Edit3 className="w-3 h-3"/>
+                                            </button>
+                                          </span>
+                                        );
                                       })()}
                                     </td>
                                     <td className="px-5 py-2.5 text-right font-semibold text-slate-700 whitespace-nowrap">{fmtMoeda(r.valorTotal)}</td>
@@ -3089,12 +3203,13 @@ export default function App(){
                 </div>
 
                 {/* Resumo executivo do mês — a foto antes de entrar no detalhe */}
-                <div className="grid grid-cols-1 sm:grid-cols-4 gap-4">
+                <div className="grid grid-cols-1 sm:grid-cols-5 gap-4">
                   <ExecKPICard tone="slate" icon={LayoutDashboard} label="Previsto no mês" value={fmtMoeda(oohResumoMes.valorPrevisto)} trendLabel={`${oohResumoMes.totalProjetos} projetos`}/>
                   <ExecKPICard tone="red" icon={AlertTriangle} label="Atrasado (meses anteriores)" value={fmtMoeda(oohResumoMes.valorAtrasado)} trendLabel={`${oohAtrasados.length} projetos parados`}
                     selected={oohSecaoAtrasadosAberta} onClick={oohAtrasados.length>0?()=>setOohSecaoAtrasadosAberta(v=>!v):undefined}/>
                   <ExecKPICard tone="amber" icon={Clock} label="Reprogramado/Antecipado" value={String(oohResumoMes.reprogramados)} trendLabel="projetos com nova data"/>
                   <ExecKPICard tone="blue" icon={Factory} label="Em produção" value={String(oohResumoMes.emProducao)} trendLabel={`${oohResumoMes.aIniciar} ainda a iniciar`}/>
+                  <ExecKPICard tone="red" icon={AlertTriangle} label="Entrar na esteira (20d)" value={String(oohResumoMes.precisamEsteira)} trendLabel="faltam 20 dias ou menos pro CP"/>
                 </div>
 
                 {/* Atrasados de meses anteriores — recolhível, mas some por padrão só se vazio */}
@@ -5800,6 +5915,43 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
             />
           </div>
         )}
+      </Modal>
+
+      {/* ── MODAL MESTRA: Marcar Pendente/Cancelado/Desconsiderar ───────── */}
+      <Modal open={!!mestraSituacaoModal} onClose={()=>setMestraSituacaoModal(null)} title={`${s(mestraSituacaoModal?.br)}${mestraSituacaoModal?.nunota?` · Pedido ${mestraSituacaoModal.nunota}`:''}`} subtitle="Marcar situação especial — tira este pedido do cálculo de atraso" maxWidth="max-w-lg">
+        <div className="space-y-4">
+          <div>
+            <label className="text-xs font-black text-slate-500 uppercase mb-1.5 block">Situação</label>
+            <div className="flex gap-2">
+              {[{v:'PENDENTE',l:'Pendente',d:'Parado por decisão comercial/cliente'},{v:'CANCELADO',l:'Cancelado',d:'Não é mais compromisso de entrega'},{v:'DESCONSIDERAR',l:'Desconsiderar',d:'Erro de dado no Sankhya'}].map(o=>(
+                <button key={o.v} onClick={()=>setMestraSituacaoForm(f=>({...f,status:o.v}))} title={o.d}
+                  className={`flex-1 text-xs font-bold px-3 py-2 rounded-xl border ${mestraSituacaoForm.status===o.v?'bg-indigo-600 text-white border-indigo-600':'bg-white text-slate-600 border-slate-200'}`}>
+                  {o.l}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div>
+            <label className="text-xs font-black text-slate-500 uppercase mb-1.5 block">Motivo</label>
+            <textarea value={mestraSituacaoForm.motivo} onChange={e=>setMestraSituacaoForm(f=>({...f,motivo:e.target.value}))} rows={3}
+              placeholder="Ex: Segundo PCP virou estoque — não é mais compromisso deste pedido"
+              className="w-full text-sm border border-slate-200 rounded-xl px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-200"/>
+          </div>
+          <div className="flex items-center justify-between gap-2">
+            {mestraSituacaoModal?.situacaoEspecial&&(
+              <button onClick={()=>{removerSituacaoEspecial(mestraSituacaoModal.br,mestraSituacaoModal.nunota);setMestraSituacaoModal(null);}} className="text-xs font-bold text-red-600 hover:underline">
+                Remover marcação (voltar ao normal)
+              </button>
+            )}
+            <div className="flex gap-2 ml-auto">
+              <Btn variant="secondary" size="sm" onClick={()=>setMestraSituacaoModal(null)}>Cancelar</Btn>
+              <Btn variant="dark" size="sm" onClick={salvarSituacaoEspecial}>Salvar</Btn>
+            </div>
+          </div>
+          {mestraSituacaoModal&&!mestraSituacaoModal.nunota&&(
+            <p className="text-[11px] text-amber-600 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">Este BR não tem pedido específico vinculado — a marcação vai se aplicar a todos os pedidos deste BR.</p>
+          )}
+        </div>
       </Modal>
 
       {/* ── MODAL MESTRA: Detalhamento por Item e Notas Fiscais ────────── */}
