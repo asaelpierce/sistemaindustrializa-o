@@ -273,6 +273,51 @@ function KPICard({label,value,unit,icon:Icon,trend,trendLabel,color='indigo',onC
   );
 }
 
+const ANDAMENTO_CFG={
+  A_INICIAR:{label:'A Iniciar',cls:'bg-slate-100 text-slate-600 border-slate-200'},
+  EM_ANDAMENTO:{label:'Em Andamento',cls:'bg-blue-50 text-blue-700 border-blue-200'},
+  CONCLUIDO:{label:'Concluído',cls:'bg-teal-50 text-teal-700 border-teal-200'},
+  FATURADO:{label:'Faturado',cls:'bg-violet-50 text-violet-700 border-violet-200'},
+};
+
+function AndamentoSelect({value,onChange}){
+  const cfg=ANDAMENTO_CFG[value]||ANDAMENTO_CFG.A_INICIAR;
+  return(
+    <select value={value} onChange={e=>onChange(e.target.value)} onClick={e=>e.stopPropagation()}
+      className={`text-[11px] font-bold px-2.5 py-1 rounded-full border cursor-pointer ${cfg.cls}`}>
+      {Object.entries(ANDAMENTO_CFG).map(([k,c])=><option key={k} value={k}>{c.label}</option>)}
+    </select>
+  );
+}
+
+// Uma linha de projeto na tela OOH — reusada na visão mensal e na semanal pra não duplicar markup.
+// Não depende de helpers locais do componente App (s/fmtDt/fmtMoeda são escopados lá dentro);
+// usa formatação própria pra funcionar como componente top-level.
+function OOHProjetoRow({p,onAndamento,onReprogramar}){
+  const txt=v=>(v===null||v===undefined)?'':String(v);
+  const dt=v=>v?new Date(v).toLocaleDateString('pt-BR'):'—';
+  const moeda=v=>{const n=Number(v)||0;return n.toLocaleString('pt-BR',{style:'currency',currency:'BRL',maximumFractionDigits:0});};
+  return(
+    <div className="px-5 py-3.5 flex items-center justify-between gap-3 flex-wrap hover:bg-slate-50">
+      <div>
+        <p className="font-bold text-slate-900 text-sm">{p.br} — {txt(p.cliente)}</p>
+        <p className="text-xs text-slate-500">Previsto: {dt(p.dataPrevista)} · {moeda(p.valorTotal)} · {txt(p.descricaoResumo)}</p>
+        {p.plano&&(
+          <p className={`text-xs font-bold mt-1 ${p.plano.status==='ANTECIPADO'?'text-emerald-600':'text-violet-600'}`}>
+            {p.plano.status==='ANTECIPADO'?'Antecipado':'Reprogramado'} para {dt(p.plano.nova_data)} — "{p.plano.justificativa}"
+          </p>
+        )}
+      </div>
+      <div className="flex items-center gap-2 flex-wrap">
+        <AndamentoSelect value={p.andamento} onChange={v=>onAndamento(p.br,v)}/>
+        <Btn variant="ghost" size="sm" onClick={onReprogramar}>
+          {p.plano?'Editar':'Reprogramar / Antecipar'}
+        </Btn>
+      </div>
+    </div>
+  );
+}
+
 function StatusBadge({status}){
   const m={
     PENDENTE_EXPEDICAO:{label:'Aguardando Saída',cls:'bg-blue-50 text-blue-700 border-blue-200',dot:'bg-blue-500'},
@@ -540,6 +585,15 @@ export default function App(){
   const fmtD=(v,u='')=>{if(v===undefined||v===null||isNaN(v)||v==='')return'—';const n=parseFloat(v);const st=Number.isInteger(n)?n.toString():n.toFixed(2).replace('.',',');return u?`${st} ${u}`:st;};
   const fmtMoeda=v=>{const n=Number(v)||0;return n.toLocaleString('pt-BR',{style:'currency',currency:'BRL',maximumFractionDigits:0});};
   const fmtDt=v=>v?new Date(v).toLocaleDateString('pt-BR'):'—';
+  // Semana ISO do ano (padrão europeu, mesmo usado pelo Excel) — pra bater com a
+  // granularidade "SEMANA 02, 03..." que o PCP usa na planilha de programação.
+  const semanaISODoAno=iso=>{
+    if(!iso)return null;
+    const d=new Date(iso+'T00:00:00Z');
+    d.setUTCDate(d.getUTCDate()+4-(d.getUTCDay()||7));
+    const inicioAno=new Date(Date.UTC(d.getUTCFullYear(),0,1));
+    return Math.ceil((((d-inicioAno)/86400000)+1)/7);
+  };
   const parseN=v=>{if(typeof v==='number')return v;if(!v)return 0;let st=s(v?.result||v).trim();if(st.includes('.')&&st.includes(',')){if(st.indexOf('.')<st.indexOf(','))st=st.replace(/\./g,'').replace(',','.');else st=st.replace(/,/g,'');}else st=st.replace(',','.');return parseFloat(st)||0;};
   const normKey=k=>s(k).toUpperCase().trim().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/\s+/g,'_').replace(/[.-]/g,'');
 
@@ -1079,6 +1133,7 @@ export default function App(){
   const [oohPlanejamento,setOohPlanejamento]=useState([]);
   const [oohLoading,setOohLoading]=useState(false);
   const [oohErro,setOohErro]=useState('');
+  const [oohVisaoSemanal,setOohVisaoSemanal]=useState(false);
   const [oohModalBR,setOohModalBR]=useState(null);
   const [oohForm,setOohForm]=useState({status:'REPROGRAMADO',novaData:'',justificativa:''});
 
@@ -1086,39 +1141,49 @@ export default function App(){
     if(!supabase)return;
     setOohLoading(true);setOohErro('');
     try{
-      const[pedidosRes,faturamentoRes,planejamentoRes]=await Promise.all([
-        supabase.from('pedidos_itens').select('br,cliente_nome,vendedor_nome,valor_liquido,produto_descricao,data_prevista_entrega,cod_produto,quantidade'),
-        supabase.from('faturamento_resumo').select('br,net_offer_value,tipmov').eq('tipmov','V'),
-        supabase.from('ooh_planejamento').select('*')
+      const[pedidosRes,planejamentoRes,andamentoRes]=await Promise.all([
+        supabase.from('pedidos_itens').select('br,cliente_nome,vendedor_nome,valor_liquido,produto_descricao,data_prevista_entrega,cod_produto,quantidade,qtd_entregue'),
+        supabase.from('ooh_planejamento').select('*'),
+        supabase.from('andamento_producao').select('*')
       ]);
       if(pedidosRes.error)throw pedidosRes.error;
-      if(faturamentoRes.error)throw faturamentoRes.error;
       if(planejamentoRes.error)throw planejamentoRes.error;
+      if(andamentoRes.error)throw andamentoRes.error;
 
-      const faturadoPorBR={};
-      (faturamentoRes.data||[]).forEach(f=>{const br=s(f.br);if(!br)return;faturadoPorBR[br]=(faturadoPorBR[br]||0)+Number(f.net_offer_value||0);});
+      const andamentoPorBR={};
+      (andamentoRes.data||[]).forEach(a=>{andamentoPorBR[s(a.br)]=a.andamento;});
 
       const agrup={};
       const itensPorBR={};
       (pedidosRes.data||[]).forEach(p=>{
         const br=s(p.br);if(!br||!p.data_prevista_entrega)return;
-        if(!agrup[br])agrup[br]={br,cliente:p.cliente_nome,vendedor:p.vendedor_nome,valorTotal:0,dataPrevista:p.data_prevista_entrega,produtos:[]};
+        if(!agrup[br])agrup[br]={br,cliente:p.cliente_nome,vendedor:p.vendedor_nome,valorTotal:0,valorEntregue:0,dataPrevista:p.data_prevista_entrega,produtos:[]};
+        const qtd=Number(p.quantidade||0);
+        const qtdEnt=Number(p.qtd_entregue||0);
         agrup[br].valorTotal+=Number(p.valor_liquido||0);
+        // "Atendido" é por QUANTIDADE (QTDENTREGUE do Sankhya), nunca por comparação de valores
+        // — valor líquido de nota já vem sem impostos e nunca bate 100% com o valor do pedido.
+        agrup[br].valorEntregue+=Number(p.valor_liquido||0)*(qtd>0?Math.min(1,qtdEnt/qtd):0);
         if(p.produto_descricao&&!agrup[br].produtos.includes(p.produto_descricao))agrup[br].produtos.push(p.produto_descricao);
         if(p.data_prevista_entrega<agrup[br].dataPrevista)agrup[br].dataPrevista=p.data_prevista_entrega;
         if(!itensPorBR[br])itensPorBR[br]=[];
-        if(p.cod_produto)itensPorBR[br].push({codProduto:s(p.cod_produto),quantidade:Number(p.quantidade||0)});
+        if(p.cod_produto)itensPorBR[br].push({codProduto:s(p.cod_produto),quantidade:qtd});
       });
 
       const planPorBR={};
       (planejamentoRes.data||[]).forEach(pl=>{planPorBR[`${pl.br}|${pl.mes_referencia}`]=pl;});
 
       const lista=Object.values(agrup).map(r=>{
-        const faturado=faturadoPorBR[r.br]||0;
-        const percentualFaturado=r.valorTotal>0?faturado/r.valorTotal:0;
+        const percentualFaturado=r.valorTotal>0?r.valorEntregue/r.valorTotal:0;
         const mesPrevisto=s(r.dataPrevista).slice(0,7);
         const plano=planPorBR[`${r.br}|${mesPrevisto}`]||null;
-        return{...r,valorFaturado:faturado,percentualFaturado,atendido:percentualFaturado>=0.999,mesPrevisto,plano,descricaoResumo:r.produtos.slice(0,1).join(', ')||'—',itens:itensPorBR[r.br]||[]};
+        // Semana ISO da data que vale (reprogramada, se houver, senão a original) — mesma
+        // granularidade que a aba "SEMANAS" da planilha do PCP.
+        const dataVigenteOOH=plano?.nova_data||r.dataPrevista;
+        return{...r,valorFaturado:r.valorEntregue,percentualFaturado,atendido:percentualFaturado>=0.999,mesPrevisto,plano,
+          andamento:andamentoPorBR[r.br]||'A_INICIAR',
+          semanaISO:semanaISODoAno(dataVigenteOOH),
+          descricaoResumo:r.produtos.slice(0,1).join(', ')||'—',itens:itensPorBR[r.br]||[]};
       });
       setOohProjetos(lista);
       setOohPlanejamento(planejamentoRes.data||[]);
@@ -1133,6 +1198,33 @@ export default function App(){
 
   // Projetos do mês selecionado + atrasados (não atendidos de meses anteriores)
   const oohDoMes=useMemo(()=>oohProjetos.filter(p=>p.mesPrevisto===oohMesRef&&!p.atendido),[oohProjetos,oohMesRef]);
+
+  // Status de andamento (A Iniciar/Em Andamento/Concluído/Faturado) é campo manual do
+  // PCP — mesmo vocabulário usado na planilha OOH. Atualiza no banco e localmente.
+  const ANDAMENTO_LABEL={A_INICIAR:'A Iniciar',EM_ANDAMENTO:'Em Andamento',CONCLUIDO:'Concluído',FATURADO:'Faturado'};
+  const atualizarAndamento=async(br,novoAndamento)=>{
+    setOohProjetos(prev=>prev.map(p=>p.br===br?{...p,andamento:novoAndamento}:p));
+    try{
+      const{error}=await supabase.from('andamento_producao').upsert({br,andamento:novoAndamento,atualizado_em:new Date().toISOString()},{onConflict:'br'});
+      if(error)throw error;
+    }catch(e){
+      addToast('Erro ao salvar andamento: '+e.message,'error');
+      fetchOOH();
+    }
+  };
+
+  // Agrupamento semanal (ISO) dentro do mês — mesma granularidade da aba "SEMANAS"
+  // que o PCP usa na planilha. Semana calculada pela data vigente (reprogramada, se houver).
+  const oohPorSemana=useMemo(()=>{
+    const grupos={};
+    oohDoMes.forEach(p=>{
+      const sem=p.semanaISO??'—';
+      if(!grupos[sem])grupos[sem]={semana:sem,projetos:[],valorTotal:0};
+      grupos[sem].projetos.push(p);
+      grupos[sem].valorTotal+=p.valorTotal;
+    });
+    return Object.values(grupos).sort((a,b)=>(a.semana===b.semana?0:a.semana<b.semana?-1:1));
+  },[oohDoMes]);
   const oohAtrasados=useMemo(()=>oohProjetos.filter(p=>p.mesPrevisto<oohMesRef&&!p.atendido),[oohProjetos,oohMesRef]);
 
   // Projetos "efetivos" do mês: os previstos originalmente (que não foram reprogramados pra fora)
@@ -2995,9 +3087,12 @@ export default function App(){
                             <p className="text-xs text-slate-500">Previsto: {fmtDt(p.dataPrevista)} ({p.mesPrevisto}) · {s(p.descricaoResumo)}</p>
                             {p.plano&&<p className="text-xs font-bold text-violet-600 mt-1">{p.plano.status==='REPROGRAMADO'?'Reprogramado':'Antecipado'} para {fmtDt(p.plano.nova_data)} — "{p.plano.justificativa}"</p>}
                           </div>
-                          <Btn variant="secondary" size="sm" onClick={()=>{setOohModalBR(p);setOohForm({status:'REPROGRAMADO',novaData:p.plano?.nova_data||'',justificativa:p.plano?.justificativa||''});}}>
-                            {p.plano?'Editar':'Reprogramar'}
-                          </Btn>
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <AndamentoSelect value={p.andamento} onChange={v=>atualizarAndamento(p.br,v)}/>
+                            <Btn variant="secondary" size="sm" onClick={()=>{setOohModalBR(p);setOohForm({status:'REPROGRAMADO',novaData:p.plano?.nova_data||'',justificativa:p.plano?.justificativa||''});}}>
+                              {p.plano?'Editar':'Reprogramar'}
+                            </Btn>
+                          </div>
                         </div>
                       ))}
                     </div>
@@ -3005,32 +3100,43 @@ export default function App(){
                 )}
 
                 <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
-                  <div className="px-5 py-3.5 border-b border-slate-100 bg-slate-50">
+                  <div className="px-5 py-3.5 border-b border-slate-100 bg-slate-50 flex items-center justify-between flex-wrap gap-2">
                     <p className="text-xs font-black text-slate-600 uppercase tracking-wide">Projetos previstos para {oohMesRef} ({oohDoMes.length})</p>
+                    <div className="flex items-center gap-1 bg-white border border-slate-200 rounded-full p-0.5">
+                      <button onClick={()=>setOohVisaoSemanal(false)} className={`text-[11px] font-bold px-3 py-1 rounded-full transition-colors ${!oohVisaoSemanal?'bg-indigo-600 text-white':'text-slate-500'}`}>Mensal</button>
+                      <button onClick={()=>setOohVisaoSemanal(true)} className={`text-[11px] font-bold px-3 py-1 rounded-full transition-colors ${oohVisaoSemanal?'bg-indigo-600 text-white':'text-slate-500'}`}>Semanal</button>
+                    </div>
                   </div>
-                  <div className="divide-y divide-slate-100">
-                    {oohLoading&&<div className="px-5 py-10 text-center text-slate-400 font-semibold">Carregando...</div>}
-                    {!oohLoading&&oohDoMes.length===0&&<div className="px-5 py-10 text-center text-slate-400 font-semibold">Nenhum projeto previsto para este mês.</div>}
-                    {!oohLoading&&oohDoMes.map(p=>(
-                      <div key={p.br} className="px-5 py-3.5 flex items-center justify-between gap-3 flex-wrap hover:bg-slate-50">
-                        <div>
-                          <p className="font-bold text-slate-900 text-sm">{p.br} — {s(p.cliente)}</p>
-                          <p className="text-xs text-slate-500">Previsto: {fmtDt(p.dataPrevista)} · {fmtMoeda(p.valorTotal)} · {s(p.descricaoResumo)}</p>
-                          {p.plano&&(
-                            <p className={`text-xs font-bold mt-1 ${p.plano.status==='ANTECIPADO'?'text-emerald-600':'text-violet-600'}`}>
-                              {p.plano.status==='ANTECIPADO'?'Antecipado':'Reprogramado'} para {fmtDt(p.plano.nova_data)} — "{p.plano.justificativa}"
-                            </p>
-                          )}
+
+                  {oohLoading&&<div className="px-5 py-10 text-center text-slate-400 font-semibold">Carregando...</div>}
+                  {!oohLoading&&oohDoMes.length===0&&<div className="px-5 py-10 text-center text-slate-400 font-semibold">Nenhum projeto previsto para este mês.</div>}
+
+                  {!oohLoading&&oohDoMes.length>0&&!oohVisaoSemanal&&(
+                    <div className="divide-y divide-slate-100">
+                      {oohDoMes.map(p=><OOHProjetoRow key={p.br} p={p} onAndamento={atualizarAndamento} onReprogramar={()=>{setOohModalBR(p);setOohForm({status:p.plano?.status||'REPROGRAMADO',novaData:p.plano?.nova_data||'',justificativa:p.plano?.justificativa||''});}}/>)}
+                    </div>
+                  )}
+
+                  {!oohLoading&&oohDoMes.length>0&&oohVisaoSemanal&&(
+                    <div className="divide-y divide-slate-100">
+                      {oohPorSemana.map(g=>(
+                        <div key={g.semana}>
+                          <div className="px-5 py-2 bg-slate-50/70 flex items-center justify-between">
+                            <span className="text-[11px] font-black text-slate-500 uppercase">Semana {g.semana}</span>
+                            <span className="text-[11px] font-bold text-slate-500">{g.projetos.length} projeto{g.projetos.length>1?'s':''} · {fmtMoeda(g.valorTotal)}</span>
+                          </div>
+                          <div className="divide-y divide-slate-100">
+                            {g.projetos.map(p=><OOHProjetoRow key={p.br} p={p} onAndamento={atualizarAndamento} onReprogramar={()=>{setOohModalBR(p);setOohForm({status:p.plano?.status||'REPROGRAMADO',novaData:p.plano?.nova_data||'',justificativa:p.plano?.justificativa||''});}}/>)}
+                          </div>
                         </div>
-                        <Btn variant="ghost" size="sm" onClick={()=>{setOohModalBR(p);setOohForm({status:p.plano?.status||'REPROGRAMADO',novaData:p.plano?.nova_data||'',justificativa:p.plano?.justificativa||''});}}>
-                          {p.plano?'Editar':'Reprogramar / Antecipar'}
-                        </Btn>
-                      </div>
-                    ))}
-                  </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
                 <p className="text-xs text-slate-400">
-                  Fonte: <code>pedidos_itens</code> sincronizado direto do Sankhya, cruzado com <code>faturamento_resumo</code> (nível de nota, líquido de impostos) pra saber o que já foi atendido. Reprogramações ficam salvas aqui no Sistema de Industrialização.
+                  Fonte: <code>pedidos_itens</code> sincronizado direto do Sankhya — "atendido" é decidido pela quantidade entregue (QTDENTREGUE), não por comparação de valores.
+                  O status <strong>Andamento</strong> (A Iniciar/Em Andamento/Concluído/Faturado) é preenchido manualmente aqui, mesmo vocabulário da planilha do PCP — não vem do Sankhya.
+                  A visão <strong>Semanal</strong> agrupa pela semana ISO da data vigente (reprogramada, se houver), igual à aba "SEMANAS" da planilha.
                 </p>
 
                 {/* ── Previsão de Matéria-Prima ── */}
