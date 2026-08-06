@@ -1134,6 +1134,8 @@ export default function App(){
   const [oohLoading,setOohLoading]=useState(false);
   const [oohErro,setOohErro]=useState('');
   const [oohVisaoSemanal,setOohVisaoSemanal]=useState(false);
+  const [oohSecaoAtrasadosAberta,setOohSecaoAtrasadosAberta]=useState(true);
+  const [oohSecaoMPAberta,setOohSecaoMPAberta]=useState(false);
   const [oohModalBR,setOohModalBR]=useState(null);
   const [oohForm,setOohForm]=useState({status:'REPROGRAMADO',novaData:'',justificativa:''});
 
@@ -1226,6 +1228,16 @@ export default function App(){
     return Object.values(grupos).sort((a,b)=>(a.semana===b.semana?0:a.semana<b.semana?-1:1));
   },[oohDoMes]);
   const oohAtrasados=useMemo(()=>oohProjetos.filter(p=>p.mesPrevisto<oohMesRef&&!p.atendido),[oohProjetos,oohMesRef]);
+
+  // Resumo do mês pros cards do topo — visão executiva antes de entrar no detalhe
+  const oohResumoMes=useMemo(()=>{
+    const valorPrevisto=oohDoMes.reduce((a,p)=>a+p.valorTotal,0);
+    const valorAtrasado=oohAtrasados.reduce((a,p)=>a+Math.max(0,p.valorTotal-p.valorFaturado),0);
+    const reprogramados=oohDoMes.filter(p=>p.plano).length;
+    const emProducao=oohDoMes.filter(p=>p.andamento==='EM_ANDAMENTO'||p.andamento==='CONCLUIDO').length;
+    const aIniciar=oohDoMes.filter(p=>p.andamento==='A_INICIAR').length;
+    return{valorPrevisto,valorAtrasado,reprogramados,emProducao,aIniciar,totalProjetos:oohDoMes.length};
+  },[oohDoMes,oohAtrasados]);
 
   // Projetos "efetivos" do mês: os previstos originalmente (que não foram reprogramados pra fora)
   // + os antecipados de outros meses pra este mês
@@ -3065,7 +3077,7 @@ export default function App(){
 
             {/* ── OOH: Planejamento mensal ─────────────────────────────── */}
             {aba==='OOH'&&(
-              <div className="space-y-6">
+              <div className="space-y-5">
                 <SectionHeader title="Planejamento (OOH)" subtitle="Projetos previstos por mês — reprograme, antecipe ou justifique atrasos"
                   actions={<div className="flex gap-2"><Btn variant="dark" size="sm" onClick={sincronizarPedidosEFaturamento} disabled={sincronizandoPedidos}><RefreshCw className={`w-4 h-4 ${sincronizandoPedidos?'animate-spin':''}`}/>Sincronizar Sankhya</Btn><Btn variant="secondary" size="sm" onClick={fetchOOH} disabled={oohLoading}><RefreshCw className={`w-4 h-4 ${oohLoading?'animate-spin':''}`}/>Recarregar</Btn></div>}/>
 
@@ -3076,32 +3088,51 @@ export default function App(){
                   <Inp type="month" value={oohMesRef} onChange={e=>setOohMesRef(e.target.value)} className="w-44"/>
                 </div>
 
+                {/* Resumo executivo do mês — a foto antes de entrar no detalhe */}
+                <div className="grid grid-cols-1 sm:grid-cols-4 gap-4">
+                  <ExecKPICard tone="slate" icon={LayoutDashboard} label="Previsto no mês" value={fmtMoeda(oohResumoMes.valorPrevisto)} trendLabel={`${oohResumoMes.totalProjetos} projetos`}/>
+                  <ExecKPICard tone="red" icon={AlertTriangle} label="Atrasado (meses anteriores)" value={fmtMoeda(oohResumoMes.valorAtrasado)} trendLabel={`${oohAtrasados.length} projetos parados`}
+                    selected={oohSecaoAtrasadosAberta} onClick={oohAtrasados.length>0?()=>setOohSecaoAtrasadosAberta(v=>!v):undefined}/>
+                  <ExecKPICard tone="amber" icon={Clock} label="Reprogramado/Antecipado" value={String(oohResumoMes.reprogramados)} trendLabel="projetos com nova data"/>
+                  <ExecKPICard tone="blue" icon={Factory} label="Em produção" value={String(oohResumoMes.emProducao)} trendLabel={`${oohResumoMes.aIniciar} ainda a iniciar`}/>
+                </div>
+
+                {/* Atrasados de meses anteriores — recolhível, mas some por padrão só se vazio */}
                 {oohAtrasados.length>0&&(
-                  <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4">
-                    <p className="text-xs font-black text-amber-700 uppercase tracking-wide mb-3">⚠ Projetos de meses anteriores ainda não atendidos ({oohAtrasados.length})</p>
-                    <div className="space-y-2">
-                      {oohAtrasados.map(p=>(
-                        <div key={p.br} className="bg-white rounded-xl border border-amber-100 px-4 py-3 flex items-center justify-between gap-3 flex-wrap">
-                          <div>
-                            <p className="font-bold text-slate-900 text-sm">{p.br} — {s(p.cliente)}</p>
-                            <p className="text-xs text-slate-500">Previsto: {fmtDt(p.dataPrevista)} ({p.mesPrevisto}) · {s(p.descricaoResumo)}</p>
-                            {p.plano&&<p className="text-xs font-bold text-violet-600 mt-1">{p.plano.status==='REPROGRAMADO'?'Reprogramado':'Antecipado'} para {fmtDt(p.plano.nova_data)} — "{p.plano.justificativa}"</p>}
+                  <div className="bg-white rounded-2xl border border-red-200 overflow-hidden">
+                    <button onClick={()=>setOohSecaoAtrasadosAberta(v=>!v)} className="w-full flex items-center justify-between px-5 py-3.5 bg-red-50/50 hover:bg-red-50 transition-colors">
+                      <div className="flex items-center gap-2.5">
+                        <ArrowDown className={`w-3.5 h-3.5 text-red-500 transition-transform ${oohSecaoAtrasadosAberta?'':'-rotate-90'}`}/>
+                        <span className="text-sm font-black text-red-700">Projetos de meses anteriores ainda não atendidos</span>
+                        <span className="text-[10px] font-bold text-red-600 bg-red-100 px-2 py-0.5 rounded-full">{oohAtrasados.length}</span>
+                      </div>
+                      <span className="text-xs font-black text-red-700">{fmtMoeda(oohResumoMes.valorAtrasado)}</span>
+                    </button>
+                    {oohSecaoAtrasadosAberta&&(
+                      <div className="divide-y divide-slate-100">
+                        {oohAtrasados.map(p=>(
+                          <div key={p.br} className="px-5 py-3 flex items-center justify-between gap-3 flex-wrap hover:bg-slate-50">
+                            <div>
+                              <p className="font-bold text-slate-900 text-sm">{p.br} — {s(p.cliente)}</p>
+                              <p className="text-xs text-slate-500">Previsto: {fmtDt(p.dataPrevista)} ({p.mesPrevisto}) · {s(p.descricaoResumo)}</p>
+                              {p.plano&&<p className="text-xs font-bold text-violet-600 mt-1">{p.plano.status==='REPROGRAMADO'?'Reprogramado':'Antecipado'} para {fmtDt(p.plano.nova_data)} — "{p.plano.justificativa}"</p>}
+                            </div>
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <AndamentoSelect value={p.andamento} onChange={v=>atualizarAndamento(p.br,v)}/>
+                              <Btn variant="secondary" size="sm" onClick={()=>{setOohModalBR(p);setOohForm({status:'REPROGRAMADO',novaData:p.plano?.nova_data||'',justificativa:p.plano?.justificativa||''});}}>
+                                {p.plano?'Editar':'Reprogramar'}
+                              </Btn>
+                            </div>
                           </div>
-                          <div className="flex items-center gap-2 flex-wrap">
-                            <AndamentoSelect value={p.andamento} onChange={v=>atualizarAndamento(p.br,v)}/>
-                            <Btn variant="secondary" size="sm" onClick={()=>{setOohModalBR(p);setOohForm({status:'REPROGRAMADO',novaData:p.plano?.nova_data||'',justificativa:p.plano?.justificativa||''});}}>
-                              {p.plano?'Editar':'Reprogramar'}
-                            </Btn>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
+                        ))}
+                      </div>
+                    )}
                   </div>
                 )}
 
                 <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
                   <div className="px-5 py-3.5 border-b border-slate-100 bg-slate-50 flex items-center justify-between flex-wrap gap-2">
-                    <p className="text-xs font-black text-slate-600 uppercase tracking-wide">Projetos previstos para {oohMesRef} ({oohDoMes.length})</p>
+                    <p className="text-sm font-black text-slate-800">Projetos previstos para {oohMesRef} <span className="text-slate-400 font-bold">({oohDoMes.length})</span></p>
                     <div className="flex items-center gap-1 bg-white border border-slate-200 rounded-full p-0.5">
                       <button onClick={()=>setOohVisaoSemanal(false)} className={`text-[11px] font-bold px-3 py-1 rounded-full transition-colors ${!oohVisaoSemanal?'bg-indigo-600 text-white':'text-slate-500'}`}>Mensal</button>
                       <button onClick={()=>setOohVisaoSemanal(true)} className={`text-[11px] font-bold px-3 py-1 rounded-full transition-colors ${oohVisaoSemanal?'bg-indigo-600 text-white':'text-slate-500'}`}>Semanal</button>
@@ -3133,19 +3164,19 @@ export default function App(){
                     </div>
                   )}
                 </div>
-                <p className="text-xs text-slate-400">
-                  Fonte: <code>pedidos_itens</code> sincronizado direto do Sankhya — "atendido" é decidido pela quantidade entregue (QTDENTREGUE), não por comparação de valores.
-                  O status <strong>Andamento</strong> (A Iniciar/Em Andamento/Concluído/Faturado) é preenchido manualmente aqui, mesmo vocabulário da planilha do PCP — não vem do Sankhya.
-                  A visão <strong>Semanal</strong> agrupa pela semana ISO da data vigente (reprogramada, se houver), igual à aba "SEMANAS" da planilha.
-                </p>
 
-                {/* ── Previsão de Matéria-Prima ── */}
+                {/* Previsão de Matéria-Prima — recolhível, secundário pro dia a dia */}
                 <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
-                  <div className="px-5 py-3.5 border-b border-slate-100 bg-slate-50 flex items-center justify-between">
-                    <p className="text-xs font-black text-slate-600 uppercase tracking-wide">Previsão de Matéria-Prima para {oohMesRef} ({oohEfetivosDoMes.length} projetos considerados)</p>
+                  <button onClick={()=>setOohSecaoMPAberta(v=>!v)} className="w-full flex items-center justify-between px-5 py-3.5 hover:bg-slate-50 transition-colors">
+                    <div className="flex items-center gap-2.5">
+                      <ArrowDown className={`w-3.5 h-3.5 text-slate-400 transition-transform ${oohSecaoMPAberta?'':'-rotate-90'}`}/>
+                      <span className="text-sm font-black text-slate-800">Previsão de Matéria-Prima</span>
+                      <span className="text-[10px] font-bold text-slate-400 bg-slate-100 px-2 py-0.5 rounded-full">{oohEfetivosDoMes.length} projetos considerados</span>
+                    </div>
                     {previsaoMP.filter(m=>m.falta>0).length>0&&<span className="text-[10px] font-black text-red-600 bg-red-50 px-2 py-1 rounded-full">{previsaoMP.filter(m=>m.falta>0).length} materiais com risco de falta</span>}
-                  </div>
-                  <div className="overflow-x-auto custom-scrollbar">
+                  </button>
+                  {oohSecaoMPAberta&&(
+                  <div className="overflow-x-auto custom-scrollbar border-t border-slate-100">
                     <table className="w-full text-sm">
                       <thead className="bg-slate-50/50 border-b border-slate-100">
                         <tr className="text-left text-[10px] font-black text-slate-500 uppercase tracking-wider">
@@ -3174,9 +3205,11 @@ export default function App(){
                       </tbody>
                     </table>
                   </div>
+                  )}
                 </div>
-                <p className="text-xs text-slate-400">
-                  Previsão = quantidade de cada projeto × composição do produto (sincronizada do Sankhya) − saldo disponível em estoque. Considera reprogramações/antecipações do plano acima.
+
+                <p className="text-[11px] text-slate-400">
+                  "Atendido" é decidido pela quantidade entregue (QTDENTREGUE), não por valor. <strong>Andamento</strong> é preenchido manualmente aqui (mesmo vocabulário do PCP). A visão <strong>Semanal</strong> segue a semana ISO da data vigente. A previsão de MP considera as reprogramações acima.
                 </p>
               </div>
             )}
