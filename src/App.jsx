@@ -630,6 +630,74 @@ export default function App(){
   const [mestraLoading,setMestraLoading]=useState(false);
   const [mestraErro,setMestraErro]=useState('');
   const [sincronizandoPedidos,setSincronizandoPedidos]=useState(false);
+
+  // ────────────────────────────────────────────────────────────────────────
+  // SEÇÃO ADICIONAL: Faturamento Emitido — por mês de NEGOCIAÇÃO (data_neg).
+  // É uma pergunta diferente da Mestra PCP acima ("quanto prometi entregar"):
+  // aqui é "quanto faturei de verdade", agrupado pela data da nota/negociação,
+  // não pela data prevista de entrega. Não usa mesReferencia, dataVigenteBR,
+  // situacaoPrazo nem nenhuma lógica de compromisso/PCP — é independente.
+  // ────────────────────────────────────────────────────────────────────────
+  const [mestraFatNegLoading,setMestraFatNegLoading]=useState(false);
+  const [mestraFatNegErro,setMestraFatNegErro]=useState('');
+  const [mestraFatPorMesNeg,setMestraFatPorMesNeg]=useState([]);
+
+  const fetchMestraFaturamentoPorNegociacao=useCallback(async()=>{
+    if(!supabase)return;
+    setMestraFatNegLoading(true);setMestraFatNegErro('');
+    try{
+      const{data,error}=await supabase
+        .from('faturamento_resumo')
+        .select('br,valor_nota,net_offer_value,data_neg')
+        .eq('tipmov','V');
+      if(error)throw error;
+
+      const grupos={};
+      (data||[]).forEach(row=>{
+        const mes=s(row.data_neg).slice(0,7);
+        if(!mes)return;
+        if(!grupos[mes])grupos[mes]={mes,bruto:0,liquido:0,notas:0,projetosSet:new Set()};
+        grupos[mes].bruto+=Number(row.valor_nota||0);
+        grupos[mes].liquido+=Number(row.net_offer_value||0);
+        grupos[mes].notas+=1;
+        // "<SEM PROJETO>" é o texto literal que o Sankhya devolve quando não há
+        // projeto vinculado — não conta como projeto real.
+        const br=s(row.br);
+        if(br&&!br.toUpperCase().includes('SEM PROJETO'))grupos[mes].projetosSet.add(br);
+      });
+
+      const lista=Object.values(grupos).map(g=>({
+        mes:g.mes,
+        bruto:g.bruto,
+        liquido:g.liquido,
+        notas:g.notas,
+        projetosDistintos:g.projetosSet.size
+      })).sort((a,b)=>a.mes.localeCompare(b.mes));
+
+      setMestraFatPorMesNeg(lista);
+    }catch(e){
+      setMestraFatNegErro('Erro ao buscar faturamento por negociação: '+e.message);
+    }finally{
+      setMestraFatNegLoading(false);
+    }
+  },[supabase]);
+
+  useEffect(()=>{if(supabase&&aba==='MESTRA'&&mestraFatPorMesNeg.length===0)fetchMestraFaturamentoPorNegociacao();},[supabase,aba]);
+
+  const mestraFatNegChartData=useMemo(()=>
+    mestraFatPorMesNeg.slice(-14).map(g=>({
+      name:g.mes,
+      'Bruto':Math.round(g.bruto),
+      'Líquido':Math.round(g.liquido),
+    }))
+  ,[mestraFatPorMesNeg]);
+
+  const mestraFatNegTotais=useMemo(()=>mestraFatPorMesNeg.reduce((acc,g)=>({
+    bruto:acc.bruto+g.bruto,
+    liquido:acc.liquido+g.liquido,
+    notas:acc.notas+g.notas,
+  }),{bruto:0,liquido:0,notas:0}),[mestraFatPorMesNeg]);
+
   const sincronizarPedidosEFaturamento=async()=>{
     if(!supabase)return;
     setSincronizandoPedidos(true);
@@ -2555,6 +2623,100 @@ export default function App(){
                   <strong className="text-red-500"> Vencido sem nova data</strong> é o que estourou sem ninguém reprogramar.
                   Os valores de <strong>nota fiscal</strong> ficam no nível do BR — o Sankhya não amarra a nota ao pedido de origem, então não são rateados.
                 </p>
+
+                {/* ══════════════════════════════════════════════════════════════
+                    SEÇÃO ADICIONAL — independente de tudo acima.
+                    Responde "quanto eu faturei de verdade", agrupado pelo mês da
+                    NEGOCIAÇÃO/NOTA (data_neg) — não pelo mês de entrega prometida.
+                    Não usa mesReferencia, dataVigenteBR, situacaoPrazo nem nenhuma
+                    lógica de compromisso/PCP das seções acima.
+                    ══════════════════════════════════════════════════════════════ */}
+                <div className="pt-2 border-t border-dashed border-slate-200">
+                  <div className="flex items-center justify-between mb-1 mt-4">
+                    <div>
+                      <p className="text-sm font-black text-slate-800">Faturamento Emitido — por data de negociação</p>
+                      <p className="text-[11px] text-slate-400 mt-0.5">
+                        "Quanto eu faturei de verdade" em cada mês (data da nota/negociação) — diferente do resto desta tela, que mostra "o que prometi entregar". Não some com os números acima.
+                      </p>
+                    </div>
+                    <Btn variant="secondary" size="sm" onClick={fetchMestraFaturamentoPorNegociacao} disabled={mestraFatNegLoading}>
+                      <RefreshCw className={`w-4 h-4 ${mestraFatNegLoading?'animate-spin':''}`}/>Recarregar
+                    </Btn>
+                  </div>
+
+                  {mestraFatNegErro&&<div className="bg-red-50 border border-red-200 text-red-700 text-sm font-semibold rounded-xl px-4 py-3 mt-3">{mestraFatNegErro}</div>}
+
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mt-3">
+                    <KPICard label="Bruto (Vlr Nota)" value={fmtMoeda(mestraFatNegTotais.bruto)} icon={FileSpreadsheet} color="slate"/>
+                    <KPICard label="Líquido (Net Offer Value)" value={fmtMoeda(mestraFatNegTotais.liquido)} icon={Activity} color="violet"/>
+                    <KPICard label="Notas Emitidas" value={String(mestraFatNegTotais.notas)} icon={FileSearch} color="indigo"/>
+                  </div>
+
+                  {mestraFatNegChartData.length>0&&(
+                    <div className="bg-white rounded-2xl border border-slate-200 p-5 mt-4">
+                      <p className="text-xs font-black text-slate-600 uppercase tracking-wide mb-1">Bruto x Líquido por Mês de Negociação</p>
+                      <div style={{height:260}}>
+                        <ResponsiveContainer width="100%" height="100%">
+                          <BarChart data={mestraFatNegChartData} margin={{top:20,right:0,left:0,bottom:0}}>
+                            <CartesianGrid strokeDasharray="3 3" vertical={false}/>
+                            <XAxis dataKey="name" tick={{fontSize:10,fontWeight:'600',fill:'#64748b'}}/>
+                            <Tooltip/>
+                            <Legend/>
+                            <Bar dataKey="Bruto" fill="#64748b" radius={[4,4,0,0]} maxBarSize={30}/>
+                            <Bar dataKey="Líquido" fill="#8b5cf6" radius={[4,4,0,0]} maxBarSize={30}/>
+                          </BarChart>
+                        </ResponsiveContainer>
+                      </div>
+                    </div>
+                  )}
+
+                  <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden mt-4">
+                    <div className="overflow-x-auto custom-scrollbar">
+                      <table className="w-full text-sm">
+                        <thead className="bg-slate-50 border-b border-slate-200">
+                          <tr className="text-left text-[10px] font-black text-slate-500 uppercase tracking-wider">
+                            <th className="px-5 py-3">Mês (negociação)</th>
+                            <th className="px-5 py-3 text-right">Bruto</th>
+                            <th className="px-5 py-3 text-right">Líquido</th>
+                            <th className="px-5 py-3 text-right">Notas</th>
+                            <th className="px-5 py-3 text-right">Projetos Distintos</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100">
+                          {mestraFatNegLoading&&(
+                            <tr><td colSpan={5} className="px-5 py-8 text-center text-slate-400 font-semibold">Carregando...</td></tr>
+                          )}
+                          {!mestraFatNegLoading&&mestraFatPorMesNeg.length===0&&(
+                            <tr><td colSpan={5} className="px-5 py-8 text-center text-slate-400 font-semibold">Nenhum dado encontrado.</td></tr>
+                          )}
+                          {!mestraFatNegLoading&&[...mestraFatPorMesNeg].reverse().map(g=>(
+                            <tr key={g.mes} className="hover:bg-slate-50">
+                              <td className="px-5 py-2.5 font-bold text-slate-700">{g.mes}</td>
+                              <td className="px-5 py-2.5 text-right font-semibold text-slate-500">{fmtMoeda(g.bruto)}</td>
+                              <td className="px-5 py-2.5 text-right font-semibold text-violet-600">{fmtMoeda(g.liquido)}</td>
+                              <td className="px-5 py-2.5 text-right text-slate-500">{g.notas}</td>
+                              <td className="px-5 py-2.5 text-right text-slate-500">{g.projetosDistintos}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                        {mestraFatPorMesNeg.length>0&&(
+                          <tfoot className="bg-slate-50 border-t-2 border-slate-200">
+                            <tr className="text-sm font-black">
+                              <td className="px-5 py-3 text-slate-700">Total</td>
+                              <td className="px-5 py-3 text-right text-slate-600">{fmtMoeda(mestraFatNegTotais.bruto)}</td>
+                              <td className="px-5 py-3 text-right text-violet-700">{fmtMoeda(mestraFatNegTotais.liquido)}</td>
+                              <td className="px-5 py-3 text-right text-slate-600">{mestraFatNegTotais.notas}</td>
+                              <td className="px-5 py-3 text-right text-slate-400">—</td>
+                            </tr>
+                          </tfoot>
+                        )}
+                      </table>
+                    </div>
+                  </div>
+                  <p className="text-xs text-slate-400 mt-2">
+                    Fonte: <code>faturamento_resumo</code> (tipmov='V'), agrupado por mês de <code>data_neg</code> (data da negociação/nota — não a data prevista de entrega). {'"<SEM PROJETO>"'} não conta como projeto. Esta seção é independente do restante da tela: não compartilha mesReferencia, dataVigenteBR, situacaoPrazo nem reprogramações do OOH.
+                  </p>
+                </div>
               </div>
             )}
 
