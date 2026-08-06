@@ -943,7 +943,7 @@ export default function App(){
       const{data,error}=await supabase.from('andamento_producao').select('*');
       if(error)throw error;
       const campos={};
-      (data||[]).forEach(a=>{campos[s(a.br)]={andamento:a.andamento,definicao:a.definicao,escopo2:a.escopo2,observacao:a.observacao};});
+      (data||[]).forEach(a=>{campos[s(a.br)]={andamento:a.andamento,definicao:a.definicao,escopo2:a.escopo2,observacao:a.observacao,status_op:a.status_op};});
       setPlanilhaMestreCampos(campos);
     }catch(e){addToast('Erro ao buscar campos manuais: '+e.message,'error');}
     finally{setPlanilhaMestreLoading(false);}
@@ -955,7 +955,7 @@ export default function App(){
     try{
       const atual=planilhaMestreCampos[br]||{};
       const{error}=await supabase.from('andamento_producao').upsert({
-        br,andamento:atual.andamento||'A_INICIAR',definicao:atual.definicao||null,escopo2:atual.escopo2||null,observacao:atual.observacao||null,
+        br,andamento:atual.andamento||'A_INICIAR',definicao:atual.definicao||null,escopo2:atual.escopo2||null,observacao:atual.observacao||null,status_op:atual.status_op||'NAO_ENTREGUE',
         [campo]:valor,atualizado_em:new Date().toISOString(),
       },{onConflict:'br'});
       if(error)throw error;
@@ -998,7 +998,9 @@ export default function App(){
       const dataReferencia=g.datasReferencia.sort()[0]||dataEntregaCP; // reprogramada, se houver
       const mes=dataReferencia?MESES_PT[new Date(dataReferencia+'T00:00:00Z').getUTCMonth()]:'—';
       const semana=dataReferencia?semanaISODoAno(dataReferencia):null;
-      const statusOP=g.itensPendentesTotal===0&&g.itensTotal>0?'ENTREGUE':'NÃO ENTREGUE';
+      // STATUS OP é manual (o usuário define depois de imprimir e entregar a
+      // ordem de produção pro almoxarifado) — não é derivado de quantidade entregue.
+      const statusOP=manual.status_op||'NAO_ENTREGUE';
       const percentualFaturado=g.valorTotal>0?g.valorFaturadoQtd/g.valorTotal:0;
       // FATURAMENTO: pega a nota mais recente de fato (não um VLOOKUP que só acha a primeira)
       const dataFaturamento=g.notas[0]?.dataFaturamento||null;
@@ -1018,31 +1020,78 @@ export default function App(){
     }).sort((a,b)=>(a.dataReferencia||'9999').localeCompare(b.dataReferencia||'9999'));
   },[mestraDb,planilhaMestreCampos]);
 
-  // Busca + paginação — com ~500 projetos, montar todas as linhas de uma vez (cada uma
-  // com 4 campos editáveis) deixava a tela pesada pra digitar/rolar. Filtra primeiro,
-  // pagina depois.
+  // Busca + filtros + paginação — com ~500 projetos, montar todas as linhas de uma vez
+  // (cada uma com 4 campos editáveis) deixava a tela pesada pra digitar/rolar.
   const [planilhaMestreBusca,setPlanilhaMestreBusca]=useState('');
+  const [planilhaMestreFiltros,setPlanilhaMestreFiltros]=useState({statusOp:'TODOS',andamento:'TODOS',escopo2:'TODOS',situacao:'TODOS',mes:'TODOS'});
   const [planilhaMestrePagina,setPlanilhaMestrePagina]=useState(1);
-  const PLANILHA_MESTRE_POR_PAGINA=60;
+  const [planilhaMestrePorPagina,setPlanilhaMestrePorPagina]=useState(60);
+
+  // Opções de Escopo2 e Mês são construídas a partir do que já existe nos dados —
+  // assim o filtro nunca fica desatualizado quando o PCP cadastra um escopo novo.
+  const planilhaMestreOpcoesEscopo2=useMemo(()=>[...new Set(planilhaMestreLinhas.map(r=>r.escopo2).filter(Boolean))].sort(),[planilhaMestreLinhas]);
+  const planilhaMestreOpcoesMes=useMemo(()=>[...new Set(planilhaMestreLinhas.map(r=>r.mes).filter(m=>m&&m!=='—'))],[planilhaMestreLinhas]);
 
   const planilhaMestreFiltrada=useMemo(()=>{
     const termo=planilhaMestreBusca.trim().toLowerCase();
-    if(!termo)return planilhaMestreLinhas;
-    return planilhaMestreLinhas.filter(r=>
-      r.br.toLowerCase().includes(termo)||
-      s(r.cliente).toLowerCase().includes(termo)||
-      s(r.vendedor).toLowerCase().includes(termo)||
-      s(r.escopo2).toLowerCase().includes(termo)
-    );
-  },[planilhaMestreLinhas,planilhaMestreBusca]);
+    const f=planilhaMestreFiltros;
+    return planilhaMestreLinhas.filter(r=>{
+      if(termo&&!(r.br.toLowerCase().includes(termo)||s(r.cliente).toLowerCase().includes(termo)||s(r.vendedor).toLowerCase().includes(termo)||s(r.escopo2).toLowerCase().includes(termo)))return false;
+      if(f.statusOp!=='TODOS'&&r.statusOP!==f.statusOp)return false;
+      if(f.andamento!=='TODOS'&&r.andamento!==f.andamento)return false;
+      if(f.escopo2!=='TODOS'&&r.escopo2!==f.escopo2)return false;
+      if(f.mes!=='TODOS'&&r.mes!==f.mes)return false;
+      if(f.situacao!=='TODOS'){
+        if(f.situacao==='NENHUMA'){if(r.status)return false;}
+        else if(r.status!==f.situacao)return false;
+      }
+      return true;
+    });
+  },[planilhaMestreLinhas,planilhaMestreBusca,planilhaMestreFiltros]);
 
-  useEffect(()=>{setPlanilhaMestrePagina(1);},[planilhaMestreBusca]);
+  useEffect(()=>{setPlanilhaMestrePagina(1);},[planilhaMestreBusca,planilhaMestreFiltros,planilhaMestrePorPagina]);
 
-  const planilhaMestreTotalPaginas=Math.max(1,Math.ceil(planilhaMestreFiltrada.length/PLANILHA_MESTRE_POR_PAGINA));
+  const planilhaMestreTotalPaginas=Math.max(1,Math.ceil(planilhaMestreFiltrada.length/planilhaMestrePorPagina));
   const planilhaMestrePaginada=useMemo(()=>{
-    const ini=(planilhaMestrePagina-1)*PLANILHA_MESTRE_POR_PAGINA;
-    return planilhaMestreFiltrada.slice(ini,ini+PLANILHA_MESTRE_POR_PAGINA);
-  },[planilhaMestreFiltrada,planilhaMestrePagina]);
+    if(planilhaMestrePorPagina>=99999)return planilhaMestreFiltrada;
+    const ini=(planilhaMestrePagina-1)*planilhaMestrePorPagina;
+    return planilhaMestreFiltrada.slice(ini,ini+planilhaMestrePorPagina);
+  },[planilhaMestreFiltrada,planilhaMestrePagina,planilhaMestrePorPagina]);
+
+  // ── Faturamento Semanal: Meta x Realizado ──────────────────────────────
+  // Meta = trajetória linear (100% dividido pelo número de semanas do ano).
+  // Realizado = % acumulado de fato faturado até aquela semana.
+  const faturamentoSemanalAcompanhamento=useMemo(()=>{
+    const anoRef=new Date().getFullYear();
+    const totalSemanas=semanaISODoAno(`${anoRef}-12-28`)||52; // 28/dez está sempre na última semana ISO do ano
+    const semanaAtual=semanaISODoAno(new Date().toISOString().slice(0,10));
+
+    const totalEsperado=planilhaMestreLinhas.reduce((a,r)=>a+r.valorTotal,0);
+
+    const valorPorSemana=Array(totalSemanas+1).fill(0); // índice 1..totalSemanas
+    planilhaMestreLinhas.forEach(r=>{
+      (r.notas||[]).forEach(n=>{
+        if(!n.dataFaturamento)return;
+        const ano=Number(s(n.dataFaturamento).slice(0,4));
+        if(ano!==anoRef)return;
+        const sem=semanaISODoAno(n.dataFaturamento);
+        if(sem>=1&&sem<=totalSemanas)valorPorSemana[sem]+=(n.valor||0);
+      });
+    });
+
+    let acumulado=0;
+    const pontos=[];
+    for(let sem=1;sem<=totalSemanas;sem++){
+      acumulado+=valorPorSemana[sem];
+      pontos.push({
+        semana:sem,
+        name:`S${sem}`,
+        Meta:Number(((sem/totalSemanas)*100).toFixed(1)),
+        Realizado:sem<=semanaAtual?Number((totalEsperado>0?(acumulado/totalEsperado)*100:0).toFixed(1)):null,
+      });
+    }
+    return{pontos,totalEsperado,semanaAtual,totalSemanas,anoRef};
+  },[planilhaMestreLinhas]);
 
   // Gráfico por MÊS DE ENTREGA: mostra a saúde do compromisso, não o valor comercial
   const mestraChartData=useMemo(()=>{
@@ -3451,13 +3500,79 @@ export default function App(){
                 <SectionHeader title="Planilha Mestre" subtitle="Mesmas colunas da planilha do PCP — uma linha por BR, dados já sincronizados do Sankhya"
                   actions={<div className="flex gap-2"><Btn variant="dark" size="sm" onClick={sincronizarPedidosEFaturamento} disabled={sincronizandoPedidos}><RefreshCw className={`w-4 h-4 ${sincronizandoPedidos?'animate-spin':''}`}/>Sincronizar Sankhya</Btn><Btn variant="secondary" size="sm" onClick={()=>{fetchMestra();fetchPlanilhaMestreCampos();fetchImportacaoPendente();}} disabled={mestraLoading||planilhaMestreLoading}><RefreshCw className={`w-4 h-4 ${(mestraLoading||planilhaMestreLoading)?'animate-spin':''}`}/>Recarregar</Btn></div>}/>
 
+                {/* Faturamento Semanal — Meta x Realizado: onde deveríamos estar x onde estamos */}
+                <div className="bg-white rounded-2xl border border-slate-200 p-6">
+                  <div className="flex items-center justify-between mb-1 flex-wrap gap-2">
+                    <p className="text-sm font-black text-slate-800">Faturamento Semanal {faturamentoSemanalAcompanhamento.anoRef} — Meta x Realizado</p>
+                    <div className="flex items-center gap-3 text-[10px] font-bold text-slate-500">
+                      <span className="flex items-center gap-1.5"><span className="w-2.5 h-0.5 bg-slate-400"/>Meta (linear)</span>
+                      <span className="flex items-center gap-1.5"><span className="w-2.5 h-0.5 bg-indigo-600"/>Realizado</span>
+                    </div>
+                  </div>
+                  <p className="text-[11px] text-slate-400 mb-4">
+                    Meta = 100% dividido por {faturamentoSemanalAcompanhamento.totalSemanas} semanas do ano (trajetória linear). Realizado = % acumulado de fato faturado (valor líquido das notas) sobre o total da carteira ({fmtMoeda(faturamentoSemanalAcompanhamento.totalEsperado)}). Estamos na semana {faturamentoSemanalAcompanhamento.semanaAtual}.
+                  </p>
+                  <div style={{height:280}}>
+                    <ResponsiveContainer width="100%" height="100%">
+                      <LineChart data={faturamentoSemanalAcompanhamento.pontos} margin={{top:10,right:10,left:0,bottom:0}}>
+                        <CartesianGrid strokeDasharray="3 3" vertical={false}/>
+                        <XAxis dataKey="name" tick={{fontSize:9,fontWeight:'600',fill:'#64748b'}} interval={Math.max(0,Math.floor(faturamentoSemanalAcompanhamento.totalSemanas/16))}/>
+                        <YAxis tickFormatter={v=>`${v}%`} tick={{fontSize:10,fontWeight:'600',fill:'#64748b'}}/>
+                        <Tooltip formatter={v=>v!==null?`${v}%`:'—'}/>
+                        <Line type="monotone" dataKey="Meta" stroke="#94a3b8" strokeWidth={2} name="Meta"/>
+                        <Line type="monotone" dataKey="Realizado" stroke="#4f46e5" strokeWidth={2.5} name="Realizado"/>
+                      </LineChart>
+                    </ResponsiveContainer>
+                  </div>
+                  {(()=>{
+                    const pontoAtual=faturamentoSemanalAcompanhamento.pontos.find(p=>p.semana===faturamentoSemanalAcompanhamento.semanaAtual);
+                    if(!pontoAtual||pontoAtual.Realizado===null)return null;
+                    const gap=pontoAtual.Realizado-pontoAtual.Meta;
+                    return(
+                      <p className={`text-xs font-bold mt-3 ${gap>=0?'text-teal-700':'text-red-700'}`}>
+                        {gap>=0?`${gap.toFixed(1)}pp à frente da meta`:`${Math.abs(gap).toFixed(1)}pp atrás da meta`} — meta na semana {faturamentoSemanalAcompanhamento.semanaAtual}: {pontoAtual.Meta.toFixed(1)}%, realizado: {pontoAtual.Realizado.toFixed(1)}%.
+                      </p>
+                    );
+                  })()}
+                </div>
+
                 <div className="flex items-center gap-3 flex-wrap">
                   <div className="relative flex-1 min-w-[240px] max-w-sm">
                     <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2"/>
                     <input value={planilhaMestreBusca} onChange={e=>setPlanilhaMestreBusca(e.target.value)} placeholder="Buscar BR, cliente, vendedor ou escopo..."
                       className="w-full text-sm border border-slate-200 rounded-xl pl-9 pr-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-200"/>
                   </div>
-                  <span className="text-xs text-slate-400">{planilhaMestreFiltrada.length} de {planilhaMestreLinhas.length} projetos</span>
+                  <select value={planilhaMestreFiltros.statusOp} onChange={e=>setPlanilhaMestreFiltros(f=>({...f,statusOp:e.target.value}))} className="text-xs font-bold border border-slate-200 rounded-xl px-3 py-2 bg-white">
+                    <option value="TODOS">Status OP: Todos</option>
+                    <option value="ENTREGUE">Entregue</option>
+                    <option value="NAO_ENTREGUE">Não entregue</option>
+                  </select>
+                  <select value={planilhaMestreFiltros.andamento} onChange={e=>setPlanilhaMestreFiltros(f=>({...f,andamento:e.target.value}))} className="text-xs font-bold border border-slate-200 rounded-xl px-3 py-2 bg-white">
+                    <option value="TODOS">Andamento: Todos</option>
+                    {Object.entries(ANDAMENTO_CFG).map(([k,c])=><option key={k} value={k}>{c.label}</option>)}
+                  </select>
+                  {planilhaMestreOpcoesEscopo2.length>0&&(
+                    <select value={planilhaMestreFiltros.escopo2} onChange={e=>setPlanilhaMestreFiltros(f=>({...f,escopo2:e.target.value}))} className="text-xs font-bold border border-slate-200 rounded-xl px-3 py-2 bg-white">
+                      <option value="TODOS">Escopo2: Todos</option>
+                      {planilhaMestreOpcoesEscopo2.map(e=><option key={e} value={e}>{e}</option>)}
+                    </select>
+                  )}
+                  <select value={planilhaMestreFiltros.situacao} onChange={e=>setPlanilhaMestreFiltros(f=>({...f,situacao:e.target.value}))} className="text-xs font-bold border border-slate-200 rounded-xl px-3 py-2 bg-white">
+                    <option value="TODOS">Situação: Todas</option>
+                    <option value="NENHUMA">Sem marcação especial</option>
+                    <option value="PENDENTE">Pendente</option>
+                    <option value="CANCELADO">Cancelado</option>
+                  </select>
+                  {planilhaMestreOpcoesMes.length>0&&(
+                    <select value={planilhaMestreFiltros.mes} onChange={e=>setPlanilhaMestreFiltros(f=>({...f,mes:e.target.value}))} className="text-xs font-bold border border-slate-200 rounded-xl px-3 py-2 bg-white">
+                      <option value="TODOS">Mês: Todos</option>
+                      {planilhaMestreOpcoesMes.map(m=><option key={m} value={m}>{m}</option>)}
+                    </select>
+                  )}
+                  {(planilhaMestreFiltros.statusOp!=='TODOS'||planilhaMestreFiltros.andamento!=='TODOS'||planilhaMestreFiltros.escopo2!=='TODOS'||planilhaMestreFiltros.situacao!=='TODOS'||planilhaMestreFiltros.mes!=='TODOS')&&(
+                    <button onClick={()=>setPlanilhaMestreFiltros({statusOp:'TODOS',andamento:'TODOS',escopo2:'TODOS',situacao:'TODOS',mes:'TODOS'})} className="text-xs font-bold text-red-600 hover:underline">Limpar filtros</button>
+                  )}
+                  <span className="text-xs text-slate-400 ml-auto">{planilhaMestreFiltrada.length} de {planilhaMestreLinhas.length} projetos</span>
                 </div>
 
                 <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
@@ -3513,7 +3628,11 @@ export default function App(){
                               </td>
                               <td className="px-2 py-1.5 text-slate-700 truncate max-w-[160px]" title={s(r.cliente)}>{s(r.cliente)}</td>
                               <td className="px-2 py-1.5 text-center whitespace-nowrap">
-                                <span className={`text-[9px] font-black px-1.5 py-0.5 rounded-full border ${r.statusOP==='ENTREGUE'?'bg-teal-50 text-teal-700 border-teal-200':'bg-slate-100 text-slate-600 border-slate-200'}`}>{r.statusOP}</span>
+                                <button onClick={()=>salvarCampoManualBR(r.br,'status_op',r.statusOP==='ENTREGUE'?'NAO_ENTREGUE':'ENTREGUE')}
+                                  title="Clique pra alternar — depende de imprimir e entregar a OP pro almoxarifado"
+                                  className={`text-[9px] font-black px-1.5 py-0.5 rounded-full border cursor-pointer transition-colors ${r.statusOP==='ENTREGUE'?'bg-teal-50 text-teal-700 border-teal-200 hover:bg-teal-100':'bg-slate-100 text-slate-600 border-slate-200 hover:bg-slate-200'}`}>
+                                  {r.statusOP==='ENTREGUE'?'ENTREGUE':'NÃO ENTREGUE'}
+                                </button>
                               </td>
                               <td className="px-1 py-1"><EditableCell value={r.definicao} onSave={v=>salvarCampoManualBR(r.br,'definicao',v)} placeholder="Corte/Padrão"/></td>
                               <td className="px-2 py-1.5 text-slate-500 truncate max-w-[110px]" title={s(r.vendedor)}>{s(r.vendedor)}</td>
@@ -3548,15 +3667,23 @@ export default function App(){
                   </div>
                 </div>
 
-                {planilhaMestreTotalPaginas>1&&(
-                  <div className="flex items-center justify-center gap-2">
-                    <button onClick={()=>setPlanilhaMestrePagina(p=>Math.max(1,p-1))} disabled={planilhaMestrePagina===1} className="text-xs font-bold px-3 py-1.5 rounded-full border border-slate-200 disabled:opacity-30 disabled:cursor-not-allowed hover:border-indigo-300">← Anterior</button>
-                    <span className="text-xs font-bold text-slate-500">Página {planilhaMestrePagina} de {planilhaMestreTotalPaginas}</span>
-                    <button onClick={()=>setPlanilhaMestrePagina(p=>Math.min(planilhaMestreTotalPaginas,p+1))} disabled={planilhaMestrePagina===planilhaMestreTotalPaginas} className="text-xs font-bold px-3 py-1.5 rounded-full border border-slate-200 disabled:opacity-30 disabled:cursor-not-allowed hover:border-indigo-300">Próxima →</button>
-                  </div>
-                )}
+                <div className="flex items-center justify-center gap-3 flex-wrap">
+                  {planilhaMestreTotalPaginas>1&&(
+                    <>
+                      <button onClick={()=>setPlanilhaMestrePagina(p=>Math.max(1,p-1))} disabled={planilhaMestrePagina===1} className="text-xs font-bold px-3 py-1.5 rounded-full border border-slate-200 disabled:opacity-30 disabled:cursor-not-allowed hover:border-indigo-300">← Anterior</button>
+                      <span className="text-xs font-bold text-slate-500">Página {planilhaMestrePagina} de {planilhaMestreTotalPaginas}</span>
+                      <button onClick={()=>setPlanilhaMestrePagina(p=>Math.min(planilhaMestreTotalPaginas,p+1))} disabled={planilhaMestrePagina===planilhaMestreTotalPaginas} className="text-xs font-bold px-3 py-1.5 rounded-full border border-slate-200 disabled:opacity-30 disabled:cursor-not-allowed hover:border-indigo-300">Próxima →</button>
+                    </>
+                  )}
+                  <select value={planilhaMestrePorPagina} onChange={e=>setPlanilhaMestrePorPagina(Number(e.target.value))} className="text-xs font-bold border border-slate-200 rounded-full px-3 py-1.5 bg-white">
+                    <option value={60}>60 por página</option>
+                    <option value={120}>120 por página</option>
+                    <option value={300}>300 por página</option>
+                    <option value={99999}>Ver todos</option>
+                  </select>
+                </div>
                 <p className="text-[11px] text-slate-400">
-                  Uma linha por BR (soma todos os pedidos daquele projeto). <strong>Definição</strong>, <strong>Escopo2</strong>, <strong>Andamento</strong> e <strong>Considerações</strong> são preenchidos aqui pelo PCP (não vêm do Sankhya). <strong>% Faturado</strong> é por quantidade entregue, não por valor. <strong>Indicador</strong> compara a data da nota com a Data de Entrega CP (dias de atraso ou adiantamento). Colunas Produto Acabado e Frete ainda não são sincronizadas do Sankhya.
+                  Uma linha por BR (soma todos os pedidos daquele projeto). <strong>Definição</strong>, <strong>Escopo2</strong>, <strong>Andamento</strong> e <strong>Considerações</strong> são preenchidos aqui pelo PCP (não vêm do Sankhya). <strong>Status OP</strong> também é manual — clique pra alternar — pois depende de imprimir e entregar a ordem de produção ao almoxarifado. <strong>% Faturado</strong> é por quantidade entregue, não por valor. <strong>Indicador</strong> compara a data da nota com a Data de Entrega CP (dias de atraso ou adiantamento). Colunas Produto Acabado e Frete ainda não são sincronizadas do Sankhya.
                 </p>
               </div>
             )}
