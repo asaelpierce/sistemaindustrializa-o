@@ -351,6 +351,16 @@ function OOHProjetoRow({p,onAndamento,onReprogramar}){
   );
 }
 
+// Célula editável tipo planilha — clica, digita, sai do campo e salva.
+function EditableCell({value,onSave,placeholder,width=100}){
+  const [v,setV]=React.useState(value||'');
+  React.useEffect(()=>{setV(value||'');},[value]);
+  return(
+    <input value={v} onChange={e=>setV(e.target.value)} onBlur={()=>{if(v!==(value||''))onSave(v);}} placeholder={placeholder}
+      style={{width}} className="text-xs bg-transparent border border-transparent hover:border-slate-200 focus:border-indigo-300 focus:bg-white focus:outline-none rounded px-1.5 py-1 w-full"/>
+  );
+}
+
 function StatusBadge({status}){
   const m={
     PENDENTE_EXPEDICAO:{label:'Aguardando Saída',cls:'bg-blue-50 text-blue-700 border-blue-200',dot:'bg-blue-500'},
@@ -846,6 +856,94 @@ export default function App(){
 
   const [mestraSecaoAnaliseAberta,setMestraSecaoAnaliseAberta]=useState(true);
 
+  // ════════════════════════════════════════════════════════════════════════
+  // PLANILHA MESTRE — réplica literal da planilha do PCP (mesmas colunas,
+  // mesma ordem). Reaproveita mestraDb (já carregado) reagrupado por BR
+  // (não por pedido), e cruza com campos manuais próprios do PCP.
+  // ════════════════════════════════════════════════════════════════════════
+  const [planilhaMestreCampos,setPlanilhaMestreCampos]=useState({}); // por BR: {andamento,definicao,escopo2,observacao}
+  const [planilhaMestreLoading,setPlanilhaMestreLoading]=useState(false);
+  const fetchPlanilhaMestreCampos=useCallback(async()=>{
+    if(!supabase)return;
+    setPlanilhaMestreLoading(true);
+    try{
+      const{data,error}=await supabase.from('andamento_producao').select('*');
+      if(error)throw error;
+      const campos={};
+      (data||[]).forEach(a=>{campos[s(a.br)]={andamento:a.andamento,definicao:a.definicao,escopo2:a.escopo2,observacao:a.observacao};});
+      setPlanilhaMestreCampos(campos);
+    }catch(e){addToast('Erro ao buscar campos manuais: '+e.message,'error');}
+    finally{setPlanilhaMestreLoading(false);}
+  },[supabase]);
+  useEffect(()=>{if(supabase&&aba==='PLANILHA_MESTRE'&&Object.keys(planilhaMestreCampos).length===0)fetchPlanilhaMestreCampos();},[supabase,aba]);
+
+  const salvarCampoManualBR=async(br,campo,valor)=>{
+    setPlanilhaMestreCampos(prev=>({...prev,[br]:{...prev[br],[campo]:valor}}));
+    try{
+      const atual=planilhaMestreCampos[br]||{};
+      const{error}=await supabase.from('andamento_producao').upsert({
+        br,andamento:atual.andamento||'A_INICIAR',definicao:atual.definicao||null,escopo2:atual.escopo2||null,observacao:atual.observacao||null,
+        [campo]:valor,atualizado_em:new Date().toISOString(),
+      },{onConflict:'br'});
+      if(error)throw error;
+    }catch(e){addToast('Erro ao salvar: '+e.message,'error');}
+  };
+
+  const MESES_PT=['JANEIRO','FEVEREIRO','MARÇO','ABRIL','MAIO','JUNHO','JULHO','AGOSTO','SETEMBRO','OUTUBRO','NOVEMBRO','DEZEMBRO'];
+
+  const planilhaMestreLinhas=useMemo(()=>{
+    const porBR={};
+    mestraDb.forEach(r=>{
+      const br=r.br;
+      if(!porBR[br])porBR[br]={
+        br,cliente:r.cliente,vendedor:r.vendedor,emissao:r.dataNeg,
+        valorTotal:0,valorFaturadoQtd:0,valorAFaturar:0,qtdPecas:0,pedidosCount:0,
+        descricoes:[],datasEntregaCP:[],datasReferencia:[],situacaoEspecial:null,
+        itensPendentesTotal:0,itensTotal:0,notas:r.notas||[],semPedidoSincronizado:r.semPedidoSincronizado,
+      };
+      const g=porBR[br];
+      g.pedidosCount+=1;
+      if(r.situacaoEspecial&&!g.situacaoEspecial)g.situacaoEspecial=r.situacaoEspecial;
+      g.valorTotal+=r.valorTotal;
+      g.valorFaturadoQtd+=r.valorPedidoAtendido;
+      g.valorAFaturar+=r.valorAFaturar;
+      (r.itens||[]).forEach(it=>{g.qtdPecas+=it.qtdPedida||0;});
+      if(r.descricaoResumo&&r.descricaoResumo!=='—'&&!g.descricoes.includes(r.descricaoResumo))g.descricoes.push(r.descricaoResumo);
+      if(r.dataPrevistaOriginal)g.datasEntregaCP.push(r.dataPrevistaOriginal);
+      if(r.dataVigente||r.dataPrevistaOriginal)g.datasReferencia.push(r.dataVigente||r.dataPrevistaOriginal);
+      g.itensPendentesTotal+=r.qtdItensPendentes;
+      g.itensTotal+=r.qtdItensTotal;
+      if(r.dataNeg&&(!g.emissao||r.dataNeg<g.emissao))g.emissao=r.dataNeg;
+    });
+
+    const hojePM=new Date().toISOString().slice(0,10);
+
+    return Object.values(porBR).map(g=>{
+      const manual=planilhaMestreCampos[g.br]||{};
+      const dataEntregaCP=g.datasEntregaCP.sort()[0]||null; // mais antiga em aberto
+      const dataReferencia=g.datasReferencia.sort()[0]||dataEntregaCP; // reprogramada, se houver
+      const mes=dataReferencia?MESES_PT[new Date(dataReferencia+'T00:00:00Z').getUTCMonth()]:'—';
+      const semana=dataReferencia?semanaISODoAno(dataReferencia):null;
+      const statusOP=g.itensPendentesTotal===0&&g.itensTotal>0?'ENTREGUE':'NÃO ENTREGUE';
+      const percentualFaturado=g.valorTotal>0?g.valorFaturadoQtd/g.valorTotal:0;
+      // FATURAMENTO: pega a nota mais recente de fato (não um VLOOKUP que só acha a primeira)
+      const dataFaturamento=g.notas[0]?.dataFaturamento||null;
+      const indicador=(dataFaturamento&&dataEntregaCP)?Math.round((new Date(dataFaturamento)-new Date(dataEntregaCP))/86400000):null;
+      let descricaoIndicador='Não foi faturado';
+      if(indicador!==null){
+        if(indicador>=1)descricaoIndicador='Atrasou';
+        else if(indicador===0)descricaoIndicador='Atendeu a data do CP';
+        else descricaoIndicador='Antecipou';
+      }
+      return{
+        ...g,dataEntregaCP,dataReferencia,mes,semana,statusOP,percentualFaturado,dataFaturamento,indicador,descricaoIndicador,
+        status:g.situacaoEspecial?.status||null,
+        descricaoResumo:g.descricoes.slice(0,1).join(', ')||'—',
+        andamento:manual.andamento||'A_INICIAR',definicao:manual.definicao||'',escopo2:manual.escopo2||'',observacao:manual.observacao||'',
+      };
+    }).sort((a,b)=>(a.dataReferencia||'9999').localeCompare(b.dataReferencia||'9999'));
+  },[mestraDb,planilhaMestreCampos]);
+
   // Gráfico por MÊS DE ENTREGA: mostra a saúde do compromisso, não o valor comercial
   const mestraChartData=useMemo(()=>{
     return[...mestraPorMes].filter(g=>g.mes!=='sem-prazo').slice(-14).map(g=>({
@@ -1228,7 +1326,7 @@ export default function App(){
     }
   },[supabase]);
 
-  useEffect(()=>{if(supabase&&aba==='MESTRA'&&mestraDb.length===0)fetchMestra();},[supabase,aba]);
+  useEffect(()=>{if(supabase&&(aba==='MESTRA'||aba==='PLANILHA_MESTRE')&&mestraDb.length===0)fetchMestra();},[supabase,aba]);
 
   // ── OOH: Planejamento mensal (projetos do Portal de Engenharia + reprogramações locais) ──
   const [oohMesRef,setOohMesRef]=useState(new Date().toISOString().slice(0,7)); // YYYY-MM
@@ -2412,7 +2510,7 @@ export default function App(){
   }),[projAgrup,filtC]);
 
   const navItems=[
-    ...(isAdmin?[{id:'DASHBOARD',label:'Painel Executivo',icon:LayoutDashboard,group:'Visão Geral'},{id:'MESTRA',label:'Mestra PCP',icon:FileSpreadsheet,group:'Visão Geral'}]:[]),
+    ...(isAdmin?[{id:'DASHBOARD',label:'Painel Executivo',icon:LayoutDashboard,group:'Visão Geral'},{id:'MESTRA',label:'Mestra PCP',icon:FileSpreadsheet,group:'Visão Geral'},{id:'PLANILHA_MESTRE',label:'Planilha Mestre',icon:FileSpreadsheet,group:'Visão Geral'}]:[]),
     ...(isPCP?[{id:'OOH',label:'Planejamento (OOH)',icon:Calendar,group:'PCP'}]:[]),
     ...((isPCP||isExp)?[{id:'PRODUCAO',label:'Produção por Setor',icon:Factory,group:'PCP'}]:[]),
     ...(isPCP?[{id:'NOVA_OP',label:'Nova Remessa',icon:PackageOpen,group:'PCP'},{id:'HISTORICO_PCP',label:'Histórico de Envios',icon:History,group:'PCP'},{id:'UPLOAD_ESTOQUE',label:'Sincronizar ERP',icon:UploadCloud,group:'PCP'}]:[]),
@@ -3213,6 +3311,104 @@ export default function App(){
                   </div>
                   )}
                 </div>
+              </div>
+            )}
+
+            {/* ── PLANILHA MESTRE — réplica literal da planilha do PCP ─────── */}
+            {aba==='PLANILHA_MESTRE'&&isAdmin&&(
+              <div className="space-y-4">
+                <SectionHeader title="Planilha Mestre" subtitle="Mesmas colunas da planilha do PCP — uma linha por BR, dados já sincronizados do Sankhya"
+                  actions={<div className="flex gap-2"><Btn variant="dark" size="sm" onClick={sincronizarPedidosEFaturamento} disabled={sincronizandoPedidos}><RefreshCw className={`w-4 h-4 ${sincronizandoPedidos?'animate-spin':''}`}/>Sincronizar Sankhya</Btn><Btn variant="secondary" size="sm" onClick={()=>{fetchMestra();fetchPlanilhaMestreCampos();}} disabled={mestraLoading||planilhaMestreLoading}><RefreshCw className={`w-4 h-4 ${(mestraLoading||planilhaMestreLoading)?'animate-spin':''}`}/>Recarregar</Btn></div>}/>
+
+                <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
+                  <div className="overflow-x-auto custom-scrollbar" style={{maxHeight:'75vh'}}>
+                    <table className="text-sm border-collapse" style={{minWidth:'2400px'}}>
+                      <thead className="bg-slate-50 border-b border-slate-200 sticky top-0 z-10">
+                        <tr className="text-left text-[9px] font-black text-slate-500 uppercase tracking-wider">
+                          <th className="px-2 py-2 sticky left-0 bg-slate-50 z-20" style={{minWidth:100}}>BR</th>
+                          <th className="px-2 py-2" style={{minWidth:160}}>Cliente</th>
+                          <th className="px-2 py-2 text-center" style={{minWidth:90}}>Status OP</th>
+                          <th className="px-2 py-2" style={{minWidth:90}}>Definição</th>
+                          <th className="px-2 py-2" style={{minWidth:110}}>Vendedor</th>
+                          <th className="px-2 py-2 text-right" style={{minWidth:80}}>Emissão</th>
+                          <th className="px-2 py-2 text-center" style={{minWidth:60}}>Nº Ped.</th>
+                          <th className="px-2 py-2" style={{minWidth:220}}>Descrição de Referência</th>
+                          <th className="px-2 py-2 text-right" style={{minWidth:70}}>Qtd. Peças</th>
+                          <th className="px-2 py-2" style={{minWidth:110}}>Escopo2</th>
+                          <th className="px-2 py-2 text-center" style={{minWidth:90}}>Status</th>
+                          <th className="px-2 py-2 text-right" style={{minWidth:90}}>Estimativa Fat. PCP</th>
+                          <th className="px-2 py-2 text-center" style={{minWidth:110}}>Andamento</th>
+                          <th className="px-2 py-2 text-right" style={{minWidth:80}}>Data Entrega CP</th>
+                          <th className="px-2 py-2 text-right" style={{minWidth:80}}>Data Referência</th>
+                          <th className="px-2 py-2 text-center" style={{minWidth:80}}>Mês</th>
+                          <th className="px-2 py-2 text-center" style={{minWidth:50}}>Semana</th>
+                          <th className="px-2 py-2 text-right" style={{minWidth:100}}>Vlr Líquido Total</th>
+                          <th className="px-2 py-2 text-right" style={{minWidth:100}}>Vlr Faturado</th>
+                          <th className="px-2 py-2 text-right" style={{minWidth:100}}>Vlr à Faturar</th>
+                          <th className="px-2 py-2 text-right" style={{minWidth:60}}>% Fat.</th>
+                          <th className="px-2 py-2 text-right" style={{minWidth:80}}>Faturamento</th>
+                          <th className="px-2 py-2 text-center" style={{minWidth:110}}>Indicador</th>
+                          <th className="px-2 py-2" style={{minWidth:180}}>Considerações</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100">
+                        {(mestraLoading||planilhaMestreLoading)&&(
+                          <tr><td colSpan={24} className="px-5 py-10 text-center text-slate-400 font-semibold">Carregando...</td></tr>
+                        )}
+                        {!mestraLoading&&planilhaMestreLinhas.length===0&&(
+                          <tr><td colSpan={24} className="px-5 py-10 text-center text-slate-400 font-semibold">Nenhum projeto encontrado.</td></tr>
+                        )}
+                        {!mestraLoading&&planilhaMestreLinhas.map(r=>{
+                          const indCfg={
+                            'Atrasou':'text-red-700 bg-red-50 border-red-200',
+                            'Antecipou':'text-emerald-700 bg-emerald-50 border-emerald-200',
+                            'Atendeu a data do CP':'text-blue-700 bg-blue-50 border-blue-200',
+                            'Não foi faturado':'text-slate-400 bg-slate-100 border-slate-200',
+                          }[r.descricaoIndicador];
+                          return(
+                            <tr key={r.br} className="hover:bg-slate-50">
+                              <td className="px-2 py-1.5 font-bold text-indigo-700 whitespace-nowrap sticky left-0 bg-white hover:bg-slate-50">
+                                {r.br}{r.semPedidoSincronizado&&<span className="ml-1 text-[8px] text-violet-500" title="Sem pedido sincronizado">•</span>}
+                              </td>
+                              <td className="px-2 py-1.5 text-slate-700 truncate max-w-[160px]" title={s(r.cliente)}>{s(r.cliente)}</td>
+                              <td className="px-2 py-1.5 text-center whitespace-nowrap">
+                                <span className={`text-[9px] font-black px-1.5 py-0.5 rounded-full border ${r.statusOP==='ENTREGUE'?'bg-teal-50 text-teal-700 border-teal-200':'bg-slate-100 text-slate-500 border-slate-200'}`}>{r.statusOP}</span>
+                              </td>
+                              <td className="px-1 py-1"><EditableCell value={r.definicao} onSave={v=>salvarCampoManualBR(r.br,'definicao',v)} placeholder="Corte/Padrão"/></td>
+                              <td className="px-2 py-1.5 text-slate-500 truncate max-w-[110px]" title={s(r.vendedor)}>{s(r.vendedor)}</td>
+                              <td className="px-2 py-1.5 text-right text-slate-500 whitespace-nowrap">{fmtDt(r.emissao)}</td>
+                              <td className="px-2 py-1.5 text-center text-slate-400">{r.pedidosCount}</td>
+                              <td className="px-2 py-1.5 text-slate-500 truncate max-w-[220px]" title={s(r.descricaoResumo)}>{s(r.descricaoResumo)}</td>
+                              <td className="px-2 py-1.5 text-right text-slate-600 font-semibold">{r.qtdPecas||'—'}</td>
+                              <td className="px-1 py-1"><EditableCell value={r.escopo2} onSave={v=>salvarCampoManualBR(r.br,'escopo2',v)} placeholder="Kalimpact/Revest." width={110}/></td>
+                              <td className="px-2 py-1.5 text-center whitespace-nowrap">
+                                {r.status?<span className={`text-[9px] font-black px-1.5 py-0.5 rounded-full border ${r.status==='PENDENTE'?'bg-orange-50 text-orange-700 border-orange-200':'bg-slate-200 text-slate-500 border-slate-300'}`} title={r.situacaoEspecial?.motivo}>{r.status}</span>:<span className="text-slate-300">—</span>}
+                              </td>
+                              <td className="px-2 py-1.5 text-right text-slate-500 whitespace-nowrap">{fmtDt(r.dataReferencia)}</td>
+                              <td className="px-1 py-1 text-center"><AndamentoSelect value={r.andamento} onChange={v=>salvarCampoManualBR(r.br,'andamento',v)}/></td>
+                              <td className="px-2 py-1.5 text-right text-slate-500 whitespace-nowrap">{fmtDt(r.dataEntregaCP)}</td>
+                              <td className="px-2 py-1.5 text-right font-semibold text-slate-700 whitespace-nowrap">{fmtDt(r.dataReferencia)}</td>
+                              <td className="px-2 py-1.5 text-center text-slate-600 font-semibold whitespace-nowrap">{r.mes}</td>
+                              <td className="px-2 py-1.5 text-center text-slate-400">{r.semana??'—'}</td>
+                              <td className="px-2 py-1.5 text-right font-semibold text-slate-700 whitespace-nowrap">{fmtMoeda(r.valorTotal)}</td>
+                              <td className="px-2 py-1.5 text-right font-semibold text-teal-700 whitespace-nowrap">{fmtMoeda(r.valorFaturadoQtd)}</td>
+                              <td className="px-2 py-1.5 text-right font-semibold text-amber-700 whitespace-nowrap">{fmtMoeda(r.valorAFaturar)}</td>
+                              <td className="px-2 py-1.5 text-right text-slate-500">{(r.percentualFaturado*100).toFixed(0)}%</td>
+                              <td className="px-2 py-1.5 text-right text-slate-500 whitespace-nowrap">{fmtDt(r.dataFaturamento)}</td>
+                              <td className="px-2 py-1.5 text-center whitespace-nowrap">
+                                {indCfg?<span className={`text-[9px] font-black px-1.5 py-0.5 rounded-full border ${indCfg}`}>{r.descricaoIndicador}{r.indicador!==null&&r.indicador!==0?` (${Math.abs(r.indicador)}d)`:''}</span>:'—'}
+                              </td>
+                              <td className="px-1 py-1"><EditableCell value={r.observacao} onSave={v=>salvarCampoManualBR(r.br,'observacao',v)} placeholder="Justificativa do PCP..." width={180}/></td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+                <p className="text-[11px] text-slate-400">
+                  Uma linha por BR (soma todos os pedidos daquele projeto). <strong>Definição</strong>, <strong>Escopo2</strong>, <strong>Andamento</strong> e <strong>Considerações</strong> são preenchidos aqui pelo PCP (não vêm do Sankhya). <strong>% Faturado</strong> é por quantidade entregue, não por valor. <strong>Indicador</strong> compara a data da nota com a Data de Entrega CP (dias de atraso ou adiantamento). Colunas Produto Acabado e Frete ainda não são sincronizadas do Sankhya.
+                </p>
               </div>
             )}
 
