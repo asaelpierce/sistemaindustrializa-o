@@ -5,7 +5,7 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import {
   Search, Upload, Trash2, Database, AlertCircle, FileSpreadsheet,
-  CheckCircle, RefreshCcw, Loader2, Cloud, CloudOff, Truck, MapPin,
+  CheckCircle, RefreshCcw, Loader2, Cloud, CloudOff, Truck, MapPin, Check,
   PackageOpen, ArrowRight, LayoutDashboard, History, UploadCloud, Users,
   Clock, ArrowLeftRight, ListChecks, Lock, LogOut, User, Shield,
   UserPlus, Settings, XCircle, Info, FileSearch, Construction, Edit3,
@@ -316,11 +316,27 @@ function OOHTabelaHeader(){
 
 // Uma linha de projeto na tela OOH, em formato de planilha (BR/Cliente/Vendedor/Datas/Valor/Status
 // em colunas) — reusada na visão mensal, semanal e na lista de atrasados.
-function OOHProjetoRow({p,onAndamento,onReprogramar}){
+// Placeholder de carregamento (skeleton) — passa sensação de resposta mais rápida
+// que um texto "Carregando..." parado, e já sugere o formato do conteúdo que vem.
+function SkeletonRows({linhas=6,colunas=6}){
+  return(
+    <div className="animate-pulse divide-y divide-slate-100">
+      {Array.from({length:linhas}).map((_,i)=>(
+        <div key={i} className="flex items-center gap-4 px-5 py-3.5">
+          {Array.from({length:colunas}).map((_,j)=>(
+            <div key={j} className="h-3 bg-slate-100 rounded" style={{width:j===0?'70px':`${60+((i+j)%3)*30}px`}}/>
+          ))}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+const OOHProjetoRow=React.memo(function OOHProjetoRow({p,onAndamento,onReprogramar}){
   const txt=v=>(v===null||v===undefined)?'':String(v);
   const dt=v=>v?new Date(v).toLocaleDateString('pt-BR'):'—';
   const moeda=v=>{const n=Number(v)||0;return n.toLocaleString('pt-BR',{style:'currency',currency:'BRL',maximumFractionDigits:0});};
-  const sitCfg={PENDENTE:{l:'Pendente',c:'bg-orange-50 text-orange-700 border-orange-200'},CANCELADO:{l:'Cancelado',c:'bg-slate-200 text-slate-500 border-slate-300'}}[p.situacaoEspecial?.status];
+  const sitCfg={PENDENTE:{l:'Pendente',c:'bg-orange-50 text-orange-700 border-orange-200'},CANCELADO:{l:'Cancelado',c:'bg-slate-200 text-slate-700 border-slate-300'}}[p.situacaoEspecial?.status];
   return(
     <tr className={`hover:bg-slate-50 ${p.precisaEntrarNaEsteira?'bg-red-50/40':''}`}>
       <td className="px-3 py-2 font-bold text-indigo-700 whitespace-nowrap">
@@ -345,19 +361,37 @@ function OOHProjetoRow({p,onAndamento,onReprogramar}){
       </td>
       <td className="px-3 py-2 text-center whitespace-nowrap"><AndamentoSelect value={p.andamento} onChange={v=>onAndamento(p.br,v)}/></td>
       <td className="px-3 py-2 text-center whitespace-nowrap">
-        <button onClick={onReprogramar} className="text-[11px] font-bold text-indigo-600 hover:underline">{p.plano?'Editar':'Reprogramar'}</button>
+        <button onClick={()=>onReprogramar(p)} className="text-[11px] font-bold text-indigo-600 hover:underline">{p.plano?'Editar':'Reprogramar'}</button>
       </td>
     </tr>
   );
-}
+});
 
 // Célula editável tipo planilha — clica, digita, sai do campo e salva.
 function EditableCell({value,onSave,placeholder,width=100}){
   const [v,setV]=React.useState(value||'');
+  const [estado,setEstado]=React.useState('ocioso'); // ocioso | salvando | salvo
   React.useEffect(()=>{setV(value||'');},[value]);
+  const confirmar=async e=>{
+    if(v===(value||''))return;
+    setEstado('salvando');
+    try{
+      await onSave(v);
+      setEstado('salvo');
+      setTimeout(()=>setEstado('ocioso'),1500);
+    }catch(_err){
+      setEstado('ocioso'); // erro já vira toast em quem chama; aqui só some o indicador
+    }
+  };
   return(
-    <input value={v} onChange={e=>setV(e.target.value)} onBlur={()=>{if(v!==(value||''))onSave(v);}} placeholder={placeholder}
-      style={{width}} className="text-xs bg-transparent border border-transparent hover:border-slate-200 focus:border-indigo-300 focus:bg-white focus:outline-none rounded px-1.5 py-1 w-full"/>
+    <div className="relative">
+      <input value={v} onChange={e=>setV(e.target.value)} onBlur={confirmar}
+        onKeyDown={e=>{if(e.key==='Enter')e.target.blur();if(e.key==='Escape'){setV(value||'');e.target.blur();}}}
+        placeholder={placeholder} title="Enter confirma, Esc cancela"
+        style={{width}} className="text-xs bg-transparent border border-transparent hover:border-slate-200 focus:border-indigo-300 focus:bg-white focus:outline-none rounded px-1.5 py-1 w-full pr-5"/>
+      {estado==='salvando'&&<span className="absolute right-1.5 top-1/2 -translate-y-1/2 w-2.5 h-2.5 rounded-full border-2 border-slate-300 border-t-indigo-500 animate-spin"/>}
+      {estado==='salvo'&&<Check className="absolute right-1.5 top-1/2 -translate-y-1/2 w-3 h-3 text-teal-600"/>}
+    </div>
   );
 }
 
@@ -484,6 +518,7 @@ function Toast({message,type='success',onClose}){
 // ============================================================================
 export default function App(){
   const [supabase,setSupa]=useState(null);
+  const [supaSupply,setSupaSupply]=useState(null); // projeto "Supply Chain" — só leitura, pra dados de importação de MP
   
   const [dbOnline,setDbOnline]=useState(false);
   const [usuarioLogado,setUsuarioLogado]=useState(null);
@@ -652,6 +687,7 @@ export default function App(){
     scripts.forEach(sc=>{if(!document.getElementById(sc.id)){const el=document.createElement('script');el.id=sc.id;el.src=sc.src;el.async=true;document.body.appendChild(el);}});
     const chk=setInterval(()=>{if(window.supabase){try{
       const cl=window.supabase.createClient(SUPABASE_URL,SUPABASE_KEY);setSupa(cl);
+      const clSupply=window.supabase.createClient('https://tocyzucfgwhvpfihakvj.supabase.co','sb_publishable_BhQK0Wn95R_pZI1eNz6CdQ_PNdR5rVX');setSupaSupply(clSupply);
       clearInterval(chk);
     }catch(e){}}},500);
     return()=>clearInterval(chk);
@@ -683,7 +719,44 @@ export default function App(){
   },[supabase]);
 
   // ── Mestra PCP: agrega Pedidos de Venda + Faturamento do Portal de Engenharia por BR ──
+  // Cache compartilhado de pedidos_itens — Mestra e OOH usam os mesmos dados brutos;
+  // sem isso, trocar de aba disparava a mesma busca (777+ linhas) de novo do zero.
+  const pedidosItensCacheRef=useRef({data:null,ts:0});
+  const fetchPedidosItensCache=useCallback(async()=>{
+    const cache=pedidosItensCacheRef.current;
+    if(cache.data&&Date.now()-cache.ts<30000)return cache.data;
+    const{data,error}=await supabase.from('pedidos_itens').select('br,nunota,numero_pedido,cliente_nome,vendedor_nome,valor_liquido,produto_descricao,cod_produto,quantidade,qtd_entregue,unidade,data_neg,data_prevista_entrega');
+    if(error)throw error;
+    pedidosItensCacheRef.current={data:data||[],ts:Date.now()};
+    return data||[];
+  },[supabase]);
+
   const [mestraDb,setMestraDb]=useState([]);
+
+  // ── Importação de MP pendente (projeto "Supply Chain", tabela pedidos_abertos) ──
+  // Cruza pelo mesmo campo BR (PRJ.IDENTIFICACAO no Sankhya, igual ao nosso).
+  const [importacaoPorBR,setImportacaoPorBR]=useState({});
+  const [importacaoLoading,setImportacaoLoading]=useState(false);
+  const fetchImportacaoPendente=useCallback(async()=>{
+    if(!supaSupply)return;
+    setImportacaoLoading(true);
+    try{
+      const{data,error}=await supaSupply.from('pedidos_abertos').select('projeto,fornecedor,descricao_produto,quantidade_pendente,data_embarque,data_prevista_entrega,dias_atraso_embarque,dias_atraso_entrega,prioridade,numero_pedido').not('projeto','is',null).neq('projeto','<SEM PROJETO>');
+      if(error)throw error;
+      const porBR={};
+      (data||[]).forEach(p=>{
+        const br=s(p.projeto);if(!br)return;
+        if(!porBR[br])porBR[br]={br,itens:[],prioridadeMin:5,maiorAtrasoEmbarque:-9999};
+        porBR[br].itens.push(p);
+        if((p.prioridade??5)<porBR[br].prioridadeMin)porBR[br].prioridadeMin=p.prioridade??5;
+        if((p.dias_atraso_embarque??-9999)>porBR[br].maiorAtrasoEmbarque)porBR[br].maiorAtrasoEmbarque=p.dias_atraso_embarque??-9999;
+      });
+      setImportacaoPorBR(porBR);
+    }catch(e){addToast('Erro ao buscar importações pendentes (Supply Chain): '+e.message,'error');}
+    finally{setImportacaoLoading(false);}
+  },[supaSupply]);
+  useEffect(()=>{if(supaSupply&&(aba==='MESTRA'||aba==='PLANILHA_MESTRE')&&Object.keys(importacaoPorBR).length===0)fetchImportacaoPendente();},[supaSupply,aba]);
+
   const [mestraNotasTotais,setMestraNotasTotais]=useState({bruto:0,liquido:0,brs:0});
   const [mestraFiltro,setMestraFiltro]=useState('TODOS'); // TODOS | FATURADO | PARCIAL | PENDENTE
   const [mestraNotasSel,setMestraNotasSel]=useState(null); // BR selecionado pra ver detalhamento de notas
@@ -886,7 +959,8 @@ export default function App(){
         [campo]:valor,atualizado_em:new Date().toISOString(),
       },{onConflict:'br'});
       if(error)throw error;
-    }catch(e){addToast('Erro ao salvar: '+e.message,'error');}
+      return true;
+    }catch(e){addToast('Erro ao salvar: '+e.message,'error');throw e;}
   };
 
   const MESES_PT=['JANEIRO','FEVEREIRO','MARÇO','ABRIL','MAIO','JUNHO','JULHO','AGOSTO','SETEMBRO','OUTUBRO','NOVEMBRO','DEZEMBRO'];
@@ -943,6 +1017,32 @@ export default function App(){
       };
     }).sort((a,b)=>(a.dataReferencia||'9999').localeCompare(b.dataReferencia||'9999'));
   },[mestraDb,planilhaMestreCampos]);
+
+  // Busca + paginação — com ~500 projetos, montar todas as linhas de uma vez (cada uma
+  // com 4 campos editáveis) deixava a tela pesada pra digitar/rolar. Filtra primeiro,
+  // pagina depois.
+  const [planilhaMestreBusca,setPlanilhaMestreBusca]=useState('');
+  const [planilhaMestrePagina,setPlanilhaMestrePagina]=useState(1);
+  const PLANILHA_MESTRE_POR_PAGINA=60;
+
+  const planilhaMestreFiltrada=useMemo(()=>{
+    const termo=planilhaMestreBusca.trim().toLowerCase();
+    if(!termo)return planilhaMestreLinhas;
+    return planilhaMestreLinhas.filter(r=>
+      r.br.toLowerCase().includes(termo)||
+      s(r.cliente).toLowerCase().includes(termo)||
+      s(r.vendedor).toLowerCase().includes(termo)||
+      s(r.escopo2).toLowerCase().includes(termo)
+    );
+  },[planilhaMestreLinhas,planilhaMestreBusca]);
+
+  useEffect(()=>{setPlanilhaMestrePagina(1);},[planilhaMestreBusca]);
+
+  const planilhaMestreTotalPaginas=Math.max(1,Math.ceil(planilhaMestreFiltrada.length/PLANILHA_MESTRE_POR_PAGINA));
+  const planilhaMestrePaginada=useMemo(()=>{
+    const ini=(planilhaMestrePagina-1)*PLANILHA_MESTRE_POR_PAGINA;
+    return planilhaMestreFiltrada.slice(ini,ini+PLANILHA_MESTRE_POR_PAGINA);
+  },[planilhaMestreFiltrada,planilhaMestrePagina]);
 
   // Gráfico por MÊS DE ENTREGA: mostra a saúde do compromisso, não o valor comercial
   const mestraChartData=useMemo(()=>{
@@ -1042,6 +1142,7 @@ export default function App(){
       if(!d1.ok)throw new Error('Pedidos: '+d1.erro);
       if(!d2.ok)throw new Error('Nota de venda: '+d2.erro);
       if(!d3.ok)throw new Error('Faturamento resumo: '+d3.erro);
+      pedidosItensCacheRef.current={data:null,ts:0}; // força recarregar dado fresco após sync
 
       // Auto-correção: projetos que têm nota mas cujo pedido é de ano anterior à janela
       // sincronizada ficariam "sem pedido" na carteira. Busca esses pedidos por projeto,
@@ -1074,14 +1175,13 @@ export default function App(){
     if(!supabase)return;
     setMestraLoading(true);setMestraErro('');
     try{
-      const[pedidosRes,faturamentoRes,notaItensRes,planRes,situacaoRes]=await Promise.all([
-        supabase.from('pedidos_itens').select('br,nunota,numero_pedido,cliente_nome,vendedor_nome,valor_liquido,produto_descricao,cod_produto,quantidade,qtd_entregue,unidade,data_neg,data_prevista_entrega'),
+      const[pedidosItensData,faturamentoRes,notaItensRes,planRes,situacaoRes]=await Promise.all([
+        fetchPedidosItensCache(),
         supabase.from('faturamento_resumo').select('br,cliente_nome,net_offer_value,valor_nota,tipmov,data_neg,numero_nota,data_faturamento').eq('tipmov','V'),
         supabase.from('nota_venda_itens').select('br,produto_descricao,cod_produto,quantidade,valor_bruto'),
         supabase.from('ooh_planejamento').select('br,nova_data,data_original,justificativa,status,criado_em'),
         supabase.from('situacao_especial_pedido').select('*')
       ]);
-      if(pedidosRes.error)throw pedidosRes.error;
       if(faturamentoRes.error)throw faturamentoRes.error;
       if(notaItensRes.error)throw notaItensRes.error;
       if(planRes.error)throw planRes.error;
@@ -1141,7 +1241,7 @@ export default function App(){
       //  o mesmo número em BRs diferentes.)
       const agrup={};
       const itensPedidoPorChave={};
-      (pedidosRes.data||[]).forEach(p=>{
+      (pedidosItensData||[]).forEach(p=>{
         const br=s(p.br);if(!br)return;
         const nunota=p.nunota==null?'':String(p.nunota);
         // DESCONSIDERAR = o PCP marcou este pedido (ou BR inteiro) como erro de dado —
@@ -1338,19 +1438,22 @@ export default function App(){
   const [oohSecaoAtrasadosAberta,setOohSecaoAtrasadosAberta]=useState(true);
   const [oohSecaoMPAberta,setOohSecaoMPAberta]=useState(false);
   const [oohModalBR,setOohModalBR]=useState(null);
+  const abrirReprogramarOOH=useCallback(p=>{
+    setOohModalBR(p);
+    setOohForm({status:p.plano?.status||'REPROGRAMADO',novaData:p.plano?.nova_data||'',justificativa:p.plano?.justificativa||''});
+  },[]);
   const [oohForm,setOohForm]=useState({status:'REPROGRAMADO',novaData:'',justificativa:''});
 
   const fetchOOH=useCallback(async()=>{
     if(!supabase)return;
     setOohLoading(true);setOohErro('');
     try{
-      const[pedidosRes,planejamentoRes,andamentoRes,situacaoRes]=await Promise.all([
-        supabase.from('pedidos_itens').select('br,nunota,cliente_nome,vendedor_nome,valor_liquido,produto_descricao,data_prevista_entrega,cod_produto,quantidade,qtd_entregue'),
+      const[pedidosItensData,planejamentoRes,andamentoRes,situacaoRes]=await Promise.all([
+        fetchPedidosItensCache(),
         supabase.from('ooh_planejamento').select('*'),
         supabase.from('andamento_producao').select('*'),
         supabase.from('situacao_especial_pedido').select('*')
       ]);
-      if(pedidosRes.error)throw pedidosRes.error;
       if(planejamentoRes.error)throw planejamentoRes.error;
       if(andamentoRes.error)throw andamentoRes.error;
       if(situacaoRes.error)throw situacaoRes.error;
@@ -1370,7 +1473,7 @@ export default function App(){
 
       const agrup={};
       const itensPorBR={};
-      (pedidosRes.data||[]).forEach(p=>{
+      (pedidosItensData||[]).forEach(p=>{
         const br=s(p.br);if(!br||!p.data_prevista_entrega)return;
         if(situacaoDoPedidoOOH(br,p.nunota)?.status==='DESCONSIDERAR')return;
         if(!agrup[br])agrup[br]={br,cliente:p.cliente_nome,vendedor:p.vendedor_nome,valorTotal:0,valorEntregue:0,dataPrevista:p.data_prevista_entrega,produtos:[],situacaoEspecial:null};
@@ -1432,7 +1535,7 @@ export default function App(){
   // Status de andamento (A Iniciar/Em Andamento/Concluído/Faturado) é campo manual do
   // PCP — mesmo vocabulário usado na planilha OOH. Atualiza no banco e localmente.
   const ANDAMENTO_LABEL={A_INICIAR:'A Iniciar',EM_ANDAMENTO:'Em Andamento',CONCLUIDO:'Concluído',FATURADO:'Faturado'};
-  const atualizarAndamento=async(br,novoAndamento)=>{
+  const atualizarAndamento=useCallback(async(br,novoAndamento)=>{
     setOohProjetos(prev=>prev.map(p=>p.br===br?{...p,andamento:novoAndamento}:p));
     try{
       const{error}=await supabase.from('andamento_producao').upsert({br,andamento:novoAndamento,atualizado_em:new Date().toISOString()},{onConflict:'br'});
@@ -1441,7 +1544,7 @@ export default function App(){
       addToast('Erro ao salvar andamento: '+e.message,'error');
       fetchOOH();
     }
-  };
+  },[supabase]);
 
   // Agrupamento semanal (ISO) dentro do mês — mesma granularidade da aba "SEMANAS"
   // que o PCP usa na planilha. Semana calculada pela data vigente (reprogramada, se houver).
@@ -2885,7 +2988,7 @@ export default function App(){
             {aba==='MESTRA'&&isAdmin&&(
               <div className="space-y-4">
                 <SectionHeader title="Mestra PCP" subtitle="Pedidos de Venda x Faturamento por Projeto BR — dados sincronizados do Portal de Engenharia"
-                  actions={<div className="flex gap-2"><Btn variant="dark" size="sm" onClick={sincronizarPedidosEFaturamento} disabled={sincronizandoPedidos}><RefreshCw className={`w-4 h-4 ${sincronizandoPedidos?'animate-spin':''}`}/>Sincronizar Sankhya</Btn><Btn variant="secondary" size="sm" onClick={fetchMestra} disabled={mestraLoading}><RefreshCw className={`w-4 h-4 ${mestraLoading?'animate-spin':''}`}/>Recarregar</Btn></div>}/>
+                  actions={<div className="flex gap-2"><Btn variant="dark" size="sm" onClick={sincronizarPedidosEFaturamento} disabled={sincronizandoPedidos}><RefreshCw className={`w-4 h-4 ${sincronizandoPedidos?'animate-spin':''}`}/>Sincronizar Sankhya</Btn><Btn variant="secondary" size="sm" onClick={()=>{fetchMestra();fetchImportacaoPendente();}} disabled={mestraLoading}><RefreshCw className={`w-4 h-4 ${mestraLoading?'animate-spin':''}`}/>Recarregar</Btn></div>}/>
 
                 {mestraErro&&<div className="bg-red-50 border border-red-200 text-red-700 text-sm font-semibold rounded-xl px-4 py-3">{mestraErro}</div>}
 
@@ -2921,7 +3024,7 @@ export default function App(){
                     <div className="flex items-center gap-2.5">
                       <ArrowDown className={`w-3.5 h-3.5 text-slate-400 transition-transform ${mestraSecaoNotasAberta?'':'-rotate-90'}`}/>
                       <span className="text-sm font-black text-slate-800">Notas Fiscais Emitidas</span>
-                      <span className="text-[10px] font-bold text-slate-400 bg-slate-100 px-2 py-0.5 rounded-full">outro recorte, não some com o de cima</span>
+                      <span className="text-[10px] font-bold text-slate-600 bg-slate-100 px-2 py-0.5 rounded-full">outro recorte, não some com o de cima</span>
                     </div>
                     <div className="flex items-center gap-4 text-xs font-bold">
                       <span className="text-slate-500">{fmtMoeda(mestraNotasTotais.bruto)} bruto</span>
@@ -2983,18 +3086,20 @@ export default function App(){
                     <div className="flex items-center gap-2.5">
                       <ArrowDown className={`w-3.5 h-3.5 text-slate-400 transition-transform ${mestraSecaoAnaliseAberta?'':'-rotate-90'}`}/>
                       <span className="text-sm font-black text-slate-800">Análise para PCP</span>
-                      <span className="text-[10px] font-bold text-slate-400 bg-slate-100 px-2 py-0.5 rounded-full">onde focar primeiro</span>
+                      <span className="text-[10px] font-bold text-slate-600 bg-slate-100 px-2 py-0.5 rounded-full">onde focar primeiro</span>
                     </div>
                     {(mestraFiltroCliente||mestraFiltroVendedor)&&(
                       <span className="flex items-center gap-1.5 text-[11px] font-bold text-red-700 bg-red-50 border border-red-200 px-2.5 py-1 rounded-full">
                         {mestraFiltroCliente||mestraFiltroVendedor}
-                        <XCircle className="w-3.5 h-3.5 cursor-pointer" onClick={e=>{e.stopPropagation();setMestraFiltroCliente(null);setMestraFiltroVendedor(null);}}/>
+                        <button onClick={e=>{e.stopPropagation();setMestraFiltroCliente(null);setMestraFiltroVendedor(null);}} aria-label="Remover filtro" className="hover:text-red-900">
+                          <XCircle className="w-3.5 h-3.5"/>
+                        </button>
                       </span>
                     )}
                   </button>
 
                   {mestraSecaoAnaliseAberta&&(
-                    <div className="px-5 pb-5 grid grid-cols-1 lg:grid-cols-3 gap-6">
+                    <div className="px-5 pb-5 grid grid-cols-1 lg:grid-cols-4 gap-6">
                       {/* Pareto de clientes — concentração do valor vencido */}
                       <div>
                         <p className="text-[11px] font-black text-slate-500 uppercase tracking-wide mb-3">Concentração do Atraso por Cliente</p>
@@ -3064,6 +3169,27 @@ export default function App(){
                           <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-amber-700"/>reprogramado</span>
                         </p>
                       </div>
+
+                      {/* Aguardando importação de MP — cruza com o projeto Supply Chain (pedidos_abertos) */}
+                      <div>
+                        <p className="text-[11px] font-black text-slate-500 uppercase tracking-wide mb-3">Aguardando Importação de MP</p>
+                        {importacaoLoading&&<p className="text-xs text-slate-400">Carregando do Supply Chain...</p>}
+                        {!importacaoLoading&&Object.keys(importacaoPorBR).length===0&&<p className="text-xs text-slate-400">Nenhum projeto aguardando importação no momento.</p>}
+                        <div className="space-y-2.5 max-h-[280px] overflow-y-auto custom-scrollbar">
+                          {Object.values(importacaoPorBR).sort((a,b)=>b.maiorAtrasoEmbarque-a.maiorAtrasoEmbarque).slice(0,10).map(imp=>(
+                            <div key={imp.br} className="text-xs">
+                              <div className="flex items-baseline justify-between gap-2">
+                                <span className="font-bold text-slate-700">{imp.br}</span>
+                                <span className={`text-[10px] font-black px-1.5 py-0.5 rounded-full border ${imp.prioridadeMin<=2?'bg-red-50 text-red-700 border-red-200':'bg-amber-50 text-amber-700 border-amber-200'}`}>
+                                  {imp.maiorAtrasoEmbarque>0?`${imp.maiorAtrasoEmbarque}d atraso`:'a caminho'}
+                                </span>
+                              </div>
+                              <p className="text-[10px] text-slate-400 truncate" title={imp.itens.map(i=>s(i.descricao_produto)).join(', ')}>{imp.itens.length} item{imp.itens.length>1?'s':''} · {s(imp.itens[0]?.fornecedor)}</p>
+                            </div>
+                          ))}
+                        </div>
+                        <p className="text-[11px] text-slate-400 mt-3 pt-3 border-t border-slate-100">Fonte: projeto Supply Chain — pedidos de compra em aberto vinculados ao BR.</p>
+                      </div>
                     </div>
                   )}
                 </div>
@@ -3082,7 +3208,9 @@ export default function App(){
                   {(mestraFiltroCliente||mestraFiltroVendedor)&&(
                     <span className="flex items-center gap-1.5 text-xs font-bold text-red-700 bg-red-50 border border-red-200 px-3 py-1.5 rounded-full">
                       {mestraFiltroCliente?'Cliente: ':'Vendedor: '}{mestraFiltroCliente||mestraFiltroVendedor}
-                      <XCircle className="w-3.5 h-3.5 cursor-pointer" onClick={()=>{setMestraFiltroCliente(null);setMestraFiltroVendedor(null);}}/>
+                      <button onClick={()=>{setMestraFiltroCliente(null);setMestraFiltroVendedor(null);}} aria-label="Remover filtro" className="hover:text-red-900">
+                        <XCircle className="w-3.5 h-3.5"/>
+                      </button>
                     </span>
                   )}
                   <span className="text-xs text-slate-400 ml-1">{mestraFiltrada.length} de {mestraBase.length} pedidos · {new Set(mestraBase.map(r=>r.br)).size} projetos</span>
@@ -3100,7 +3228,7 @@ export default function App(){
                   </div>
                 </div>
                 <div className="space-y-3">
-                  {mestraLoading&&<div className="bg-white rounded-2xl border border-slate-200 px-5 py-10 text-center text-slate-400 font-semibold">Carregando dados do Portal de Engenharia...</div>}
+                  {mestraLoading&&<div className="bg-white rounded-2xl border border-slate-200 overflow-hidden"><SkeletonRows linhas={5} colunas={7}/></div>}
                   {!mestraLoading&&mestraPorMes.length===0&&<div className="bg-white rounded-2xl border border-slate-200 px-5 py-10 text-center text-slate-400 font-semibold">Nenhum dado encontrado.</div>}
                   {!mestraLoading&&mestraPorMes.map(grupo=>{
                     const expandido=mesesExpandidos.has(grupo.mes);
@@ -3113,7 +3241,7 @@ export default function App(){
                             <div className="flex items-center gap-2.5 flex-shrink-0">
                               <ArrowDown className={`w-3.5 h-3.5 text-slate-400 transition-transform ${expandido?'':'-rotate-90'}`}/>
                               <span className="text-sm font-black text-slate-800 tabular-nums">{grupo.mes==='sem-prazo'?'Sem data prevista':grupo.mes}</span>
-                              <span className="text-[10px] font-bold text-slate-400 bg-slate-100 px-2 py-0.5 rounded-full whitespace-nowrap">{grupo.itens.length} projeto{grupo.itens.length>1?'s':''}</span>
+                              <span className="text-[10px] font-bold text-slate-600 bg-slate-100 px-2 py-0.5 rounded-full whitespace-nowrap">{grupo.itens.length} projeto{grupo.itens.length>1?'s':''}</span>
                             </div>
                             <div className="grid grid-cols-4 gap-3 text-right flex-shrink-0" style={{minWidth:'460px'}}>
                               <span className={`text-xs font-bold tabular-nums ${grupo.valorVencido>0?'text-red-700':'text-slate-300'}`}>{grupo.valorVencido>0?fmtMoeda(grupo.valorVencido):'—'}</span>
@@ -3176,15 +3304,18 @@ export default function App(){
                                           REPROG_VENCIDO:{l:`Reprog. vencida ${r.maiorAtraso}d`,c:'bg-red-50 text-red-700 border-red-200'},
                                           REPROGRAMADO:{l:'Reprogramado',c:'bg-amber-50 text-amber-700 border-amber-200'},
                                           A_VENCER:{l:'No prazo',c:'bg-blue-50 text-blue-700 border-blue-200'},
-                                          SEM_PRAZO:{l:'Sem prazo',c:'bg-slate-100 text-slate-500 border-slate-200'},
+                                          SEM_PRAZO:{l:'Sem prazo',c:'bg-slate-100 text-slate-600 border-slate-200'},
                                           PENDENTE:{l:'Pendente (comercial)',c:'bg-orange-50 text-orange-700 border-orange-200'},
-                                          CANCELADO:{l:'Cancelado',c:'bg-slate-200 text-slate-500 border-slate-300 line-through'},
+                                          CANCELADO:{l:'Cancelado',c:'bg-slate-200 text-slate-700 border-slate-300 line-through'},
                                           SERVICO:{l:'Serviço (comercial)',c:'bg-violet-50 text-violet-700 border-violet-200'},
-                                        }[r.situacaoPrazo]||{l:s(r.situacaoPrazo),c:'bg-slate-100 text-slate-500 border-slate-200'};
+                                        }[r.situacaoPrazo]||{l:s(r.situacaoPrazo),c:'bg-slate-100 text-slate-600 border-slate-200'};
+                                        const imp=importacaoPorBR[r.br];
+                                        const impCfg=imp?(imp.prioridadeMin<=2?{l:`⏳ Importação ${imp.maiorAtrasoEmbarque>0?imp.maiorAtrasoEmbarque+'d':''}`,c:'bg-red-50 text-red-700 border-red-200'}:{l:'⏳ Importação',c:'bg-amber-50 text-amber-700 border-amber-200'}):null;
                                         return(
-                                          <span className="inline-flex items-center gap-1">
+                                          <span className="inline-flex items-center gap-1 flex-wrap">
                                             <span className={`text-[9px] font-black px-2 py-0.5 rounded-full border ${cfg.c}`} title={r.situacaoEspecial?.motivo||''}>{cfg.l}</span>
-                                            <button onClick={()=>{setMestraSituacaoModal(r);setMestraSituacaoForm({status:r.situacaoEspecial?.status||'PENDENTE',motivo:r.situacaoEspecial?.motivo||''});}} title="Marcar como Pendente/Cancelado/Desconsiderar" className="text-slate-300 hover:text-slate-600">
+                                            {impCfg&&<span className={`text-[9px] font-black px-2 py-0.5 rounded-full border ${impCfg.c}`} title={imp.itens.map(i=>`${s(i.fornecedor)}: ${s(i.descricao_produto)}`).join(' · ')}>{impCfg.l}</span>}
+                                            <button onClick={()=>{setMestraSituacaoModal(r);setMestraSituacaoForm({status:r.situacaoEspecial?.status||'PENDENTE',motivo:r.situacaoEspecial?.motivo||''});}} title="Marcar como Pendente/Cancelado/Desconsiderar" aria-label="Marcar situação especial deste pedido" className="text-slate-300 hover:text-slate-600">
                                               <Edit3 className="w-3 h-3"/>
                                             </button>
                                           </span>
@@ -3225,7 +3356,7 @@ export default function App(){
                     <div className="flex items-center gap-2.5">
                       <ArrowDown className={`w-3.5 h-3.5 text-slate-400 transition-transform ${mestraSecaoNegociacaoAberta?'':'-rotate-90'}`}/>
                       <span className="text-sm font-black text-slate-800">Faturamento Emitido — por data de negociação</span>
-                      <span className="text-[10px] font-bold text-slate-400 bg-slate-100 px-2 py-0.5 rounded-full">outra pergunta: quanto faturei, não o que prometi</span>
+                      <span className="text-[10px] font-bold text-slate-600 bg-slate-100 px-2 py-0.5 rounded-full">outra pergunta: quanto faturei, não o que prometi</span>
                     </div>
                     <div className="flex items-center gap-4 text-xs font-bold">
                       <span className="text-slate-500">{fmtMoeda(mestraFatNegTotais.bruto)} bruto</span>
@@ -3318,7 +3449,16 @@ export default function App(){
             {aba==='PLANILHA_MESTRE'&&isAdmin&&(
               <div className="space-y-4">
                 <SectionHeader title="Planilha Mestre" subtitle="Mesmas colunas da planilha do PCP — uma linha por BR, dados já sincronizados do Sankhya"
-                  actions={<div className="flex gap-2"><Btn variant="dark" size="sm" onClick={sincronizarPedidosEFaturamento} disabled={sincronizandoPedidos}><RefreshCw className={`w-4 h-4 ${sincronizandoPedidos?'animate-spin':''}`}/>Sincronizar Sankhya</Btn><Btn variant="secondary" size="sm" onClick={()=>{fetchMestra();fetchPlanilhaMestreCampos();}} disabled={mestraLoading||planilhaMestreLoading}><RefreshCw className={`w-4 h-4 ${(mestraLoading||planilhaMestreLoading)?'animate-spin':''}`}/>Recarregar</Btn></div>}/>
+                  actions={<div className="flex gap-2"><Btn variant="dark" size="sm" onClick={sincronizarPedidosEFaturamento} disabled={sincronizandoPedidos}><RefreshCw className={`w-4 h-4 ${sincronizandoPedidos?'animate-spin':''}`}/>Sincronizar Sankhya</Btn><Btn variant="secondary" size="sm" onClick={()=>{fetchMestra();fetchPlanilhaMestreCampos();fetchImportacaoPendente();}} disabled={mestraLoading||planilhaMestreLoading}><RefreshCw className={`w-4 h-4 ${(mestraLoading||planilhaMestreLoading)?'animate-spin':''}`}/>Recarregar</Btn></div>}/>
+
+                <div className="flex items-center gap-3 flex-wrap">
+                  <div className="relative flex-1 min-w-[240px] max-w-sm">
+                    <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2"/>
+                    <input value={planilhaMestreBusca} onChange={e=>setPlanilhaMestreBusca(e.target.value)} placeholder="Buscar BR, cliente, vendedor ou escopo..."
+                      className="w-full text-sm border border-slate-200 rounded-xl pl-9 pr-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-200"/>
+                  </div>
+                  <span className="text-xs text-slate-400">{planilhaMestreFiltrada.length} de {planilhaMestreLinhas.length} projetos</span>
+                </div>
 
                 <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
                   <div className="overflow-x-auto custom-scrollbar" style={{maxHeight:'75vh'}}>
@@ -3353,26 +3493,27 @@ export default function App(){
                       </thead>
                       <tbody className="divide-y divide-slate-100">
                         {(mestraLoading||planilhaMestreLoading)&&(
-                          <tr><td colSpan={24} className="px-5 py-10 text-center text-slate-400 font-semibold">Carregando...</td></tr>
+                          <tr><td colSpan={24} className="p-0"><SkeletonRows linhas={8} colunas={9}/></td></tr>
                         )}
-                        {!mestraLoading&&planilhaMestreLinhas.length===0&&(
-                          <tr><td colSpan={24} className="px-5 py-10 text-center text-slate-400 font-semibold">Nenhum projeto encontrado.</td></tr>
+                        {!mestraLoading&&planilhaMestreFiltrada.length===0&&(
+                          <tr><td colSpan={24} className="px-5 py-10 text-center text-slate-400 font-semibold">{planilhaMestreBusca?'Nenhum resultado pra essa busca.':'Nenhum projeto encontrado.'}</td></tr>
                         )}
-                        {!mestraLoading&&planilhaMestreLinhas.map(r=>{
+                        {!mestraLoading&&planilhaMestrePaginada.map(r=>{
                           const indCfg={
                             'Atrasou':'text-red-700 bg-red-50 border-red-200',
                             'Antecipou':'text-emerald-700 bg-emerald-50 border-emerald-200',
                             'Atendeu a data do CP':'text-blue-700 bg-blue-50 border-blue-200',
-                            'Não foi faturado':'text-slate-400 bg-slate-100 border-slate-200',
+                            'Não foi faturado':'text-slate-600 bg-slate-100 border-slate-200',
                           }[r.descricaoIndicador];
                           return(
                             <tr key={r.br} className="hover:bg-slate-50">
                               <td className="px-2 py-1.5 font-bold text-indigo-700 whitespace-nowrap sticky left-0 bg-white hover:bg-slate-50">
                                 {r.br}{r.semPedidoSincronizado&&<span className="ml-1 text-[8px] text-violet-500" title="Sem pedido sincronizado">•</span>}
+                                {importacaoPorBR[r.br]&&<span className={`ml-1 ${importacaoPorBR[r.br].prioridadeMin<=2?'text-red-500':'text-amber-500'}`} title={`Aguardando importação de MP${importacaoPorBR[r.br].maiorAtrasoEmbarque>0?` — ${importacaoPorBR[r.br].maiorAtrasoEmbarque}d de atraso no embarque`:''}`}>⏳</span>}
                               </td>
                               <td className="px-2 py-1.5 text-slate-700 truncate max-w-[160px]" title={s(r.cliente)}>{s(r.cliente)}</td>
                               <td className="px-2 py-1.5 text-center whitespace-nowrap">
-                                <span className={`text-[9px] font-black px-1.5 py-0.5 rounded-full border ${r.statusOP==='ENTREGUE'?'bg-teal-50 text-teal-700 border-teal-200':'bg-slate-100 text-slate-500 border-slate-200'}`}>{r.statusOP}</span>
+                                <span className={`text-[9px] font-black px-1.5 py-0.5 rounded-full border ${r.statusOP==='ENTREGUE'?'bg-teal-50 text-teal-700 border-teal-200':'bg-slate-100 text-slate-600 border-slate-200'}`}>{r.statusOP}</span>
                               </td>
                               <td className="px-1 py-1"><EditableCell value={r.definicao} onSave={v=>salvarCampoManualBR(r.br,'definicao',v)} placeholder="Corte/Padrão"/></td>
                               <td className="px-2 py-1.5 text-slate-500 truncate max-w-[110px]" title={s(r.vendedor)}>{s(r.vendedor)}</td>
@@ -3382,7 +3523,7 @@ export default function App(){
                               <td className="px-2 py-1.5 text-right text-slate-600 font-semibold">{r.qtdPecas||'—'}</td>
                               <td className="px-1 py-1"><EditableCell value={r.escopo2} onSave={v=>salvarCampoManualBR(r.br,'escopo2',v)} placeholder="Kalimpact/Revest." width={110}/></td>
                               <td className="px-2 py-1.5 text-center whitespace-nowrap">
-                                {r.status?<span className={`text-[9px] font-black px-1.5 py-0.5 rounded-full border ${r.status==='PENDENTE'?'bg-orange-50 text-orange-700 border-orange-200':'bg-slate-200 text-slate-500 border-slate-300'}`} title={r.situacaoEspecial?.motivo}>{r.status}</span>:<span className="text-slate-300">—</span>}
+                                {r.status?<span className={`text-[9px] font-black px-1.5 py-0.5 rounded-full border ${r.status==='PENDENTE'?'bg-orange-50 text-orange-700 border-orange-200':'bg-slate-200 text-slate-700 border-slate-300'}`} title={r.situacaoEspecial?.motivo}>{r.status}</span>:<span className="text-slate-300">—</span>}
                               </td>
                               <td className="px-2 py-1.5 text-right text-slate-500 whitespace-nowrap">{fmtDt(r.dataReferencia)}</td>
                               <td className="px-1 py-1 text-center"><AndamentoSelect value={r.andamento} onChange={v=>salvarCampoManualBR(r.br,'andamento',v)}/></td>
@@ -3406,6 +3547,14 @@ export default function App(){
                     </table>
                   </div>
                 </div>
+
+                {planilhaMestreTotalPaginas>1&&(
+                  <div className="flex items-center justify-center gap-2">
+                    <button onClick={()=>setPlanilhaMestrePagina(p=>Math.max(1,p-1))} disabled={planilhaMestrePagina===1} className="text-xs font-bold px-3 py-1.5 rounded-full border border-slate-200 disabled:opacity-30 disabled:cursor-not-allowed hover:border-indigo-300">← Anterior</button>
+                    <span className="text-xs font-bold text-slate-500">Página {planilhaMestrePagina} de {planilhaMestreTotalPaginas}</span>
+                    <button onClick={()=>setPlanilhaMestrePagina(p=>Math.min(planilhaMestreTotalPaginas,p+1))} disabled={planilhaMestrePagina===planilhaMestreTotalPaginas} className="text-xs font-bold px-3 py-1.5 rounded-full border border-slate-200 disabled:opacity-30 disabled:cursor-not-allowed hover:border-indigo-300">Próxima →</button>
+                  </div>
+                )}
                 <p className="text-[11px] text-slate-400">
                   Uma linha por BR (soma todos os pedidos daquele projeto). <strong>Definição</strong>, <strong>Escopo2</strong>, <strong>Andamento</strong> e <strong>Considerações</strong> são preenchidos aqui pelo PCP (não vêm do Sankhya). <strong>% Faturado</strong> é por quantidade entregue, não por valor. <strong>Indicador</strong> compara a data da nota com a Data de Entrega CP (dias de atraso ou adiantamento). Colunas Produto Acabado e Frete ainda não são sincronizadas do Sankhya.
                 </p>
@@ -3451,7 +3600,7 @@ export default function App(){
                         <table className="w-full text-sm">
                           <OOHTabelaHeader/>
                           <tbody className="divide-y divide-slate-100">
-                            {oohAtrasados.map(p=><OOHProjetoRow key={p.br} p={p} onAndamento={atualizarAndamento} onReprogramar={()=>{setOohModalBR(p);setOohForm({status:'REPROGRAMADO',novaData:p.plano?.nova_data||'',justificativa:p.plano?.justificativa||''});}}/>)}
+                            {oohAtrasados.map(p=><OOHProjetoRow key={p.br} p={p} onAndamento={atualizarAndamento} onReprogramar={abrirReprogramarOOH}/>)}
                           </tbody>
                         </table>
                       </div>
@@ -3468,7 +3617,7 @@ export default function App(){
                     </div>
                   </div>
 
-                  {oohLoading&&<div className="px-5 py-10 text-center text-slate-400 font-semibold">Carregando...</div>}
+                  {oohLoading&&<SkeletonRows linhas={5} colunas={6}/>}
                   {!oohLoading&&oohDoMes.length===0&&<div className="px-5 py-10 text-center text-slate-400 font-semibold">Nenhum projeto previsto para este mês.</div>}
 
                   {!oohLoading&&oohDoMes.length>0&&!oohVisaoSemanal&&(
@@ -3476,7 +3625,7 @@ export default function App(){
                       <table className="w-full text-sm">
                         <OOHTabelaHeader/>
                         <tbody className="divide-y divide-slate-100">
-                          {oohDoMes.map(p=><OOHProjetoRow key={p.br} p={p} onAndamento={atualizarAndamento} onReprogramar={()=>{setOohModalBR(p);setOohForm({status:p.plano?.status||'REPROGRAMADO',novaData:p.plano?.nova_data||'',justificativa:p.plano?.justificativa||''});}}/>)}
+                          {oohDoMes.map(p=><OOHProjetoRow key={p.br} p={p} onAndamento={atualizarAndamento} onReprogramar={abrirReprogramarOOH}/>)}
                         </tbody>
                       </table>
                     </div>
@@ -3494,7 +3643,7 @@ export default function App(){
                                 <span className="text-[11px] font-bold text-slate-500 float-right">{g.projetos.length} projeto{g.projetos.length>1?'s':''} · {fmtMoeda(g.valorTotal)}</span>
                               </td>
                             </tr>
-                            {g.projetos.map(p=><OOHProjetoRow key={p.br} p={p} onAndamento={atualizarAndamento} onReprogramar={()=>{setOohModalBR(p);setOohForm({status:p.plano?.status||'REPROGRAMADO',novaData:p.plano?.nova_data||'',justificativa:p.plano?.justificativa||''});}}/>)}
+                            {g.projetos.map(p=><OOHProjetoRow key={p.br} p={p} onAndamento={atualizarAndamento} onReprogramar={abrirReprogramarOOH}/>)}
                           </tbody>
                         ))}
                       </table>
@@ -3508,7 +3657,7 @@ export default function App(){
                     <div className="flex items-center gap-2.5">
                       <ArrowDown className={`w-3.5 h-3.5 text-slate-400 transition-transform ${oohSecaoMPAberta?'':'-rotate-90'}`}/>
                       <span className="text-sm font-black text-slate-800">Previsão de Matéria-Prima</span>
-                      <span className="text-[10px] font-bold text-slate-400 bg-slate-100 px-2 py-0.5 rounded-full">{oohEfetivosDoMes.length} projetos considerados</span>
+                      <span className="text-[10px] font-bold text-slate-600 bg-slate-100 px-2 py-0.5 rounded-full">{oohEfetivosDoMes.length} projetos considerados</span>
                     </div>
                     {previsaoMP.filter(m=>m.falta>0).length>0&&<span className="text-[10px] font-black text-red-600 bg-red-50 px-2 py-1 rounded-full">{previsaoMP.filter(m=>m.falta>0).length} materiais com risco de falta</span>}
                   </button>
@@ -6189,9 +6338,9 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
               const cfg={
                 COMPLETO:{label:'Faturado',cls:'bg-emerald-50 text-emerald-700 border-emerald-200'},
                 PARCIAL:{label:'Parcial',cls:'bg-amber-50 text-amber-700 border-amber-200'},
-                PENDENTE:{label:'Pendente',cls:'bg-slate-100 text-slate-500 border-slate-200'},
+                PENDENTE:{label:'Pendente',cls:'bg-slate-100 text-slate-600 border-slate-200'},
                 SEM_PEDIDO:{label:'Sem pedido vinculado',cls:'bg-violet-50 text-violet-700 border-violet-200'},
-              }[it.status]||{label:it.status,cls:'bg-slate-100 text-slate-500 border-slate-200'};
+              }[it.status]||{label:it.status,cls:'bg-slate-100 text-slate-600 border-slate-200'};
               return(
                 <div key={i} className="bg-slate-50 border border-slate-100 rounded-xl px-4 py-3">
                   <div className="flex items-start justify-between gap-3">
