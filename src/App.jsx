@@ -54,7 +54,7 @@ export function BarChart(p){return<CartesianChartE {...p}/>;}
 export function LineChart(p){return<CartesianChartE {...p}/>;}
 export function ComposedChart(p){return<CartesianChartE {...p}/>;}
 
-function CartesianChartE({data=[],layout="horizontal",containerWidth=400,containerHeight=300,margin={top:15,right:15,left:15,bottom:15},children}){
+function CartesianChartE({data=[],layout="horizontal",containerWidth=400,containerHeight=300,margin={top:15,right:15,left:15,bottom:15},onBarClick,children}){
   const [hov,setHov]=useState(null);
   const [mpos,setMpos]=useState({x:0,y:0});
   const ch=React.Children.toArray(children);
@@ -134,7 +134,7 @@ function CartesianChartE({data=[],layout="horizontal",containerWidth=400,contain
                 const y=gY(v,s.yAxisId);const h=Math.max(2,pad.top+cH-y);
                 let fill=s.fill||ENT_COLORS[si%ENT_COLORS.length];
                 if(s.props.children){const cells=React.Children.toArray(s.props.children).filter(c=>c.type===Cell);if(cells[i])fill=cells[i].props.fill;}
-                return<g key={`${si}-${i}`}><rect x={x} y={y} width={w} height={h} rx={3} fill={fill} opacity={hov!==null&&hov!==i?0.5:1} style={{transition:'opacity 0.15s'}}/>{React.Children.toArray(s.props.children).find(c=>c.type===LabelList)&&<text x={x+w/2} y={y-6} fill="#64748b" fontSize={9} fontWeight="700" textAnchor="middle">{fmt(v)}</text>}</g>;
+                return<g key={`${si}-${i}`}><rect x={x} y={y} width={w} height={h} rx={3} fill={fill} opacity={hov!==null&&hov!==i?0.5:1} onClick={onBarClick?()=>onBarClick({dataKey:s.dataKey,name:s.name,value:v,payload:item,index:i}):undefined} style={{transition:'opacity 0.15s',cursor:onBarClick?'pointer':'default'}}/>{React.Children.toArray(s.props.children).find(c=>c.type===LabelList)&&<text x={x+w/2} y={y-6} fill="#64748b" fontSize={9} fontWeight="700" textAnchor="middle">{fmt(v)}</text>}</g>;
               });
             })}
             {series.filter(s=>s.type==='line').map((s,si)=>{
@@ -610,13 +610,18 @@ export default function App(){
     };
   },[mestraDb]);
 
+  const [mestraFiltroCliente,setMestraFiltroCliente]=useState(null);
+  const [mestraFiltroVendedor,setMestraFiltroVendedor]=useState(null);
+
   const mestraFiltrada=useMemo(()=>mestraBase.filter(r=>{
+    if(mestraFiltroCliente&&r.cliente!==mestraFiltroCliente)return false;
+    if(mestraFiltroVendedor&&r.vendedor!==mestraFiltroVendedor)return false;
     if(mestraFiltro==='VENCIDO')return r.situacaoPrazo==='VENCIDO_SEM_AVISO';
     if(mestraFiltro==='REPROGRAMADO')return r.situacaoPrazo==='REPROGRAMADO'||r.situacaoPrazo==='REPROG_VENCIDO';
     if(mestraFiltro==='A_VENCER')return r.situacaoPrazo==='A_VENCER';
     if(mestraFiltro==='ENTREGUE')return r.situacaoPrazo==='ENTREGUE';
     return true;
-  }),[mestraBase,mestraFiltro]);
+  }),[mestraBase,mestraFiltro,mestraFiltroCliente,mestraFiltroVendedor]);
 
   // Agrupamento pelo MÊS DE ENTREGA (compromisso) — é assim que o PCP enxerga
   const mestraPorMes=useMemo(()=>{
@@ -636,6 +641,94 @@ export default function App(){
   },[mestraFiltrada]);
   const [mesesExpandidos,setMesesExpandidos]=useState(()=>new Set());
   const toggleMesExpandido=mes=>setMesesExpandidos(p=>{const n=new Set(p);n.has(mes)?n.delete(mes):n.add(mes);return n;});
+
+  // Clique numa barra do gráfico: filtra pela situação, expande aquele mês
+  // específico e rola até ele — assim dá pra ver exatamente quais projetos são.
+  const CHART_DATAKEY_PARA_FILTRO={'Entregue':'ENTREGUE','Vencido s/ aviso':'VENCIDO','Reprogramado':'REPROGRAMADO','A vencer':'A_VENCER'};
+  const irParaMesNoGrafico=({dataKey,payload})=>{
+    const filtro=CHART_DATAKEY_PARA_FILTRO[dataKey]||'TODOS';
+    const mes=payload?.name;
+    if(!mes)return;
+    setMestraFiltro(filtro);
+    setMesesExpandidos(p=>new Set(p).add(mes));
+    setTimeout(()=>{
+      document.getElementById(`mestra-mes-${mes}`)?.scrollIntoView({behavior:'smooth',block:'center'});
+    },80);
+  };
+  const filtrarEVerNaTabela=filtro=>{
+    setMestraFiltro(f=>f===filtro?'TODOS':filtro);
+    setMestraFiltroCliente(null);
+    setMestraFiltroVendedor(null);
+    setTimeout(()=>{
+      document.getElementById('mestra-tabela-mensal')?.scrollIntoView({behavior:'smooth',block:'start'});
+    },80);
+  };
+
+  // ────────────────────────────────────────────────────────────────────────
+  // ANÁLISE PARA PCP — tudo derivado do que já está carregado em mestraBase,
+  // sem nenhuma consulta nova. Ajuda a priorizar: onde concentra o atraso,
+  // há quanto tempo está vencido, e quem (vendedor) tem mais risco em aberto.
+  // ────────────────────────────────────────────────────────────────────────
+  const drillPara=(tipo,valor)=>{
+    if(tipo==='cliente'){setMestraFiltroCliente(v=>v===valor?null:valor);setMestraFiltroVendedor(null);}
+    else{setMestraFiltroVendedor(v=>v===valor?null:valor);setMestraFiltroCliente(null);}
+    setMestraFiltro('VENCIDO');
+    setMesesExpandidos(new Set(mestraPorMes.map(g=>g.mes)));
+    setTimeout(()=>document.getElementById('mestra-tabela-mensal')?.scrollIntoView({behavior:'smooth',block:'start'}),80);
+  };
+
+  // Concentração de risco (Pareto): poucos projetos costumam concentrar a maior
+  // parte do valor vencido — mostra onde o PCP deve focar primeiro.
+  const mestraParetoClientes=useMemo(()=>{
+    const porCliente={};
+    mestraBase.forEach(r=>{
+      if(r.valorVencidoSemAviso<=0)return;
+      const c=s(r.cliente)||'Sem cliente';
+      if(!porCliente[c])porCliente[c]={cliente:c,valor:0,projetos:0};
+      porCliente[c].valor+=r.valorVencidoSemAviso;
+      porCliente[c].projetos+=1;
+    });
+    const totalVencido=Object.values(porCliente).reduce((a,c)=>a+c.valor,0);
+    const maxCliente=Math.max(1,...Object.values(porCliente).map(c=>c.valor));
+    let acumulado=0;
+    return Object.values(porCliente).sort((a,b)=>b.valor-a.valor).slice(0,8).map(c=>{
+      acumulado+=c.valor;
+      return{...c,pctDoTotal:totalVencido>0?(c.valor/totalVencido)*100:0,pctAcumulado:totalVencido>0?(acumulado/totalVencido)*100:0,pctBarra:(c.valor/maxCliente)*100};
+    });
+  },[mestraBase]);
+
+  // Aging do atraso: há quanto tempo cada valor está vencido — quanto mais
+  // pra direita, mais urgente (esfriou e ninguém resolveu).
+  const mestraAgingAtraso=useMemo(()=>{
+    const faixas=[{label:'1–15 dias',min:1,max:15,valor:0,itens:0},{label:'16–30 dias',min:16,max:30,valor:0,itens:0},{label:'31–60 dias',min:31,max:60,valor:0,itens:0},{label:'60+ dias',min:61,max:Infinity,valor:0,itens:0}];
+    mestraBase.forEach(r=>{
+      if(r.situacaoPrazo!=='VENCIDO_SEM_AVISO'||r.valorVencidoSemAviso<=0)return;
+      const f=faixas.find(f=>r.maiorAtraso>=f.min&&r.maiorAtraso<=f.max);
+      if(f){f.valor+=r.valorVencidoSemAviso;f.itens+=1;}
+    });
+    const maxFaixa=Math.max(1,...faixas.map(f=>f.valor));
+    return faixas.map(f=>({...f,pctBarra:(f.valor/maxFaixa)*100}));
+  },[mestraBase]);
+
+  // Ranking de vendedores por valor em risco (vencido + reprogramado) — ajuda
+  // a diretoria a ver se o atraso está concentrado em alguns vendedores/contas.
+  const mestraRankingVendedores=useMemo(()=>{
+    const porVendedor={};
+    mestraBase.forEach(r=>{
+      const risco=r.valorVencidoSemAviso+r.valorReprogramado;
+      if(risco<=0)return;
+      const v=s(r.vendedor)||'Sem vendedor';
+      if(!porVendedor[v])porVendedor[v]={vendedor:v,vencido:0,reprogramado:0,projetos:0};
+      porVendedor[v].vencido+=r.valorVencidoSemAviso;
+      porVendedor[v].reprogramado+=r.valorReprogramado;
+      porVendedor[v].projetos+=1;
+    });
+    const lista=Object.values(porVendedor).map(v=>({...v,total:v.vencido+v.reprogramado}));
+    const max=Math.max(1,...lista.map(v=>v.total));
+    return lista.sort((a,b)=>b.total-a.total).slice(0,8).map(v=>({...v,pctVencido:(v.vencido/max)*100,pctReprogramado:(v.reprogramado/max)*100}));
+  },[mestraBase]);
+
+  const [mestraSecaoAnaliseAberta,setMestraSecaoAnaliseAberta]=useState(true);
 
   // Gráfico por MÊS DE ENTREGA: mostra a saúde do compromisso, não o valor comercial
   const mestraChartData=useMemo(()=>{
@@ -2469,20 +2562,20 @@ export default function App(){
                   <div className="grid grid-cols-1 sm:grid-cols-4 gap-4">
                     <ExecKPICard tone="red" icon={AlertTriangle} selected={mestraFiltro==='VENCIDO'}
                       label="Vencido sem nova data" value={fmtMoeda(mestraBase.reduce((a,r)=>a+r.valorVencidoSemAviso,0))}
-                      trendLabel={`${mestraBase.filter(r=>r.situacaoPrazo==='VENCIDO_SEM_AVISO').length} projetos — PCP precisa informar`}
-                      onClick={()=>setMestraFiltro(mestraFiltro==='VENCIDO'?'TODOS':'VENCIDO')}/>
+                      trendLabel={`${mestraBase.filter(r=>r.situacaoPrazo==='VENCIDO_SEM_AVISO').length} projetos — clique pra ver`}
+                      onClick={()=>filtrarEVerNaTabela('VENCIDO')}/>
                     <ExecKPICard tone="amber" icon={Clock} selected={mestraFiltro==='REPROGRAMADO'}
                       label="Reprogramado" value={fmtMoeda(mestraBase.reduce((a,r)=>a+r.valorReprogramado,0))}
-                      trendLabel={`${mestraBase.filter(r=>r.situacaoPrazo==='REPROGRAMADO'||r.situacaoPrazo==='REPROG_VENCIDO').length} projetos com nova data`}
-                      onClick={()=>setMestraFiltro(mestraFiltro==='REPROGRAMADO'?'TODOS':'REPROGRAMADO')}/>
+                      trendLabel={`${mestraBase.filter(r=>r.situacaoPrazo==='REPROGRAMADO'||r.situacaoPrazo==='REPROG_VENCIDO').length} projetos — clique pra ver`}
+                      onClick={()=>filtrarEVerNaTabela('REPROGRAMADO')}/>
                     <ExecKPICard tone="blue" icon={CheckCircle} selected={mestraFiltro==='A_VENCER'}
                       label="No prazo" value={fmtMoeda(mestraBase.reduce((a,r)=>a+r.valorAVencer,0))}
-                      trendLabel={`${mestraBase.filter(r=>r.situacaoPrazo==='A_VENCER').length} projetos a vencer`}
-                      onClick={()=>setMestraFiltro(mestraFiltro==='A_VENCER'?'TODOS':'A_VENCER')}/>
+                      trendLabel={`${mestraBase.filter(r=>r.situacaoPrazo==='A_VENCER').length} projetos — clique pra ver`}
+                      onClick={()=>filtrarEVerNaTabela('A_VENCER')}/>
                     <ExecKPICard tone="teal" icon={PackageOpen} selected={mestraFiltro==='ENTREGUE'}
                       label="Já entregue" value={fmtMoeda(mestraBase.reduce((a,r)=>a+r.valorPedidoAtendido,0))}
-                      trendLabel={`${mestraBase.filter(r=>r.situacaoPrazo==='ENTREGUE').length} projetos concluídos`}
-                      onClick={()=>setMestraFiltro(mestraFiltro==='ENTREGUE'?'TODOS':'ENTREGUE')}/>
+                      trendLabel={`${mestraBase.filter(r=>r.situacaoPrazo==='ENTREGUE').length} projetos — clique pra ver`}
+                      onClick={()=>filtrarEVerNaTabela('ENTREGUE')}/>
                   </div>
                   {mestraBase.reduce((a,r)=>a+r.valorSemPrazo,0)>0&&(
                     <p className="text-[11px] text-slate-400 mt-1.5">+ {fmtMoeda(mestraBase.reduce((a,r)=>a+r.valorSemPrazo,0))} sem data prevista no Sankhya.</p>
@@ -2519,8 +2612,11 @@ export default function App(){
                 {/* Gráfico: evolução mensal Total vs Faturado */}
                 {mestraChartData.length>0&&(
                   <div className="bg-white rounded-2xl border border-slate-200 p-6">
-                    <div className="flex items-center justify-between mb-4">
+                    <div className="flex items-center justify-between mb-1">
                       <p className="text-sm font-black text-slate-800">Compromissos por Mês de Entrega</p>
+                      <span className="text-[10px] text-slate-400 font-semibold">clique numa barra pra ver os projetos</span>
+                    </div>
+                    <div className="flex items-center justify-end mb-4">
                       <div className="flex items-center gap-3 text-[10px] font-bold text-slate-500">
                         <span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-full bg-teal-700"/>Entregue</span>
                         <span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-full bg-red-700"/>Vencido</span>
@@ -2530,7 +2626,7 @@ export default function App(){
                     </div>
                     <div style={{height:320}}>
                       <ResponsiveContainer width="100%" height="100%">
-                        <BarChart data={mestraChartData} margin={{top:20,right:0,left:0,bottom:0}}>
+                        <BarChart data={mestraChartData} margin={{top:20,right:0,left:0,bottom:0}} onBarClick={irParaMesNoGrafico}>
                           <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#eef2f7"/>
                           <XAxis dataKey="name" tick={{fontSize:11,fontWeight:'700',fill:'#475569'}}/>
                           <Tooltip/>
@@ -2544,6 +2640,101 @@ export default function App(){
                   </div>
                 )}
 
+                {/* ══════════════════════════════════════════════════════════
+                    ANÁLISE PARA PCP — deriva tudo de mestraBase, já carregado.
+                    Ajuda a priorizar: onde concentra o atraso (Pareto), há
+                    quanto tempo (aging) e quem tem mais risco (vendedor).
+                    ══════════════════════════════════════════════════════════ */}
+                <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
+                  <button onClick={()=>setMestraSecaoAnaliseAberta(v=>!v)} className="w-full flex items-center justify-between px-5 py-3.5 hover:bg-slate-50 transition-colors">
+                    <div className="flex items-center gap-2.5">
+                      <ArrowDown className={`w-3.5 h-3.5 text-slate-400 transition-transform ${mestraSecaoAnaliseAberta?'':'-rotate-90'}`}/>
+                      <span className="text-sm font-black text-slate-800">Análise para PCP</span>
+                      <span className="text-[10px] font-bold text-slate-400 bg-slate-100 px-2 py-0.5 rounded-full">onde focar primeiro</span>
+                    </div>
+                    {(mestraFiltroCliente||mestraFiltroVendedor)&&(
+                      <span className="flex items-center gap-1.5 text-[11px] font-bold text-red-700 bg-red-50 border border-red-200 px-2.5 py-1 rounded-full">
+                        {mestraFiltroCliente||mestraFiltroVendedor}
+                        <XCircle className="w-3.5 h-3.5 cursor-pointer" onClick={e=>{e.stopPropagation();setMestraFiltroCliente(null);setMestraFiltroVendedor(null);}}/>
+                      </span>
+                    )}
+                  </button>
+
+                  {mestraSecaoAnaliseAberta&&(
+                    <div className="px-5 pb-5 grid grid-cols-1 lg:grid-cols-3 gap-6">
+                      {/* Pareto de clientes — concentração do valor vencido */}
+                      <div>
+                        <p className="text-[11px] font-black text-slate-500 uppercase tracking-wide mb-3">Concentração do Atraso por Cliente</p>
+                        {mestraParetoClientes.length===0&&<p className="text-xs text-slate-400">Nenhum valor vencido no momento.</p>}
+                        <div className="space-y-2.5">
+                          {mestraParetoClientes.map(c=>(
+                            <button key={c.cliente} onClick={()=>drillPara('cliente',c.cliente)} className="w-full text-left group">
+                              <div className="flex items-baseline justify-between gap-2 mb-1">
+                                <span className={`text-xs font-bold truncate ${mestraFiltroCliente===c.cliente?'text-red-700':'text-slate-700 group-hover:text-red-700'}`}>{c.cliente}</span>
+                                <span className="text-xs font-black text-red-700 tabular-nums flex-shrink-0">{fmtMoeda(c.valor)}</span>
+                              </div>
+                              <div className="h-1.5 rounded-full bg-slate-100 overflow-hidden">
+                                <div style={{width:`${c.pctBarra}%`}} className="h-full bg-red-700 rounded-full transition-all"/>
+                              </div>
+                              <p className="text-[10px] text-slate-400 mt-0.5">{c.projetos} projeto{c.projetos>1?'s':''} · {c.pctAcumulado.toFixed(0)}% acumulado</p>
+                            </button>
+                          ))}
+                        </div>
+                        {mestraParetoClientes.length>0&&mestraParetoClientes[Math.min(4,mestraParetoClientes.length-1)]&&(
+                          <p className="text-[11px] text-slate-400 mt-3 pt-3 border-t border-slate-100">
+                            Top {Math.min(5,mestraParetoClientes.length)} clientes = <strong className="text-red-700">{mestraParetoClientes[Math.min(4,mestraParetoClientes.length-1)].pctAcumulado.toFixed(0)}%</strong> do valor vencido.
+                          </p>
+                        )}
+                      </div>
+
+                      {/* Aging — há quanto tempo está vencido */}
+                      <div>
+                        <p className="text-[11px] font-black text-slate-500 uppercase tracking-wide mb-3">Aging do Atraso</p>
+                        <div className="space-y-3">
+                          {mestraAgingAtraso.map((f,i)=>(
+                            <div key={f.label}>
+                              <div className="flex items-baseline justify-between gap-2 mb-1">
+                                <span className="text-xs font-bold text-slate-700">{f.label}</span>
+                                <span className="text-xs font-black text-slate-700 tabular-nums">{f.valor>0?fmtMoeda(f.valor):'—'}</span>
+                              </div>
+                              <div className="h-1.5 rounded-full bg-slate-100 overflow-hidden">
+                                <div style={{width:`${f.pctBarra}%`,opacity:0.4+i*0.2}} className="h-full bg-red-700 rounded-full"/>
+                              </div>
+                              <p className="text-[10px] text-slate-400 mt-0.5">{f.itens} item{f.itens!==1?'s':''}</p>
+                            </div>
+                          ))}
+                        </div>
+                        <p className="text-[11px] text-slate-400 mt-3 pt-3 border-t border-slate-100">Quanto mais escuro, mais tempo esfriando sem solução.</p>
+                      </div>
+
+                      {/* Ranking de vendedor — risco (vencido + reprogramado) por vendedor */}
+                      <div>
+                        <p className="text-[11px] font-black text-slate-500 uppercase tracking-wide mb-3">Risco em Aberto por Vendedor</p>
+                        {mestraRankingVendedores.length===0&&<p className="text-xs text-slate-400">Nenhum valor em risco no momento.</p>}
+                        <div className="space-y-2.5">
+                          {mestraRankingVendedores.map(v=>(
+                            <button key={v.vendedor} onClick={()=>drillPara('vendedor',v.vendedor)} className="w-full text-left group">
+                              <div className="flex items-baseline justify-between gap-2 mb-1">
+                                <span className={`text-xs font-bold truncate ${mestraFiltroVendedor===v.vendedor?'text-slate-900':'text-slate-700 group-hover:text-slate-900'}`}>{v.vendedor}</span>
+                                <span className="text-xs font-black text-slate-700 tabular-nums flex-shrink-0">{fmtMoeda(v.total)}</span>
+                              </div>
+                              <div className="h-1.5 rounded-full bg-slate-100 overflow-hidden flex">
+                                <div style={{width:`${v.pctVencido}%`}} className="h-full bg-red-700"/>
+                                <div style={{width:`${v.pctReprogramado}%`}} className="h-full bg-amber-700"/>
+                              </div>
+                              <p className="text-[10px] text-slate-400 mt-0.5">{v.projetos} projeto{v.projetos>1?'s':''}</p>
+                            </button>
+                          ))}
+                        </div>
+                        <p className="text-[11px] text-slate-400 mt-3 pt-3 border-t border-slate-100 flex items-center gap-3">
+                          <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-red-700"/>vencido</span>
+                          <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-amber-700"/>reprogramado</span>
+                        </p>
+                      </div>
+                    </div>
+                  )}
+                </div>
+
                 {mestraForaDoPeriodo.pedidos>0&&(
                   <p className="text-[11px] text-slate-400 -mt-2">
                     {mestraIncluirAnteriores?`Incluindo ${mestraForaDoPeriodo.pedidos} pedidos com entrega antes de 2026.`:`Exibindo a partir de 01/01/2026 — ficaram de fora ${mestraForaDoPeriodo.pedidos} pedidos${mestraForaDoPeriodo.emAberto>0?`, ${fmtMoeda(mestraForaDoPeriodo.emAberto)} ainda em aberto`:''}.`}
@@ -2555,13 +2746,19 @@ export default function App(){
                   {[{v:'TODOS',l:'Todos'},{v:'VENCIDO',l:'Vencido s/ aviso'},{v:'REPROGRAMADO',l:'Reprogramado'},{v:'A_VENCER',l:'No prazo'},{v:'ENTREGUE',l:'Entregue'}].map(f=>(
                     <button key={f.v} onClick={()=>setMestraFiltro(f.v)} className={`text-xs font-bold px-3 py-1.5 rounded-full border transition-colors ${mestraFiltro===f.v?'bg-indigo-600 text-white border-indigo-600':'bg-white text-slate-600 border-slate-200 hover:border-indigo-300'}`}>{f.l}</button>
                   ))}
+                  {(mestraFiltroCliente||mestraFiltroVendedor)&&(
+                    <span className="flex items-center gap-1.5 text-xs font-bold text-red-700 bg-red-50 border border-red-200 px-3 py-1.5 rounded-full">
+                      {mestraFiltroCliente?'Cliente: ':'Vendedor: '}{mestraFiltroCliente||mestraFiltroVendedor}
+                      <XCircle className="w-3.5 h-3.5 cursor-pointer" onClick={()=>{setMestraFiltroCliente(null);setMestraFiltroVendedor(null);}}/>
+                    </span>
+                  )}
                   <span className="text-xs text-slate-400 ml-1">{mestraFiltrada.length} de {mestraBase.length} pedidos · {new Set(mestraBase.map(r=>r.br)).size} projetos</span>
                   <button onClick={()=>setMesesExpandidos(new Set(mestraPorMes.map(g=>g.mes)))} className="text-[10px] font-bold text-indigo-600 ml-auto hover:underline">Expandir todos</button>
                   <button onClick={()=>setMesesExpandidos(new Set())} className="text-[10px] font-bold text-slate-400 hover:underline">Recolher todos</button>
                 </div>
 
                 {/* Tabela agrupada por mês — cada mês começa recolhido, mostrando só o subtotal */}
-                <div className="flex items-center justify-end px-5" style={{marginBottom:'-4px'}}>
+                <div className="flex items-center justify-end px-5" id="mestra-tabela-mensal" style={{marginBottom:'-4px'}}>
                   <div className="grid grid-cols-4 gap-3 text-right" style={{minWidth:'460px'}}>
                     <span className="text-[9px] font-black text-red-700 uppercase tracking-wide">Vencido</span>
                     <span className="text-[9px] font-black text-amber-700 uppercase tracking-wide">Reprog.</span>
@@ -2577,7 +2774,7 @@ export default function App(){
                     const totalMes=grupo.valorVencido+grupo.valorReprogramado+grupo.valorAVencer+grupo.valorAtendido;
                     const pct=v=>totalMes>0?Math.max(v>0?1.5:0,(v/totalMes)*100):0;
                     return(
-                      <div key={grupo.mes} className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
+                      <div key={grupo.mes} id={`mestra-mes-${grupo.mes}`} className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
                         <button onClick={()=>toggleMesExpandido(grupo.mes)} className="w-full text-left hover:bg-slate-50 transition-colors">
                           <div className="flex items-center justify-between px-5 pt-3.5 pb-2.5 gap-4">
                             <div className="flex items-center gap-2.5 flex-shrink-0">
