@@ -627,6 +627,9 @@ export default function App(){
     }));
   },[mestraPorMes]);
 
+  const [mestraSecaoNotasAberta,setMestraSecaoNotasAberta]=useState(false);
+  const [mestraSecaoNegociacaoAberta,setMestraSecaoNegociacaoAberta]=useState(false);
+
   const [mestraLoading,setMestraLoading]=useState(false);
   const [mestraErro,setMestraErro]=useState('');
   const [sincronizandoPedidos,setSincronizandoPedidos]=useState(false);
@@ -2433,7 +2436,7 @@ export default function App(){
 
             {/* ── MESTRA PCP (Pedidos de Venda + Faturamento, via Portal de Engenharia) ── */}
             {aba==='MESTRA'&&isAdmin&&(
-              <div className="space-y-6">
+              <div className="space-y-4">
                 <SectionHeader title="Mestra PCP" subtitle="Pedidos de Venda x Faturamento por Projeto BR — dados sincronizados do Portal de Engenharia"
                   actions={<div className="flex gap-2"><Btn variant="dark" size="sm" onClick={sincronizarPedidosEFaturamento} disabled={sincronizandoPedidos}><RefreshCw className={`w-4 h-4 ${sincronizandoPedidos?'animate-spin':''}`}/>Sincronizar Sankhya</Btn><Btn variant="secondary" size="sm" onClick={fetchMestra} disabled={mestraLoading}><RefreshCw className={`w-4 h-4 ${mestraLoading?'animate-spin':''}`}/>Recarregar</Btn></div>}/>
 
@@ -2457,35 +2460,41 @@ export default function App(){
                     </button>
                   </div>
                   {mestraBase.reduce((a,r)=>a+r.valorSemPrazo,0)>0&&(
-                    <p className="text-[11px] text-slate-400 mt-2">
-                      + {fmtMoeda(mestraBase.reduce((a,r)=>a+r.valorSemPrazo,0))} em itens sem data prevista cadastrada no Sankhya.
-                    </p>
+                    <p className="text-[11px] text-slate-400 mt-1.5">+ {fmtMoeda(mestraBase.reduce((a,r)=>a+r.valorSemPrazo,0))} sem data prevista no Sankhya.</p>
                   )}
                 </div>
 
-                {/* BLOCO 2 — Faturamento emitido: universo DIFERENTE da carteira acima */}
-                <div>
-                  <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">Notas Fiscais Emitidas no Período</p>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                    <KPICard label="Faturamento Bruto (VLRNOTA)" value={fmtMoeda(mestraNotasTotais.bruto)} icon={FileSpreadsheet} color="slate"/>
-                    <KPICard label="Faturamento Líquido (s/ impostos)" value={fmtMoeda(mestraNotasTotais.liquido)} icon={Activity} color="violet"/>
-                  </div>
-                  <div className="flex items-start gap-2 mt-2 bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2.5">
-                    <Info className="w-3.5 h-3.5 text-slate-400 flex-shrink-0 mt-0.5"/>
-                    <p className="text-[11px] text-slate-500 leading-relaxed">
-                      Este bloco <strong>não se subtrai da carteira acima</strong>: são universos diferentes. Uma nota emitida agora pode faturar um pedido de anos anteriores, e parte da carteira só será faturada em períodos futuros.
-                      {mestraDb.filter(r=>r.semPedidoSincronizado).length>0&&(
-                        <> Ainda há <strong>{mestraDb.filter(r=>r.semPedidoSincronizado).length} projeto(s) com nota mas sem pedido localizado</strong> — clique em Sincronizar Sankhya para buscá-los.</>
-                      )}
-                    </p>
-                  </div>
+                {/* BLOCO 2 — Faturamento emitido: universo DIFERENTE da carteira acima (recolhido por padrão) */}
+                <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
+                  <button onClick={()=>setMestraSecaoNotasAberta(v=>!v)} className="w-full flex items-center justify-between px-5 py-3.5 hover:bg-slate-50 transition-colors">
+                    <div className="flex items-center gap-2.5">
+                      <ArrowDown className={`w-3.5 h-3.5 text-slate-400 transition-transform ${mestraSecaoNotasAberta?'':'-rotate-90'}`}/>
+                      <span className="text-sm font-black text-slate-800">Notas Fiscais Emitidas</span>
+                      <span className="text-[10px] font-bold text-slate-400 bg-slate-100 px-2 py-0.5 rounded-full">outro recorte, não some com o de cima</span>
+                    </div>
+                    <div className="flex items-center gap-4 text-xs font-bold">
+                      <span className="text-slate-500">{fmtMoeda(mestraNotasTotais.bruto)} bruto</span>
+                      <span className="text-violet-600">{fmtMoeda(mestraNotasTotais.liquido)} líquido</span>
+                    </div>
+                  </button>
+                  {mestraSecaoNotasAberta&&(
+                    <div className="px-5 pb-5">
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-3">
+                        <KPICard label="Faturamento Bruto (VLRNOTA)" value={fmtMoeda(mestraNotasTotais.bruto)} icon={FileSpreadsheet} color="slate"/>
+                        <KPICard label="Faturamento Líquido (s/ impostos)" value={fmtMoeda(mestraNotasTotais.liquido)} icon={Activity} color="violet"/>
+                      </div>
+                      <p className="text-[11px] text-slate-400">
+                        Não se subtrai da carteira: uma nota pode faturar pedido de anos anteriores.
+                        {mestraDb.filter(r=>r.semPedidoSincronizado).length>0&&<> {mestraDb.filter(r=>r.semPedidoSincronizado).length} projeto(s) com nota mas sem pedido localizado ainda — sincronize de novo.</>}
+                      </p>
+                    </div>
+                  )}
                 </div>
 
                 {/* Gráfico: evolução mensal Total vs Faturado */}
                 {mestraChartData.length>0&&(
                   <div className="bg-white rounded-2xl border border-slate-200 p-5">
-                    <p className="text-xs font-black text-slate-600 uppercase tracking-wide mb-1">Compromissos por Mês de Entrega</p>
-                    <p className="text-[11px] text-slate-400 mb-3">Agrupado pela data prometida (ou pela nova data, quando o PCP reprogramou). Vermelho = venceu e ninguém informou nova data.</p>
+                    <p className="text-xs font-black text-slate-600 uppercase tracking-wide mb-3">Compromissos por Mês de Entrega — vermelho é o que precisa de atenção</p>
                     <div style={{height:300}}>
                       <ResponsiveContainer width="100%" height="100%">
                         <BarChart data={mestraChartData} margin={{top:20,right:0,left:0,bottom:0}}>
@@ -2504,19 +2513,10 @@ export default function App(){
                 )}
 
                 {mestraForaDoPeriodo.pedidos>0&&(
-                  <div className="flex items-center justify-between gap-3 bg-slate-50 border border-slate-200 rounded-xl px-4 py-2.5">
-                    <div className="flex items-start gap-2">
-                      <Info className="w-3.5 h-3.5 text-slate-400 flex-shrink-0 mt-0.5"/>
-                      <p className="text-[11px] text-slate-500 leading-relaxed">
-                        {mestraIncluirAnteriores
-                          ?<>Mostrando também <strong>{mestraForaDoPeriodo.pedidos} pedidos com entrega prometida antes de 2026</strong>.</>
-                          :<>Exibindo entregas de <strong>01/01/2026 em diante</strong>. Ficaram de fora {mestraForaDoPeriodo.pedidos} pedidos com prazo anterior{mestraForaDoPeriodo.emAberto>0&&<>, sendo <strong className="text-red-600">{fmtMoeda(mestraForaDoPeriodo.emAberto)} ainda em aberto</strong></>}.</>}
-                      </p>
-                    </div>
-                    <button onClick={()=>setMestraIncluirAnteriores(v=>!v)} className="text-[10px] font-bold text-indigo-600 hover:underline whitespace-nowrap">
-                      {mestraIncluirAnteriores?'Ocultar anteriores':'Mostrar anteriores'}
-                    </button>
-                  </div>
+                  <p className="text-[11px] text-slate-400 -mt-2">
+                    {mestraIncluirAnteriores?`Incluindo ${mestraForaDoPeriodo.pedidos} pedidos com entrega antes de 2026.`:`Exibindo a partir de 01/01/2026 — ficaram de fora ${mestraForaDoPeriodo.pedidos} pedidos${mestraForaDoPeriodo.emAberto>0?`, ${fmtMoeda(mestraForaDoPeriodo.emAberto)} ainda em aberto`:''}.`}
+                    {' '}<button onClick={()=>setMestraIncluirAnteriores(v=>!v)} className="text-indigo-600 font-bold hover:underline">{mestraIncluirAnteriores?'ocultar':'mostrar'}</button>
+                  </p>
                 )}
 
                 <div className="flex items-center gap-2 flex-wrap">
@@ -2617,11 +2617,8 @@ export default function App(){
                     );
                   })}
                 </div>
-                <p className="text-xs text-slate-400">
-                  <strong>Uma linha por pedido</strong> (NUNOTA do Sankhya), não por BR: o mesmo BR pode ter vários pedidos com prazos e situações diferentes, e juntá-los escondia atrasos. BRs divididos aparecem marcados.
-                  O <strong>prazo</strong> vem da data prevista de entrega (DTPREVENT); se o PCP informar nova data na tela OOH, ela passa a valer e a original aparece riscada.
-                  <strong className="text-red-500"> Vencido sem nova data</strong> é o que estourou sem ninguém reprogramar.
-                  Os valores de <strong>nota fiscal</strong> ficam no nível do BR — o Sankhya não amarra a nota ao pedido de origem, então não são rateados.
+                <p className="text-[11px] text-slate-400">
+                  Uma linha por pedido (não por BR — o mesmo projeto pode ter vários). Prazo = data prevista do Sankhya, ou a reprogramada no OOH (original fica riscada). Vencido sem nova data é o que o PCP precisa resolver.
                 </p>
 
                 {/* ══════════════════════════════════════════════════════════════
@@ -2629,33 +2626,39 @@ export default function App(){
                     Responde "quanto eu faturei de verdade", agrupado pelo mês da
                     NEGOCIAÇÃO/NOTA (data_neg) — não pelo mês de entrega prometida.
                     Não usa mesReferencia, dataVigenteBR, situacaoPrazo nem nenhuma
-                    lógica de compromisso/PCP das seções acima.
+                    lógica de compromisso/PCP das seções acima. Recolhida por padrão.
                     ══════════════════════════════════════════════════════════════ */}
-                <div className="pt-2 border-t border-dashed border-slate-200">
-                  <div className="flex items-center justify-between mb-1 mt-4">
-                    <div>
-                      <p className="text-sm font-black text-slate-800">Faturamento Emitido — por data de negociação</p>
-                      <p className="text-[11px] text-slate-400 mt-0.5">
-                        "Quanto eu faturei de verdade" em cada mês (data da nota/negociação) — diferente do resto desta tela, que mostra "o que prometi entregar". Não some com os números acima.
-                      </p>
+                <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
+                  <button onClick={()=>setMestraSecaoNegociacaoAberta(v=>!v)} className="w-full flex items-center justify-between px-5 py-3.5 hover:bg-slate-50 transition-colors">
+                    <div className="flex items-center gap-2.5">
+                      <ArrowDown className={`w-3.5 h-3.5 text-slate-400 transition-transform ${mestraSecaoNegociacaoAberta?'':'-rotate-90'}`}/>
+                      <span className="text-sm font-black text-slate-800">Faturamento Emitido — por data de negociação</span>
+                      <span className="text-[10px] font-bold text-slate-400 bg-slate-100 px-2 py-0.5 rounded-full">outra pergunta: quanto faturei, não o que prometi</span>
                     </div>
-                    <Btn variant="secondary" size="sm" onClick={fetchMestraFaturamentoPorNegociacao} disabled={mestraFatNegLoading}>
-                      <RefreshCw className={`w-4 h-4 ${mestraFatNegLoading?'animate-spin':''}`}/>Recarregar
-                    </Btn>
-                  </div>
+                    <div className="flex items-center gap-4 text-xs font-bold">
+                      <span className="text-slate-500">{fmtMoeda(mestraFatNegTotais.bruto)} bruto</span>
+                      <span className="text-violet-600">{fmtMoeda(mestraFatNegTotais.liquido)} líquido</span>
+                    </div>
+                  </button>
 
-                  {mestraFatNegErro&&<div className="bg-red-50 border border-red-200 text-red-700 text-sm font-semibold rounded-xl px-4 py-3 mt-3">{mestraFatNegErro}</div>}
+                  {mestraSecaoNegociacaoAberta&&(
+                  <div className="px-5 pb-5">
+                    <div className="flex justify-end mb-3">
+                      <Btn variant="secondary" size="sm" onClick={fetchMestraFaturamentoPorNegociacao} disabled={mestraFatNegLoading}>
+                        <RefreshCw className={`w-4 h-4 ${mestraFatNegLoading?'animate-spin':''}`}/>Recarregar
+                      </Btn>
+                    </div>
 
-                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mt-3">
-                    <KPICard label="Bruto (Vlr Nota)" value={fmtMoeda(mestraFatNegTotais.bruto)} icon={FileSpreadsheet} color="slate"/>
-                    <KPICard label="Líquido (Net Offer Value)" value={fmtMoeda(mestraFatNegTotais.liquido)} icon={Activity} color="violet"/>
-                    <KPICard label="Notas Emitidas" value={String(mestraFatNegTotais.notas)} icon={FileSearch} color="indigo"/>
-                  </div>
+                    {mestraFatNegErro&&<div className="bg-red-50 border border-red-200 text-red-700 text-sm font-semibold rounded-xl px-4 py-3 mb-3">{mestraFatNegErro}</div>}
 
-                  {mestraFatNegChartData.length>0&&(
-                    <div className="bg-white rounded-2xl border border-slate-200 p-5 mt-4">
-                      <p className="text-xs font-black text-slate-600 uppercase tracking-wide mb-1">Bruto x Líquido por Mês de Negociação</p>
-                      <div style={{height:260}}>
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-4">
+                      <KPICard label="Bruto (Vlr Nota)" value={fmtMoeda(mestraFatNegTotais.bruto)} icon={FileSpreadsheet} color="slate"/>
+                      <KPICard label="Líquido (Net Offer Value)" value={fmtMoeda(mestraFatNegTotais.liquido)} icon={Activity} color="violet"/>
+                      <KPICard label="Notas Emitidas" value={String(mestraFatNegTotais.notas)} icon={FileSearch} color="indigo"/>
+                    </div>
+
+                    {mestraFatNegChartData.length>0&&(
+                      <div style={{height:220}} className="mb-4">
                         <ResponsiveContainer width="100%" height="100%">
                           <BarChart data={mestraFatNegChartData} margin={{top:20,right:0,left:0,bottom:0}}>
                             <CartesianGrid strokeDasharray="3 3" vertical={false}/>
@@ -2667,55 +2670,54 @@ export default function App(){
                           </BarChart>
                         </ResponsiveContainer>
                       </div>
-                    </div>
-                  )}
+                    )}
 
-                  <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden mt-4">
-                    <div className="overflow-x-auto custom-scrollbar">
+                    <div className="overflow-x-auto custom-scrollbar rounded-xl border border-slate-100">
                       <table className="w-full text-sm">
                         <thead className="bg-slate-50 border-b border-slate-200">
                           <tr className="text-left text-[10px] font-black text-slate-500 uppercase tracking-wider">
-                            <th className="px-5 py-3">Mês (negociação)</th>
-                            <th className="px-5 py-3 text-right">Bruto</th>
-                            <th className="px-5 py-3 text-right">Líquido</th>
-                            <th className="px-5 py-3 text-right">Notas</th>
-                            <th className="px-5 py-3 text-right">Projetos Distintos</th>
+                            <th className="px-4 py-2.5">Mês</th>
+                            <th className="px-4 py-2.5 text-right">Bruto</th>
+                            <th className="px-4 py-2.5 text-right">Líquido</th>
+                            <th className="px-4 py-2.5 text-right">Notas</th>
+                            <th className="px-4 py-2.5 text-right">Projetos</th>
                           </tr>
                         </thead>
                         <tbody className="divide-y divide-slate-100">
                           {mestraFatNegLoading&&(
-                            <tr><td colSpan={5} className="px-5 py-8 text-center text-slate-400 font-semibold">Carregando...</td></tr>
+                            <tr><td colSpan={5} className="px-4 py-6 text-center text-slate-400 font-semibold">Carregando...</td></tr>
                           )}
                           {!mestraFatNegLoading&&mestraFatPorMesNeg.length===0&&(
-                            <tr><td colSpan={5} className="px-5 py-8 text-center text-slate-400 font-semibold">Nenhum dado encontrado.</td></tr>
+                            <tr><td colSpan={5} className="px-4 py-6 text-center text-slate-400 font-semibold">Nenhum dado encontrado.</td></tr>
                           )}
                           {!mestraFatNegLoading&&[...mestraFatPorMesNeg].reverse().map(g=>(
                             <tr key={g.mes} className="hover:bg-slate-50">
-                              <td className="px-5 py-2.5 font-bold text-slate-700">{g.mes}</td>
-                              <td className="px-5 py-2.5 text-right font-semibold text-slate-500">{fmtMoeda(g.bruto)}</td>
-                              <td className="px-5 py-2.5 text-right font-semibold text-violet-600">{fmtMoeda(g.liquido)}</td>
-                              <td className="px-5 py-2.5 text-right text-slate-500">{g.notas}</td>
-                              <td className="px-5 py-2.5 text-right text-slate-500">{g.projetosDistintos}</td>
+                              <td className="px-4 py-2 font-bold text-slate-700">{g.mes}</td>
+                              <td className="px-4 py-2 text-right font-semibold text-slate-500">{fmtMoeda(g.bruto)}</td>
+                              <td className="px-4 py-2 text-right font-semibold text-violet-600">{fmtMoeda(g.liquido)}</td>
+                              <td className="px-4 py-2 text-right text-slate-500">{g.notas}</td>
+                              <td className="px-4 py-2 text-right text-slate-500">{g.projetosDistintos}</td>
                             </tr>
                           ))}
                         </tbody>
                         {mestraFatPorMesNeg.length>0&&(
                           <tfoot className="bg-slate-50 border-t-2 border-slate-200">
                             <tr className="text-sm font-black">
-                              <td className="px-5 py-3 text-slate-700">Total</td>
-                              <td className="px-5 py-3 text-right text-slate-600">{fmtMoeda(mestraFatNegTotais.bruto)}</td>
-                              <td className="px-5 py-3 text-right text-violet-700">{fmtMoeda(mestraFatNegTotais.liquido)}</td>
-                              <td className="px-5 py-3 text-right text-slate-600">{mestraFatNegTotais.notas}</td>
-                              <td className="px-5 py-3 text-right text-slate-400">—</td>
+                              <td className="px-4 py-2.5 text-slate-700">Total</td>
+                              <td className="px-4 py-2.5 text-right text-slate-600">{fmtMoeda(mestraFatNegTotais.bruto)}</td>
+                              <td className="px-4 py-2.5 text-right text-violet-700">{fmtMoeda(mestraFatNegTotais.liquido)}</td>
+                              <td className="px-4 py-2.5 text-right text-slate-600">{mestraFatNegTotais.notas}</td>
+                              <td className="px-4 py-2.5 text-right text-slate-400">—</td>
                             </tr>
                           </tfoot>
                         )}
                       </table>
                     </div>
+                    <p className="text-[11px] text-slate-400 mt-2">
+                      Agrupado por <code>data_neg</code> (data da nota, não a de entrega prometida). {'"<SEM PROJETO>"'} não conta como projeto.
+                    </p>
                   </div>
-                  <p className="text-xs text-slate-400 mt-2">
-                    Fonte: <code>faturamento_resumo</code> (tipmov='V'), agrupado por mês de <code>data_neg</code> (data da negociação/nota — não a data prevista de entrega). {'"<SEM PROJETO>"'} não conta como projeto. Esta seção é independente do restante da tela: não compartilha mesReferencia, dataVigenteBR, situacaoPrazo nem reprogramações do OOH.
-                  </p>
+                  )}
                 </div>
               </div>
             )}
