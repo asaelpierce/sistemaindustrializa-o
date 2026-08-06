@@ -293,34 +293,61 @@ function AndamentoSelect({value,onChange}){
 // Uma linha de projeto na tela OOH — reusada na visão mensal e na semanal pra não duplicar markup.
 // Não depende de helpers locais do componente App (s/fmtDt/fmtMoeda são escopados lá dentro);
 // usa formatação própria pra funcionar como componente top-level.
+const OOH_COLUNAS=['BR / Pedido','Cliente','Vendedor','Descrição','Previsto (CP)','MP Pronta','Valor','Situação','Andamento','Ação'];
+
+function OOHTabelaHeader(){
+  return(
+    <thead className="bg-slate-50 border-b border-slate-200">
+      <tr className="text-left text-[10px] font-black text-slate-500 uppercase tracking-wider">
+        <th className="px-3 py-2.5">BR</th>
+        <th className="px-3 py-2.5">Cliente</th>
+        <th className="px-3 py-2.5">Vendedor</th>
+        <th className="px-3 py-2.5">Descrição</th>
+        <th className="px-3 py-2.5 text-right">Previsto (CP)</th>
+        <th className="px-3 py-2.5 text-right">MP Pronta</th>
+        <th className="px-3 py-2.5 text-right">Valor</th>
+        <th className="px-3 py-2.5 text-center">Situação</th>
+        <th className="px-3 py-2.5 text-center">Andamento</th>
+        <th className="px-3 py-2.5 text-center">Ação</th>
+      </tr>
+    </thead>
+  );
+}
+
+// Uma linha de projeto na tela OOH, em formato de planilha (BR/Cliente/Vendedor/Datas/Valor/Status
+// em colunas) — reusada na visão mensal, semanal e na lista de atrasados.
 function OOHProjetoRow({p,onAndamento,onReprogramar}){
   const txt=v=>(v===null||v===undefined)?'':String(v);
   const dt=v=>v?new Date(v).toLocaleDateString('pt-BR'):'—';
   const moeda=v=>{const n=Number(v)||0;return n.toLocaleString('pt-BR',{style:'currency',currency:'BRL',maximumFractionDigits:0});};
-  const sitCfg={PENDENTE:{l:'Pendente (comercial)',c:'bg-orange-50 text-orange-700 border-orange-200'},CANCELADO:{l:'Cancelado',c:'bg-slate-200 text-slate-500 border-slate-300'}}[p.situacaoEspecial?.status];
+  const sitCfg={PENDENTE:{l:'Pendente',c:'bg-orange-50 text-orange-700 border-orange-200'},CANCELADO:{l:'Cancelado',c:'bg-slate-200 text-slate-500 border-slate-300'}}[p.situacaoEspecial?.status];
   return(
-    <div className="px-5 py-3.5 flex items-center justify-between gap-3 flex-wrap hover:bg-slate-50">
-      <div>
-        <p className="font-bold text-slate-900 text-sm flex items-center gap-1.5 flex-wrap">
-          {p.br} — {txt(p.cliente)}
-          {sitCfg&&<span className={`text-[9px] font-black px-2 py-0.5 rounded-full border ${sitCfg.c}`} title={p.situacaoEspecial?.motivo}>{sitCfg.l}</span>}
-          {p.precisaEntrarNaEsteira&&<span className="text-[9px] font-black px-2 py-0.5 rounded-full border bg-red-50 text-red-700 border-red-200" title="Faltam 20 dias ou menos pra data prevista — colocar na esteira de fabricação">⚠ Entrar na esteira</span>}
-        </p>
-        <p className="text-xs text-slate-500">Previsto: {dt(p.dataPrevista)} · {moeda(p.valorTotal)} · {txt(p.descricaoResumo)}</p>
-        <p className="text-[11px] text-slate-400">MP tem que estar pronta até <strong className="text-slate-500">{dt(p.dataMPPronta)}</strong></p>
+    <tr className={`hover:bg-slate-50 ${p.precisaEntrarNaEsteira?'bg-red-50/40':''}`}>
+      <td className="px-3 py-2 font-bold text-indigo-700 whitespace-nowrap">
+        {p.br}
+        {p.precisaEntrarNaEsteira&&<span className="ml-1.5 text-red-500" title="Faltam 20 dias ou menos pro CP — colocar na esteira de fabricação">⚠</span>}
+      </td>
+      <td className="px-3 py-2 text-slate-700 max-w-[160px] truncate" title={txt(p.cliente)}>{txt(p.cliente)}</td>
+      <td className="px-3 py-2 text-slate-500 max-w-[120px] truncate" title={txt(p.vendedor)}>{txt(p.vendedor)}</td>
+      <td className="px-3 py-2 text-slate-500 max-w-[220px] truncate" title={txt(p.descricaoResumo)}>{txt(p.descricaoResumo)}</td>
+      <td className="px-3 py-2 text-right whitespace-nowrap">
+        <span className="font-semibold text-slate-700">{dt(p.dataPrevista)}</span>
         {p.plano&&(
-          <p className={`text-xs font-bold mt-1 ${p.plano.status==='ANTECIPADO'?'text-emerald-600':'text-violet-600'}`}>
-            {p.plano.status==='ANTECIPADO'?'Antecipado':'Reprogramado'} para {dt(p.plano.nova_data)} — "{p.plano.justificativa}"
-          </p>
+          <span className={`block text-[10px] font-bold ${p.plano.status==='ANTECIPADO'?'text-emerald-600':'text-violet-600'}`} title={p.plano.justificativa}>
+            → {dt(p.plano.nova_data)} ({p.plano.status==='ANTECIPADO'?'antecip.':'reprog.'})
+          </span>
         )}
-      </div>
-      <div className="flex items-center gap-2 flex-wrap">
-        <AndamentoSelect value={p.andamento} onChange={v=>onAndamento(p.br,v)}/>
-        <Btn variant="ghost" size="sm" onClick={onReprogramar}>
-          {p.plano?'Editar':'Reprogramar / Antecipar'}
-        </Btn>
-      </div>
-    </div>
+      </td>
+      <td className="px-3 py-2 text-right text-slate-500 whitespace-nowrap">{dt(p.dataMPPronta)}</td>
+      <td className="px-3 py-2 text-right font-semibold text-slate-700 whitespace-nowrap">{moeda(p.valorTotal)}</td>
+      <td className="px-3 py-2 text-center whitespace-nowrap">
+        {sitCfg?<span className={`text-[9px] font-black px-2 py-0.5 rounded-full border ${sitCfg.c}`} title={p.situacaoEspecial?.motivo}>{sitCfg.l}</span>:<span className="text-slate-300">—</span>}
+      </td>
+      <td className="px-3 py-2 text-center whitespace-nowrap"><AndamentoSelect value={p.andamento} onChange={v=>onAndamento(p.br,v)}/></td>
+      <td className="px-3 py-2 text-center whitespace-nowrap">
+        <button onClick={onReprogramar} className="text-[11px] font-bold text-indigo-600 hover:underline">{p.plano?'Editar':'Reprogramar'}</button>
+      </td>
+    </tr>
   );
 }
 
@@ -3224,22 +3251,13 @@ export default function App(){
                       <span className="text-xs font-black text-red-700">{fmtMoeda(oohResumoMes.valorAtrasado)}</span>
                     </button>
                     {oohSecaoAtrasadosAberta&&(
-                      <div className="divide-y divide-slate-100">
-                        {oohAtrasados.map(p=>(
-                          <div key={p.br} className="px-5 py-3 flex items-center justify-between gap-3 flex-wrap hover:bg-slate-50">
-                            <div>
-                              <p className="font-bold text-slate-900 text-sm">{p.br} — {s(p.cliente)}</p>
-                              <p className="text-xs text-slate-500">Previsto: {fmtDt(p.dataPrevista)} ({p.mesPrevisto}) · {s(p.descricaoResumo)}</p>
-                              {p.plano&&<p className="text-xs font-bold text-violet-600 mt-1">{p.plano.status==='REPROGRAMADO'?'Reprogramado':'Antecipado'} para {fmtDt(p.plano.nova_data)} — "{p.plano.justificativa}"</p>}
-                            </div>
-                            <div className="flex items-center gap-2 flex-wrap">
-                              <AndamentoSelect value={p.andamento} onChange={v=>atualizarAndamento(p.br,v)}/>
-                              <Btn variant="secondary" size="sm" onClick={()=>{setOohModalBR(p);setOohForm({status:'REPROGRAMADO',novaData:p.plano?.nova_data||'',justificativa:p.plano?.justificativa||''});}}>
-                                {p.plano?'Editar':'Reprogramar'}
-                              </Btn>
-                            </div>
-                          </div>
-                        ))}
+                      <div className="overflow-x-auto custom-scrollbar">
+                        <table className="w-full text-sm">
+                          <OOHTabelaHeader/>
+                          <tbody className="divide-y divide-slate-100">
+                            {oohAtrasados.map(p=><OOHProjetoRow key={p.br} p={p} onAndamento={atualizarAndamento} onReprogramar={()=>{setOohModalBR(p);setOohForm({status:'REPROGRAMADO',novaData:p.plano?.nova_data||'',justificativa:p.plano?.justificativa||''});}}/>)}
+                          </tbody>
+                        </table>
                       </div>
                     )}
                   </div>
@@ -3258,24 +3276,32 @@ export default function App(){
                   {!oohLoading&&oohDoMes.length===0&&<div className="px-5 py-10 text-center text-slate-400 font-semibold">Nenhum projeto previsto para este mês.</div>}
 
                   {!oohLoading&&oohDoMes.length>0&&!oohVisaoSemanal&&(
-                    <div className="divide-y divide-slate-100">
-                      {oohDoMes.map(p=><OOHProjetoRow key={p.br} p={p} onAndamento={atualizarAndamento} onReprogramar={()=>{setOohModalBR(p);setOohForm({status:p.plano?.status||'REPROGRAMADO',novaData:p.plano?.nova_data||'',justificativa:p.plano?.justificativa||''});}}/>)}
+                    <div className="overflow-x-auto custom-scrollbar">
+                      <table className="w-full text-sm">
+                        <OOHTabelaHeader/>
+                        <tbody className="divide-y divide-slate-100">
+                          {oohDoMes.map(p=><OOHProjetoRow key={p.br} p={p} onAndamento={atualizarAndamento} onReprogramar={()=>{setOohModalBR(p);setOohForm({status:p.plano?.status||'REPROGRAMADO',novaData:p.plano?.nova_data||'',justificativa:p.plano?.justificativa||''});}}/>)}
+                        </tbody>
+                      </table>
                     </div>
                   )}
 
                   {!oohLoading&&oohDoMes.length>0&&oohVisaoSemanal&&(
-                    <div className="divide-y divide-slate-100">
-                      {oohPorSemana.map(g=>(
-                        <div key={g.semana}>
-                          <div className="px-5 py-2 bg-slate-50/70 flex items-center justify-between">
-                            <span className="text-[11px] font-black text-slate-500 uppercase">Semana {g.semana}</span>
-                            <span className="text-[11px] font-bold text-slate-500">{g.projetos.length} projeto{g.projetos.length>1?'s':''} · {fmtMoeda(g.valorTotal)}</span>
-                          </div>
-                          <div className="divide-y divide-slate-100">
+                    <div className="overflow-x-auto custom-scrollbar">
+                      <table className="w-full text-sm">
+                        <OOHTabelaHeader/>
+                        {oohPorSemana.map(g=>(
+                          <tbody key={g.semana} className="divide-y divide-slate-100">
+                            <tr className="bg-slate-100/70">
+                              <td colSpan={OOH_COLUNAS.length} className="px-3 py-1.5">
+                                <span className="text-[11px] font-black text-slate-500 uppercase">Semana {g.semana}</span>
+                                <span className="text-[11px] font-bold text-slate-500 float-right">{g.projetos.length} projeto{g.projetos.length>1?'s':''} · {fmtMoeda(g.valorTotal)}</span>
+                              </td>
+                            </tr>
                             {g.projetos.map(p=><OOHProjetoRow key={p.br} p={p} onAndamento={atualizarAndamento} onReprogramar={()=>{setOohModalBR(p);setOohForm({status:p.plano?.status||'REPROGRAMADO',novaData:p.plano?.nova_data||'',justificativa:p.plano?.justificativa||''});}}/>)}
-                          </div>
-                        </div>
-                      ))}
+                          </tbody>
+                        ))}
+                      </table>
                     </div>
                   )}
                 </div>
