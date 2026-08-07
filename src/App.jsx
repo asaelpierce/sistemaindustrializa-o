@@ -1167,7 +1167,7 @@ export default function App(){
     return opsSankhyaAgrupadas.filter(o=>{
       if(opsSankhyaFiltroSituacao!=='TODOS'&&o.situacao!==opsSankhyaFiltroSituacao)return false;
       if(opsSankhyaFiltroProcesso!=='TODOS'&&o.processo!==opsSankhyaFiltroProcesso)return false;
-      if(termo&&!(s(o.br).toLowerCase().includes(termo)||String(o.nuapo).includes(termo)||s(o.produtoAcabado).toLowerCase().includes(termo)||s(o.processo).toLowerCase().includes(termo)))return false;
+      if(termo&&!(s(o.br).toLowerCase().includes(termo)||String(o.nroOrdemProducao||'').includes(termo)||String(o.nuapo).includes(termo)||s(o.produtoAcabado).toLowerCase().includes(termo)||s(o.processo).toLowerCase().includes(termo)))return false;
       return true;
     });
   },[opsSankhyaAgrupadas,opsSankhyaBusca,opsSankhyaFiltroSituacao,opsSankhyaFiltroProcesso]);
@@ -4027,7 +4027,7 @@ export default function App(){
                 <div className="flex items-center gap-3 flex-wrap">
                   <div className="relative flex-1 min-w-[240px] max-w-sm">
                     <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2"/>
-                    <input value={opsSankhyaBusca} onChange={e=>setOpsSankhyaBusca(e.target.value)} placeholder="Buscar BR, NUAPO, processo ou produto..."
+                    <input value={opsSankhyaBusca} onChange={e=>setOpsSankhyaBusca(e.target.value)} placeholder="Buscar BR, Nº OP, processo ou produto..."
                       className="w-full text-sm border border-slate-200 rounded-xl pl-9 pr-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-200"/>
                   </div>
                   {opsSankhyaOpcoesProcesso.length>0&&(
@@ -4044,7 +4044,7 @@ export default function App(){
                     <table className="w-full text-sm">
                       <thead className="bg-slate-50 border-b border-slate-200 sticky top-0">
                         <tr className="text-left text-[10px] font-black text-slate-500 uppercase tracking-wider">
-                          <th className="px-3 py-2.5">NUAPO</th>
+                          <th className="px-3 py-2.5">Nº OP</th>
                           <th className="px-3 py-2.5">BR</th>
                           <th className="px-3 py-2.5">Processo/Setor</th>
                           <th className="px-3 py-2.5">Produto Acabado</th>
@@ -4061,7 +4061,7 @@ export default function App(){
                         )}
                         {!opsSankhyaLoading&&opsSankhyaFiltradas.slice(0,300).map(o=>(
                           <tr key={o.nuapo} className="hover:bg-slate-50">
-                            <td className="px-3 py-2 font-bold text-slate-700 whitespace-nowrap">{o.nuapo}</td>
+                            <td className="px-3 py-2 font-bold text-slate-700 whitespace-nowrap" title={`NUAPO (apontamento interno): ${o.nuapo}`}>{o.nroOrdemProducao||'—'}</td>
                             <td className="px-3 py-2 font-bold text-indigo-700 whitespace-nowrap">
                               {o.br?s(o.br):o.vinculoStatus==='confirmado'?(
                                 <span title="Vínculo por inferência (produto+data), confirmado manualmente">{s(o.brConfirmado)} <span className="text-[9px] font-black text-emerald-600">✓ confirmado</span></span>
@@ -6930,7 +6930,7 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
       </Modal>
 
       {/* ── MODAL: Itens de matéria-prima de uma OP ─────────────────────── */}
-      <Modal open={!!opSelecionadaDetalhe} onClose={()=>setOpSelecionadaDetalhe(null)} title={`OP ${opSelecionadaDetalhe?.nuapo} — ${s(opSelecionadaDetalhe?.br)||(opSelecionadaDetalhe?.vinculoStatus==='confirmado'?s(opSelecionadaDetalhe?.brConfirmado):'sem projeto')}`} subtitle={`${s(opSelecionadaDetalhe?.processo)} · ${s(opSelecionadaDetalhe?.produtoAcabado)}`} maxWidth="max-w-2xl">
+      <Modal open={!!opSelecionadaDetalhe} onClose={()=>setOpSelecionadaDetalhe(null)} title={`OP ${opSelecionadaDetalhe?.nroOrdemProducao||opSelecionadaDetalhe?.nuapo} — ${s(opSelecionadaDetalhe?.br)||(opSelecionadaDetalhe?.vinculoStatus==='confirmado'?s(opSelecionadaDetalhe?.brConfirmado):'sem projeto')}`} subtitle={`${s(opSelecionadaDetalhe?.processo)} · ${s(opSelecionadaDetalhe?.produtoAcabado)} · NUAPO (interno): ${opSelecionadaDetalhe?.nuapo}`} maxWidth="max-w-2xl">
         {!opSelecionadaDetalhe?.br&&opSelecionadaDetalhe?.vinculoStatus!=='sem_sugestao'&&(
           <div className="mb-4 bg-amber-50/60 border border-amber-200 rounded-xl px-4 py-3">
             <p className="text-[11px] font-black text-amber-700 uppercase tracking-wide mb-2">Vínculo com pedido — sem cadeia formal no Sankhya</p>
