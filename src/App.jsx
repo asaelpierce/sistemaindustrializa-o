@@ -1822,6 +1822,7 @@ export default function App(){
   const [producaoRealMes,setProducaoRealMes]=useState('TODOS');
   const [producaoRealBusca,setProducaoRealBusca]=useState('');
   const [producaoRealVisivel,setProducaoRealVisivel]=useState(true);
+  const [itensDirecionarBR,setItensDirecionarBR]=useState(null); // {br,cliente,itensCompletos} — modal "Ver itens e direcionar"
 
   // Classificação PG1: alguns itens são "passagem direta" (não passam por
   // produção interna, vão reto pra expedição) — Kalfix, Kalpoxy, Chockybar,
@@ -1845,12 +1846,24 @@ export default function App(){
     mestraDb.forEach(r=>{
       if(!r.br)return;
       if(producaoRealMes!=='TODOS'&&r.mesReferencia!==producaoRealMes)return;
-      if(!porBR[r.br])porBR[r.br]={br:r.br,cliente:r.cliente,setoresReais:{},itensEsperados:{}};
+      if(!porBR[r.br])porBR[r.br]={br:r.br,cliente:r.cliente,setoresReais:{},itensEsperados:{},itensCompletosPorCod:{},itensPendentesTotalBR:0,itensTotalBR:0};
+      const g=porBR[r.br];
+      g.itensPendentesTotalBR+=r.qtdItensPendentes||0;
+      g.itensTotalBR+=r.qtdItensTotal||0;
       (r.itens||[]).forEach(it=>{
         const cls=classificarRoteiroEsperado(it.descricao);
         if(cls){
-          if(!porBR[r.br].itensEsperados[cls])porBR[r.br].itensEsperados[cls]=0;
-          porBR[r.br].itensEsperados[cls]++;
+          if(!g.itensEsperados[cls])g.itensEsperados[cls]=0;
+          g.itensEsperados[cls]++;
+        }
+        // Lista completa (não só os classificados) — usada no modal "Ver itens e
+        // direcionar", pra deixar o PCP escolher a área manualmente item a item,
+        // já que cada item de um mesmo BR pode ir pra um setor diferente e a
+        // classificação automática só cobre 2 padrões (Manta/Mangote e os 5
+        // códigos que vão direto pra expedição).
+        if(it.codProduto){
+          if(!g.itensCompletosPorCod[it.codProduto])g.itensCompletosPorCod[it.codProduto]={codProduto:it.codProduto,descricao:it.descricao,unidade:it.unidade,qtdPedida:0};
+          g.itensCompletosPorCod[it.codProduto].qtdPedida+=Number(it.qtdPedida||0);
         }
       });
     });
@@ -1868,6 +1881,12 @@ export default function App(){
       ...p,
       setoresLista:Object.values(p.setoresReais),
       itensEsperadosLista:Object.entries(p.itensEsperados).map(([tipo,qtd])=>({tipo,qtd})),
+      itensCompletos:Object.values(p.itensCompletosPorCod),
+      // "Entregue" aqui é só pra não assustar o PCP com "não iniciado na produção"
+      // num projeto que já foi faturado há tempos — não significa que a produção
+      // real dele esteja rastreada neste sistema (pode ser de antes da sincronização
+      // do Sankhya existir, que só cobre a partir de jan/2026).
+      entregue:p.itensTotalBR>0&&p.itensPendentesTotalBR===0,
       temOP:Object.keys(p.setoresReais).length>0,
       temPendente:Object.values(p.setoresReais).some(st=>st.pendente>0),
     })).sort((a,b)=>(b.temPendente?1:0)-(a.temPendente?1:0));
@@ -1884,10 +1903,17 @@ export default function App(){
     const porBR={};
     mestraDb.forEach(r=>{
       if(!r.br||!r.br.toLowerCase().includes(termo))return;
-      if(!porBR[r.br])porBR[r.br]={br:r.br,cliente:r.cliente,setoresReais:{},itensEsperados:{}};
+      if(!porBR[r.br])porBR[r.br]={br:r.br,cliente:r.cliente,setoresReais:{},itensEsperados:{},itensCompletosPorCod:{},itensPendentesTotalBR:0,itensTotalBR:0};
+      const g=porBR[r.br];
+      g.itensPendentesTotalBR+=r.qtdItensPendentes||0;
+      g.itensTotalBR+=r.qtdItensTotal||0;
       (r.itens||[]).forEach(it=>{
         const cls=classificarRoteiroEsperado(it.descricao);
-        if(cls){if(!porBR[r.br].itensEsperados[cls])porBR[r.br].itensEsperados[cls]=0;porBR[r.br].itensEsperados[cls]++;}
+        if(cls){if(!g.itensEsperados[cls])g.itensEsperados[cls]=0;g.itensEsperados[cls]++;}
+        if(it.codProduto){
+          if(!g.itensCompletosPorCod[it.codProduto])g.itensCompletosPorCod[it.codProduto]={codProduto:it.codProduto,descricao:it.descricao,unidade:it.unidade,qtdPedida:0};
+          g.itensCompletosPorCod[it.codProduto].qtdPedida+=Number(it.qtdPedida||0);
+        }
       });
     });
     opsSankhyaAgrupadas.forEach(o=>{
@@ -1900,6 +1926,8 @@ export default function App(){
     return Object.values(porBR).map(p=>({
       ...p,setoresLista:Object.values(p.setoresReais),
       itensEsperadosLista:Object.entries(p.itensEsperados).map(([tipo,qtd])=>({tipo,qtd})),
+      itensCompletos:Object.values(p.itensCompletosPorCod),
+      entregue:p.itensTotalBR>0&&p.itensPendentesTotalBR===0,
       temOP:Object.keys(p.setoresReais).length>0,
       temPendente:Object.values(p.setoresReais).some(st=>st.pendente>0),
     }));
@@ -1931,6 +1959,38 @@ export default function App(){
       fetchOrdensProducao();
     }catch(e){addToast('Erro: '+e.message,'error');}
   };
+
+  // Direciona (ou redireciona) um item ESPECÍFICO de um BR pra um setor — de forma
+  // manual, item a item, porque a classificação automática (PG1) só cobre 2 padrões
+  // e a maioria dos itens não cai em nenhum deles. Se já existe uma ordem ativa
+  // (não concluída) pra esse mesmo item, ATUALIZA o setor dela em vez de duplicar —
+  // um item só está fisicamente em um lugar por vez.
+  const direcionarItemManual=async(p,item,setor)=>{
+    if(setor==='EXPEDICAO'){
+      addToast(`${p.br}: "${s(item.descricao).slice(0,40)}" vai direto pra expedição, não precisa de OP de produção.`);
+      return;
+    }
+    if(!setor)return addToast('Selecione um setor.','error');
+    try{
+      const existente=ordensProducao.find(o=>o.br===p.br&&o.cod_produto===item.codProduto&&o.status!=='CONCLUIDO');
+      if(existente){
+        if(existente.setor===setor)return addToast(`Já está em ${SETOR_LABEL[setor]}.`);
+        const{error}=await supabase.from('ordens_producao').update({setor,atualizado_por:s(usuarioLogado?.nome),atualizado_em:new Date().toISOString()}).eq('id',existente.id);
+        if(error)throw error;
+        addToast(`Movido: "${s(item.descricao).slice(0,30)}" → ${SETOR_LABEL[setor]}.`);
+      }else{
+        const id=`OP-${Date.now()}-${item.codProduto}`;
+        const{error}=await supabase.from('ordens_producao').insert([{
+          id,br:p.br,cliente:s(p.cliente),setor,cod_produto:item.codProduto,quantidade:item.qtdPedida,
+          descricao:s(item.descricao),status:'FILA',criado_por:s(usuarioLogado?.nome),
+        }]);
+        if(error)throw error;
+        addToast(`"${s(item.descricao).slice(0,30)}" direcionado pra ${SETOR_LABEL[setor]}!`);
+      }
+      fetchOrdensProducao();
+    }catch(e){addToast('Erro ao direcionar item: '+e.message,'error');}
+  };
+
 
   // Direciona um item classificado (esperado) direto pra produção, com um clique —
   // sem precisar preencher o formulário. "Direto p/ Expedição" não vira OP porque
@@ -4293,7 +4353,10 @@ export default function App(){
                       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3 max-h-[500px] overflow-y-auto custom-scrollbar">
                         {producaoRealPorBRFiltrada.length===0&&<p className="text-xs text-slate-400 col-span-full text-center py-6">Nenhum projeto encontrado.</p>}
                         {producaoRealPorBRFiltrada.map(p=>(
-                          <div key={p.br} className={`rounded-xl border p-3 ${p.temPendente?'border-blue-200 bg-blue-50/20':'border-slate-200'}`}>                            <p className="text-xs font-bold text-indigo-700">{p.br}</p>
+                          <div key={p.br} className={`rounded-xl border p-3 ${p.temPendente?'border-blue-200 bg-blue-50/20':'border-slate-200'}`}>                            <div className="flex items-center justify-between gap-2">
+                              <p className="text-xs font-bold text-indigo-700">{p.br}</p>
+                              {p.entregue&&<span className="text-[9px] font-black text-teal-700 bg-teal-50 border border-teal-200 rounded-full px-1.5 py-0.5">✓ Entregue</span>}
+                            </div>
                             {p.cliente&&<p className="text-[10px] text-slate-400 truncate">{s(p.cliente)}</p>}
                             {p.setoresLista.length>0&&(
                               <div className="flex flex-wrap gap-1.5 mt-2">
@@ -4320,13 +4383,18 @@ export default function App(){
                               </div>
                             )}
                             {!p.temOP&&p.itensEsperadosLista.length===0&&(
-                              <p className="text-[10px] text-slate-400 mt-2">{(mestraLoading||opsSankhyaLoading)?'Verificando...':'Sem OP ainda — projeto não iniciado na produção.'}</p>
+                              <p className="text-[10px] text-slate-400 mt-2">{(mestraLoading||opsSankhyaLoading)?'Verificando...':p.entregue?'Sem OP real sincronizada pra este BR (pode ser produção anterior a jan/2026, fora da janela do Sankhya).':'Sem OP ainda — projeto não iniciado na produção.'}</p>
+                            )}
+                            {p.itensCompletos.length>0&&(
+                              <button onClick={()=>setItensDirecionarBR(p)} className="mt-2.5 w-full text-[10px] font-black text-indigo-600 border border-indigo-200 bg-indigo-50 rounded-lg px-2 py-1.5 hover:bg-indigo-100">
+                                Ver {p.itensCompletos.length} item(ns) e direcionar por área →
+                              </button>
                             )}
                           </div>
                         ))}
                       </div>
                       <p className="text-[11px] text-slate-400 mt-4">
-                        <span className="text-blue-700 font-bold">Azul</span> = OP real pendente (Sankhya). <span className="text-teal-700 font-bold">Verde</span> = OP real concluída. <span className="text-amber-700 font-bold">Âmbar</span> = classificação esperada (Kalfix/Kalpoxy/Chockybar/Kalocer/Abresist = direto p/ expedição; Manta/Mangote = Vulcanização) — <strong>clique pra direcionar pra produção com 1 clique</strong>. Base: todo projeto com entrega prevista no mês selecionado, não só quem já tem OP.
+                        <span className="text-blue-700 font-bold">Azul</span> = OP real pendente (Sankhya). <span className="text-teal-700 font-bold">Verde</span> = OP real concluída. <span className="text-amber-700 font-bold">Âmbar</span> = classificação esperada (Kalfix/Kalpoxy/Chockybar/Kalocer/Abresist = direto p/ expedição; Manta/Mangote = Vulcanização) — <strong>clique pra direcionar pra produção com 1 clique</strong>. Pra qualquer outro item, use "Ver itens e direcionar por área". Base: todo projeto com entrega prevista no mês selecionado, não só quem já tem OP.
                       </p>
                     </div>
                   )}
@@ -6927,6 +6995,35 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
             />
           </div>
         )}
+      </Modal>
+
+      {/* ── MODAL: Direcionar itens de um BR por área (cada item pode ir pra um
+           setor diferente — a classificação automática só cobre 2 padrões) ── */}
+      <Modal open={!!itensDirecionarBR} onClose={()=>setItensDirecionarBR(null)} title={`Direcionar itens — ${itensDirecionarBR?.br}`} subtitle={`${s(itensDirecionarBR?.cliente)} · escolha a área de cada item, um por um`} maxWidth="max-w-2xl">
+        <div className="space-y-2">
+          {(itensDirecionarBR?.itensCompletos||[]).map((item,i)=>{
+            const atual=ordensProducao.find(o=>o.br===itensDirecionarBR.br&&o.cod_produto===item.codProduto&&o.status!=='CONCLUIDO');
+            return(
+              <div key={i} className="bg-slate-50 border border-slate-100 rounded-xl px-4 py-3">
+                <div className="flex items-start justify-between gap-3 mb-2">
+                  <div className="min-w-0">
+                    <p className="text-sm font-bold text-slate-900 truncate" title={item.descricao}>{item.descricao}</p>
+                    <p className="text-xs text-slate-500 mt-0.5">Código: {item.codProduto} · Qtd pedida: {item.qtdPedida} {item.unidade}</p>
+                  </div>
+                  {atual&&<span className="text-[9px] font-black text-blue-700 bg-blue-50 border border-blue-200 rounded-full px-2 py-0.5 whitespace-nowrap">→ {SETOR_LABEL[atual.setor]||atual.setor}</span>}
+                </div>
+                <Sel defaultValue="" onChange={e=>{const v=e.target.value;if(v)direcionarItemManual(itensDirecionarBR,item,v);e.target.value='';}}>
+                  <option value="">{atual?'Mover pra outro setor...':'Direcionar pra...'}</option>
+                  {SETORES.filter(st=>st!==atual?.setor).map(st=><option key={st} value={st}>{SETOR_LABEL[st]}</option>)}
+                  <option value="EXPEDICAO">Direto p/ Expedição (não vira OP)</option>
+                </Sel>
+              </div>
+            );
+          })}
+          {(!itensDirecionarBR?.itensCompletos||itensDirecionarBR.itensCompletos.length===0)&&(
+            <p className="text-sm text-slate-400 text-center py-6">Nenhum item encontrado.</p>
+          )}
+        </div>
       </Modal>
 
       {/* ── MODAL: Itens de matéria-prima de uma OP ─────────────────────── */}
