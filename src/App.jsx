@@ -1079,7 +1079,7 @@ export default function App(){
     }catch(e){setOpsSankhyaErro('Erro ao buscar OPs: '+e.message);}
     finally{setOpsSankhyaLoading(false);}
   },[supabase]);
-  useEffect(()=>{if(supabase&&aba==='ORDENS_PRODUCAO_SK'&&opsSankhyaItens.length===0)fetchOpsSankhya();},[supabase,aba]);
+  useEffect(()=>{if(supabase&&(aba==='ORDENS_PRODUCAO_SK'||aba==='PRODUCAO')&&opsSankhyaItens.length===0)fetchOpsSankhya();},[supabase,aba]);
 
   const sincronizarOpsSankhya=async()=>{
     setOpsSankhyaLoading(true);
@@ -1752,6 +1752,28 @@ export default function App(){
   const [ordensProducao,setOrdensProducao]=useState([]);
   const [setorSelecionado,setSetorSelecionado]=useState('TODOS');
   const [novaOPForm,setNovaOPForm]=useState({br:'',cliente:'',setor:'',descricao:'',quantidade:''});
+  const [producaoRealMes,setProducaoRealMes]=useState('TODOS');
+  const [producaoRealVisivel,setProducaoRealVisivel]=useState(true);
+
+  // Visão real por projeto (Sankhya): o mesmo BR pode ter itens em setores
+  // diferentes ao mesmo tempo (ex: chapa na Vulcanização, cerâmica padrão na
+  // Pintura, cerâmica recortada no Corte) — cada um é uma OP distinta.
+  const producaoRealOpcoesMes=useMemo(()=>[...new Set(opsSankhyaAgrupadas.filter(o=>o.br).map(o=>s(o.dataApontamento).slice(0,7)).filter(Boolean))].sort().reverse(),[opsSankhyaAgrupadas]);
+  const producaoRealPorBR=useMemo(()=>{
+    const porBR={};
+    opsSankhyaAgrupadas.forEach(o=>{
+      if(!o.br)return;
+      const mes=s(o.dataApontamento).slice(0,7);
+      if(producaoRealMes!=='TODOS'&&mes!==producaoRealMes)return;
+      if(!porBR[o.br])porBR[o.br]={br:o.br,setores:{}};
+      const key=o.processo||'—';
+      if(!porBR[o.br].setores[key])porBR[o.br].setores[key]={processo:key,pendente:0,concluido:0};
+      if(o.situacao==='P')porBR[o.br].setores[key].pendente++;else porBR[o.br].setores[key].concluido++;
+    });
+    return Object.values(porBR).map(p=>({...p,setoresLista:Object.values(p.setores),temPendente:Object.values(p.setores).some(s=>s.pendente>0)}))
+      .sort((a,b)=>(b.temPendente?1:0)-(a.temPendente?1:0));
+  },[opsSankhyaAgrupadas,producaoRealMes]);
+
 
   const fetchOrdensProducao=useCallback(async()=>{
     if(!supabase)return;
@@ -4061,6 +4083,49 @@ export default function App(){
                     <Btn variant="dark" onClick={criarOrdemProducao}><PackageOpen className="w-4 h-4"/>Direcionar</Btn>
                   </div>
                   <p className="text-[11px] text-slate-400 mt-2">Dica: se dois setores trabalham no mesmo BR, crie uma ordem pra cada um, usando a descrição pra diferenciar (ex: "Corte" e "Vulcanização" no mesmo BR14170).</p>
+                </div>
+
+                {/* Visão Real por Projeto (Sankhya) — o mesmo BR pode estar em setores
+                    diferentes ao mesmo tempo, porque cada item tem sua própria OP.
+                    Ex: chapa na Vulcanização, cerâmica padrão na Pintura, cerâmica
+                    recortada no Corte — tudo do mesmo projeto, simultaneamente. */}
+                <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
+                  <button onClick={()=>setProducaoRealVisivel(v=>!v)} className="w-full flex items-center justify-between px-5 py-3.5 hover:bg-slate-50 transition-colors">
+                    <div className="flex items-center gap-2.5">
+                      <ArrowDown className={`w-3.5 h-3.5 text-slate-400 transition-transform ${producaoRealVisivel?'':'-rotate-90'}`}/>
+                      <span className="text-sm font-black text-slate-800">Visão Real por Projeto (Sankhya)</span>
+                      <span className="text-[10px] font-bold text-slate-400 bg-slate-100 px-2 py-0.5 rounded-full">um BR pode estar em vários setores ao mesmo tempo</span>
+                    </div>
+                    <span className="text-xs font-bold text-slate-400">{producaoRealPorBR.length} projetos</span>
+                  </button>
+                  {producaoRealVisivel&&(
+                    <div className="px-5 pb-5">
+                      <div className="flex items-center gap-2 flex-wrap mb-4">
+                        <button onClick={()=>setProducaoRealMes('TODOS')} className={`text-[11px] font-bold px-3 py-1.5 rounded-full border ${producaoRealMes==='TODOS'?'bg-indigo-600 text-white border-indigo-600':'bg-white text-slate-600 border-slate-200'}`}>Todos os meses</button>
+                        {producaoRealOpcoesMes.map(m=>(
+                          <button key={m} onClick={()=>setProducaoRealMes(m)} className={`text-[11px] font-bold px-3 py-1.5 rounded-full border ${producaoRealMes===m?'bg-indigo-600 text-white border-indigo-600':'bg-white text-slate-600 border-slate-200'}`}>{m}</button>
+                        ))}
+                      </div>
+                      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3 max-h-[500px] overflow-y-auto custom-scrollbar">
+                        {producaoRealPorBR.length===0&&<p className="text-xs text-slate-400 col-span-full text-center py-6">Nenhum projeto encontrado nesse período.</p>}
+                        {producaoRealPorBR.map(p=>(
+                          <div key={p.br} className={`rounded-xl border p-3 ${p.temPendente?'border-blue-200 bg-blue-50/20':'border-slate-200'}`}>
+                            <p className="text-xs font-bold text-indigo-700">{p.br}</p>
+                            <div className="flex flex-wrap gap-1.5 mt-2">
+                              {p.setoresLista.map((st,i)=>(
+                                <span key={i} className={`text-[9px] font-black px-2 py-0.5 rounded-full border ${st.pendente>0?'bg-blue-50 text-blue-700 border-blue-200':'bg-teal-50 text-teal-700 border-teal-200'}`} title={`${st.pendente} pendente(s), ${st.concluido} concluída(s)`}>
+                                  {st.processo}{st.pendente>0?` (${st.pendente})`:' ✓'}
+                                </span>
+                              ))}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                      <p className="text-[11px] text-slate-400 mt-4">
+                        Azul = setor com OP ainda pendente (em produção). Verde = setor já concluído pra esse projeto. Fonte: OPs reais do Sankhya (aba "OPs (Sankhya)"), não a ordem manual criada abaixo.
+                      </p>
+                    </div>
+                  )}
                 </div>
 
                 <div className="flex items-center gap-2 flex-wrap">
