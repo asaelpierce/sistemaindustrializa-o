@@ -1753,6 +1753,7 @@ export default function App(){
   const [setorSelecionado,setSetorSelecionado]=useState('TODOS');
   const [novaOPForm,setNovaOPForm]=useState({br:'',cliente:'',setor:'',descricao:'',quantidade:''});
   const [producaoRealMes,setProducaoRealMes]=useState('TODOS');
+  const [producaoRealBusca,setProducaoRealBusca]=useState('');
   const [producaoRealVisivel,setProducaoRealVisivel]=useState(true);
 
   // Classificação PG1: alguns itens são "passagem direta" (não passam por
@@ -1800,6 +1801,37 @@ export default function App(){
       temPendente:Object.values(p.setoresReais).some(st=>st.pendente>0),
     })).sort((a,b)=>(b.temPendente?1:0)-(a.temPendente?1:0));
   },[mestraDb,opsSankhyaAgrupadas,producaoRealMes]);
+
+  // Busca por BR específico — ignora o filtro de mês, pra facilitar conferir um
+  // projeto pontual sem precisar adivinhar em qual mês ele está classificado.
+  const producaoRealPorBRFiltrada=useMemo(()=>{
+    const termo=producaoRealBusca.trim().toLowerCase();
+    if(!termo)return producaoRealPorBR;
+    if(producaoRealMes==='TODOS')return producaoRealPorBR.filter(p=>p.br.toLowerCase().includes(termo));
+    // Se tem busca mas o mês selecionado não é TODOS, procura no mestraDb inteiro
+    // (não só no mês filtrado) — assim um BR de outro mês aparece se buscado.
+    const porBR={};
+    mestraDb.forEach(r=>{
+      if(!r.br||!r.br.toLowerCase().includes(termo))return;
+      if(!porBR[r.br])porBR[r.br]={br:r.br,cliente:r.cliente,setoresReais:{},itensEsperados:{}};
+      (r.itens||[]).forEach(it=>{
+        const cls=classificarRoteiroEsperado(it.descricao);
+        if(cls){if(!porBR[r.br].itensEsperados[cls])porBR[r.br].itensEsperados[cls]=0;porBR[r.br].itensEsperados[cls]++;}
+      });
+    });
+    opsSankhyaAgrupadas.forEach(o=>{
+      if(!o.br||!porBR[o.br])return;
+      const key=o.processo||'—';
+      if(!porBR[o.br].setoresReais[key])porBR[o.br].setoresReais[key]={processo:key,pendente:0,concluido:0};
+      if(o.situacao==='P')porBR[o.br].setoresReais[key].pendente++;else porBR[o.br].setoresReais[key].concluido++;
+    });
+    return Object.values(porBR).map(p=>({
+      ...p,setoresLista:Object.values(p.setoresReais),
+      itensEsperadosLista:Object.entries(p.itensEsperados).map(([tipo,qtd])=>({tipo,qtd})),
+      temOP:Object.keys(p.setoresReais).length>0,
+      temPendente:Object.values(p.setoresReais).some(st=>st.pendente>0),
+    }));
+  },[producaoRealPorBR,producaoRealBusca,producaoRealMes,mestraDb,opsSankhyaAgrupadas]);
 
 
   const fetchOrdensProducao=useCallback(async()=>{
@@ -4153,17 +4185,29 @@ export default function App(){
                   </button>
                   {producaoRealVisivel&&(
                     <div className="px-5 pb-5">
+                      <div className="flex items-center gap-2 flex-wrap mb-3">
+                        <div className="relative flex-1 min-w-[200px] max-w-xs">
+                          <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2"/>
+                          <input value={producaoRealBusca} onChange={e=>setProducaoRealBusca(e.target.value)} placeholder="Buscar BR específico..."
+                            className="w-full text-xs border border-slate-200 rounded-full pl-8 pr-3 py-1.5 focus:outline-none focus:ring-2 focus:ring-indigo-200"/>
+                        </div>
+                        <button onClick={()=>{fetchMestra();fetchOpsSankhya();}} disabled={mestraLoading||opsSankhyaLoading} className="flex items-center gap-1.5 text-[11px] font-bold text-indigo-600 border border-indigo-200 bg-indigo-50 rounded-full px-3 py-1.5 hover:bg-indigo-100">
+                          <RefreshCw className={`w-3.5 h-3.5 ${(mestraLoading||opsSankhyaLoading)?'animate-spin':''}`}/>Recarregar dados
+                        </button>
+                      </div>
                       <div className="flex items-center gap-2 flex-wrap mb-4">
                         <button onClick={()=>setProducaoRealMes('TODOS')} className={`text-[11px] font-bold px-3 py-1.5 rounded-full border ${producaoRealMes==='TODOS'?'bg-indigo-600 text-white border-indigo-600':'bg-white text-slate-600 border-slate-200'}`}>Todos os meses</button>
                         {producaoRealOpcoesMes.map(m=>(
                           <button key={m} onClick={()=>setProducaoRealMes(m)} className={`text-[11px] font-bold px-3 py-1.5 rounded-full border ${producaoRealMes===m?'bg-indigo-600 text-white border-indigo-600':'bg-white text-slate-600 border-slate-200'}`}>{m}</button>
                         ))}
                       </div>
+                      {(mestraLoading||opsSankhyaLoading)&&(
+                        <p className="text-xs text-amber-600 font-semibold mb-3 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">⏳ Carregando dados do Sankhya — os badges de OP real só ficam confiáveis depois que terminar.</p>
+                      )}
                       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3 max-h-[500px] overflow-y-auto custom-scrollbar">
-                        {producaoRealPorBR.length===0&&<p className="text-xs text-slate-400 col-span-full text-center py-6">Nenhum projeto encontrado nesse período.</p>}
-                        {producaoRealPorBR.map(p=>(
-                          <div key={p.br} className={`rounded-xl border p-3 ${p.temPendente?'border-blue-200 bg-blue-50/20':'border-slate-200'}`}>
-                            <p className="text-xs font-bold text-indigo-700">{p.br}</p>
+                        {producaoRealPorBRFiltrada.length===0&&<p className="text-xs text-slate-400 col-span-full text-center py-6">Nenhum projeto encontrado.</p>}
+                        {producaoRealPorBRFiltrada.map(p=>(
+                          <div key={p.br} className={`rounded-xl border p-3 ${p.temPendente?'border-blue-200 bg-blue-50/20':'border-slate-200'}`}>                            <p className="text-xs font-bold text-indigo-700">{p.br}</p>
                             {p.cliente&&<p className="text-[10px] text-slate-400 truncate">{s(p.cliente)}</p>}
                             {p.setoresLista.length>0&&(
                               <div className="flex flex-wrap gap-1.5 mt-2">
@@ -4190,7 +4234,7 @@ export default function App(){
                               </div>
                             )}
                             {!p.temOP&&p.itensEsperadosLista.length===0&&(
-                              <p className="text-[10px] text-slate-400 mt-2">Sem OP ainda — projeto não iniciado na produção.</p>
+                              <p className="text-[10px] text-slate-400 mt-2">{(mestraLoading||opsSankhyaLoading)?'Verificando...':'Sem OP ainda — projeto não iniciado na produção.'}</p>
                             )}
                           </div>
                         ))}
