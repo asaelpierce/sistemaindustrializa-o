@@ -1016,11 +1016,15 @@ export default function App(){
       const dataReferencia=g.datasReferencia.sort()[0]||dataEntregaCP; // reprogramada, se houver
       const mes=dataReferencia?MESES_PT[new Date(dataReferencia+'T00:00:00Z').getUTCMonth()]:'—';
       const semana=dataReferencia?semanaISODoAno(dataReferencia):null;
-      // FATURAMENTO: pega a nota mais recente de fato (não um VLOOKUP que só acha a primeira)
+      // FATURAMENTO: pega a nota mais recente de fato (só como referência de data — não
+      // prova, por si só, que ESTE pedido foi entregue: o BR pode ter uma nota de um item
+      // diferente, sem relação com o pedido. Achamos esse bug real no BR14287/26: existia
+      // nota, mas de outro produto, com valor pequeno — nada a ver com a entrega do pedido.
       const dataFaturamento=g.notas[0]?.dataFaturamento||null;
-      // Se já existe nota emitida, o Sankhya já prova que a OP saiu pro almoxarifado —
-      // a planilha "anda de acordo com o Sankhya" e sobrescreve o manual automaticamente.
-      const jaFaturado=!!dataFaturamento;
+      // "Já entregue" só conta quando os ITENS do próprio pedido (por código de produto,
+      // já casados com QTDENTREGUE/notas no Mestra) não têm mais saldo em aberto —
+      // muito mais confiável que só checar se existe alguma nota pro BR.
+      const jaFaturado=g.itensTotal>0&&g.itensPendentesTotal===0;
       const statusOP=jaFaturado?'ENTREGUE':(manual.status_op||'NAO_ENTREGUE');
       const andamento=jaFaturado?'FATURADO':(manual.andamento||'A_INICIAR');
       const percentualFaturado=g.valorTotal>0?g.valorFaturadoQtd/g.valorTotal:0;
@@ -1051,6 +1055,70 @@ export default function App(){
   const [planilhaMestrePagina,setPlanilhaMestrePagina]=useState(1);
   const [planilhaMestrePorPagina,setPlanilhaMestrePorPagina]=useState(60);
   const [planilhaMestreExpandida,setPlanilhaMestreExpandida]=useState(false);
+
+  // ════════════════════════════════════════════════════════════════════════
+  // OPs (Sankhya) — Ordens de Produção reais, com os itens de matéria-prima
+  // consumidos e o setor (Processo Produtivo). Objetivo: saber qual OP é de
+  // qual projeto, e poder ver os itens dela direto no portal.
+  // ════════════════════════════════════════════════════════════════════════
+  const [opsSankhyaItens,setOpsSankhyaItens]=useState([]);
+  const [opsSankhyaLoading,setOpsSankhyaLoading]=useState(false);
+  const [opsSankhyaErro,setOpsSankhyaErro]=useState('');
+  const [opsSankhyaBusca,setOpsSankhyaBusca]=useState('');
+  const [opsSankhyaFiltroSituacao,setOpsSankhyaFiltroSituacao]=useState('TODOS'); // TODOS|C|P
+  const [opsSankhyaFiltroProcesso,setOpsSankhyaFiltroProcesso]=useState('TODOS');
+  const [opSelecionadaDetalhe,setOpSelecionadaDetalhe]=useState(null);
+
+  const fetchOpsSankhya=useCallback(async()=>{
+    if(!supabase)return;
+    setOpsSankhyaLoading(true);setOpsSankhyaErro('');
+    try{
+      const{data,error}=await supabase.from('ordens_producao_sankhya').select('*').order('data_apontamento',{ascending:false});
+      if(error)throw error;
+      setOpsSankhyaItens(data||[]);
+    }catch(e){setOpsSankhyaErro('Erro ao buscar OPs: '+e.message);}
+    finally{setOpsSankhyaLoading(false);}
+  },[supabase]);
+  useEffect(()=>{if(supabase&&aba==='ORDENS_PRODUCAO_SK'&&opsSankhyaItens.length===0)fetchOpsSankhya();},[supabase,aba]);
+
+  const sincronizarOpsSankhya=async()=>{
+    setOpsSankhyaLoading(true);
+    try{
+      const res=await fetch(`${SUPABASE_URL}/functions/v1/ordens-producao-sync`,{method:'POST',headers:{'Content-Type':'application/json','apikey':SUPABASE_KEY},body:JSON.stringify({})});
+      const d=await res.json();
+      if(!d.ok)throw new Error(d.erro);
+      addToast(`Sincronizado! ${d.itens_sincronizados} itens, ${d.ops_distintas} OPs, ${d.com_br} projetos.`);
+      fetchOpsSankhya();
+    }catch(e){addToast('Erro ao sincronizar OPs: '+e.message,'error');setOpsSankhyaLoading(false);}
+  };
+
+  // Agrupa os itens (um por MP consumida) em OPs — uma linha por NUAPO, com a
+  // lista de itens dentro. Isso é o que "saber qual OP de cada projeto" pede.
+  const opsSankhyaAgrupadas=useMemo(()=>{
+    const porNuapo={};
+    opsSankhyaItens.forEach(it=>{
+      if(!porNuapo[it.nuapo])porNuapo[it.nuapo]={
+        nuapo:it.nuapo,br:it.br,situacao:it.situacao_op,processo:it.processo_produtivo,
+        produtoAcabado:it.produto_acabado_descricao,dataApontamento:it.data_apontamento,
+        nroOrdemProducao:it.nro_ordem_producao,itens:[],
+      };
+      porNuapo[it.nuapo].itens.push(it);
+    });
+    return Object.values(porNuapo).sort((a,b)=>(b.dataApontamento||'').localeCompare(a.dataApontamento||''));
+  },[opsSankhyaItens]);
+
+  const opsSankhyaOpcoesProcesso=useMemo(()=>[...new Set(opsSankhyaAgrupadas.map(o=>o.processo).filter(Boolean))].sort(),[opsSankhyaAgrupadas]);
+
+  const opsSankhyaFiltradas=useMemo(()=>{
+    const termo=opsSankhyaBusca.trim().toLowerCase();
+    return opsSankhyaAgrupadas.filter(o=>{
+      if(opsSankhyaFiltroSituacao!=='TODOS'&&o.situacao!==opsSankhyaFiltroSituacao)return false;
+      if(opsSankhyaFiltroProcesso!=='TODOS'&&o.processo!==opsSankhyaFiltroProcesso)return false;
+      if(termo&&!(s(o.br).toLowerCase().includes(termo)||String(o.nuapo).includes(termo)||s(o.produtoAcabado).toLowerCase().includes(termo)||s(o.processo).toLowerCase().includes(termo)))return false;
+      return true;
+    });
+  },[opsSankhyaAgrupadas,opsSankhyaBusca,opsSankhyaFiltroSituacao,opsSankhyaFiltroProcesso]);
+
 
   // Opções de Escopo2 e Mês são construídas a partir do que já existe nos dados —
   // assim o filtro nunca fica desatualizado quando o PCP cadastra um escopo novo.
@@ -1679,11 +1747,11 @@ export default function App(){
   },[oohEfetivosDoMes,produtosDb,estoqueDb]);
 
   // ── Produção por Setor: Ordem de Produção própria, por BR (independente de remessas) ──
-  const SETORES=['VULCANIZACAO','CALDEIRARIA','REVESTIMENTO','CORTE'];
-  const SETOR_LABEL={VULCANIZACAO:'Vulcanização',CALDEIRARIA:'Caldeiraria',REVESTIMENTO:'Revestimento',CORTE:'Corte'};
+  const SETORES=['VULCANIZACAO','CALDEIRARIA','REVESTIMENTO','CORTE','PINTURA'];
+  const SETOR_LABEL={VULCANIZACAO:'Vulcanização',CALDEIRARIA:'Caldeiraria',REVESTIMENTO:'Revestimento',CORTE:'Corte',PINTURA:'Pintura'};
   const [ordensProducao,setOrdensProducao]=useState([]);
   const [setorSelecionado,setSetorSelecionado]=useState('TODOS');
-  const [novaOPForm,setNovaOPForm]=useState({br:'',cliente:'',setor:'',descricao:''});
+  const [novaOPForm,setNovaOPForm]=useState({br:'',cliente:'',setor:'',descricao:'',quantidade:''});
 
   const fetchOrdensProducao=useCallback(async()=>{
     if(!supabase)return;
@@ -1701,11 +1769,12 @@ export default function App(){
       const id=`OP-${Date.now()}`;
       const{error}=await supabase.from('ordens_producao').insert([{
         id,br:s(novaOPForm.br).toUpperCase(),cliente:s(novaOPForm.cliente),setor:novaOPForm.setor,
-        descricao:s(novaOPForm.descricao)||null,status:'FILA',criado_por:s(usuarioLogado?.nome)
+        descricao:s(novaOPForm.descricao)||null,quantidade:novaOPForm.quantidade?Number(novaOPForm.quantidade):null,
+        status:'FILA',criado_por:s(usuarioLogado?.nome)
       }]);
       if(error)throw error;
       addToast('Ordem de produção criada!');
-      setNovaOPForm({br:'',cliente:'',setor:'',descricao:''});
+      setNovaOPForm({br:'',cliente:'',setor:'',descricao:'',quantidade:''});
       fetchOrdensProducao();
     }catch(e){addToast('Erro: '+e.message,'error');}
   };
@@ -1720,6 +1789,19 @@ export default function App(){
       addToast('Status atualizado!');
       fetchOrdensProducao();
     }catch(e){addToast('Erro: '+e.message,'error');}
+  };
+
+  // Campos que existem no quadro físico do PCP: início/término, OE (entregue),
+  // bloqueio (JATO/PRENSA/PIROCLAVE/STWD...) e prioridade — edita direto no card,
+  // sem precisar de outra tela, igual como o PCP faz na parede.
+  const atualizarCampoProducao=async(opId,campo,valor)=>{
+    setOrdensProducao(prev=>prev.map(op=>op.id===opId?{...op,[campo]:valor}:op));
+    try{
+      const{error}=await supabase.from('ordens_producao').update({
+        [campo]:valor,atualizado_em:new Date().toISOString(),atualizado_por:s(usuarioLogado?.nome)
+      }).eq('id',opId);
+      if(error)throw error;
+    }catch(e){addToast('Erro ao salvar: '+e.message,'error');fetchOrdensProducao();}
   };
 
 
@@ -2690,7 +2772,7 @@ export default function App(){
   }),[projAgrup,filtC]);
 
   const navItems=[
-    ...(isAdmin?[{id:'DASHBOARD',label:'Painel Executivo',icon:LayoutDashboard,group:'Visão Geral'},{id:'MESTRA',label:'Mestra PCP',icon:FileSpreadsheet,group:'Visão Geral'},{id:'PLANILHA_MESTRE',label:'Planilha Mestre',icon:FileSpreadsheet,group:'Visão Geral'}]:[]),
+    ...(isAdmin?[{id:'DASHBOARD',label:'Painel Executivo',icon:LayoutDashboard,group:'Visão Geral'},{id:'MESTRA',label:'Mestra PCP',icon:FileSpreadsheet,group:'Visão Geral'},{id:'PLANILHA_MESTRE',label:'Planilha Mestre',icon:FileSpreadsheet,group:'Visão Geral'},{id:'ORDENS_PRODUCAO_SK',label:'OPs (Sankhya)',icon:Factory,group:'Visão Geral'}]:[]),
     ...(isPCP?[{id:'OOH',label:'Planejamento (OOH)',icon:Calendar,group:'PCP'}]:[]),
     ...((isPCP||isExp)?[{id:'PRODUCAO',label:'Produção por Setor',icon:Factory,group:'PCP'}]:[]),
     ...(isPCP?[{id:'NOVA_OP',label:'Nova Remessa',icon:PackageOpen,group:'PCP'},{id:'HISTORICO_PCP',label:'Histórico de Envios',icon:History,group:'PCP'},{id:'UPLOAD_ESTOQUE',label:'Sincronizar ERP',icon:UploadCloud,group:'PCP'}]:[]),
@@ -3743,6 +3825,82 @@ export default function App(){
               </div>
             )}
 
+            {/* ── OPs (Sankhya) — Ordens de Produção reais, com itens de MP ── */}
+            {aba==='ORDENS_PRODUCAO_SK'&&isAdmin&&(
+              <div className="space-y-4">
+                <SectionHeader title="OPs (Sankhya)" subtitle="Ordens de Produção reais — qual OP é de qual projeto, setor (Processo Produtivo) e itens de matéria-prima consumidos"
+                  actions={<Btn variant="dark" size="sm" onClick={sincronizarOpsSankhya} disabled={opsSankhyaLoading}><RefreshCw className={`w-4 h-4 ${opsSankhyaLoading?'animate-spin':''}`}/>Sincronizar Sankhya</Btn>}/>
+
+                {opsSankhyaErro&&<div className="bg-red-50 border border-red-200 text-red-700 text-sm font-semibold rounded-xl px-4 py-3">{opsSankhyaErro}</div>}
+
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                  <ExecKPICard tone="slate" icon={Factory} label="OPs distintas" value={String(opsSankhyaAgrupadas.length)} trendLabel={`${opsSankhyaItens.length} itens de MP`}/>
+                  <ExecKPICard tone="blue" icon={Clock} label="Pendente (em produção)" value={String(opsSankhyaAgrupadas.filter(o=>o.situacao==='P').length)} selected={opsSankhyaFiltroSituacao==='P'} onClick={()=>setOpsSankhyaFiltroSituacao(v=>v==='P'?'TODOS':'P')}/>
+                  <ExecKPICard tone="teal" icon={CheckCircle} label="Concluído" value={String(opsSankhyaAgrupadas.filter(o=>o.situacao==='C').length)} selected={opsSankhyaFiltroSituacao==='C'} onClick={()=>setOpsSankhyaFiltroSituacao(v=>v==='C'?'TODOS':'C')}/>
+                </div>
+
+                <div className="flex items-center gap-3 flex-wrap">
+                  <div className="relative flex-1 min-w-[240px] max-w-sm">
+                    <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2"/>
+                    <input value={opsSankhyaBusca} onChange={e=>setOpsSankhyaBusca(e.target.value)} placeholder="Buscar BR, NUAPO, processo ou produto..."
+                      className="w-full text-sm border border-slate-200 rounded-xl pl-9 pr-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-200"/>
+                  </div>
+                  {opsSankhyaOpcoesProcesso.length>0&&(
+                    <select value={opsSankhyaFiltroProcesso} onChange={e=>setOpsSankhyaFiltroProcesso(e.target.value)} className="text-xs font-bold border border-slate-200 rounded-xl px-3 py-2 bg-white">
+                      <option value="TODOS">Processo/Setor: Todos</option>
+                      {opsSankhyaOpcoesProcesso.map(p=><option key={p} value={p}>{p}</option>)}
+                    </select>
+                  )}
+                  <span className="text-xs text-slate-400 ml-auto">{opsSankhyaFiltradas.length} de {opsSankhyaAgrupadas.length} OPs</span>
+                </div>
+
+                <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
+                  <div className="overflow-x-auto custom-scrollbar" style={{maxHeight:'75vh'}}>
+                    <table className="w-full text-sm">
+                      <thead className="bg-slate-50 border-b border-slate-200 sticky top-0">
+                        <tr className="text-left text-[10px] font-black text-slate-500 uppercase tracking-wider">
+                          <th className="px-3 py-2.5">NUAPO</th>
+                          <th className="px-3 py-2.5">BR</th>
+                          <th className="px-3 py-2.5">Processo/Setor</th>
+                          <th className="px-3 py-2.5">Produto Acabado</th>
+                          <th className="px-3 py-2.5 text-right">Data</th>
+                          <th className="px-3 py-2.5 text-center">Situação</th>
+                          <th className="px-3 py-2.5 text-center">Itens MP</th>
+                          <th className="px-3 py-2.5 text-center">Ação</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100">
+                        {opsSankhyaLoading&&<tr><td colSpan={8} className="p-0"><SkeletonRows linhas={8} colunas={7}/></td></tr>}
+                        {!opsSankhyaLoading&&opsSankhyaFiltradas.length===0&&(
+                          <tr><td colSpan={8} className="px-5 py-10 text-center text-slate-400 font-semibold">Nenhuma OP encontrada.</td></tr>
+                        )}
+                        {!opsSankhyaLoading&&opsSankhyaFiltradas.slice(0,300).map(o=>(
+                          <tr key={o.nuapo} className="hover:bg-slate-50">
+                            <td className="px-3 py-2 font-bold text-slate-700 whitespace-nowrap">{o.nuapo}</td>
+                            <td className="px-3 py-2 font-bold text-indigo-700 whitespace-nowrap">{s(o.br)||'—'}</td>
+                            <td className="px-3 py-2 text-slate-600 max-w-[220px] truncate" title={s(o.processo)}>{s(o.processo)}</td>
+                            <td className="px-3 py-2 text-slate-500 max-w-[260px] truncate" title={s(o.produtoAcabado)}>{s(o.produtoAcabado)}</td>
+                            <td className="px-3 py-2 text-right text-slate-500 whitespace-nowrap">{fmtDt(o.dataApontamento)}</td>
+                            <td className="px-3 py-2 text-center whitespace-nowrap">
+                              <span className={`text-[9px] font-black px-2 py-0.5 rounded-full border ${o.situacao==='C'?'bg-teal-50 text-teal-700 border-teal-200':'bg-blue-50 text-blue-700 border-blue-200'}`}>{o.situacao==='C'?'Concluído':'Pendente'}</span>
+                            </td>
+                            <td className="px-3 py-2 text-center text-slate-500">{o.itens.length}</td>
+                            <td className="px-3 py-2 text-center">
+                              <button onClick={()=>setOpSelecionadaDetalhe(o)} className="text-[11px] font-bold text-indigo-600 hover:underline">Ver itens</button>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+                {opsSankhyaFiltradas.length>300&&<p className="text-[11px] text-slate-400 text-center">Mostrando as 300 primeiras — refine a busca pra ver mais específico.</p>}
+                <p className="text-[11px] text-slate-400">
+                  Fonte: Sankhya (TPRAPO/TPRIPROC/TPRPRC), sincronizado direto — mesma lógica documentada pelo Portal de Engenharia (Situação: C=Concluído, P=Pendente/em produção). <strong>Limitação:</strong> só aparece aqui OP que já teve pelo menos um apontamento de consumo de matéria-prima registrado no Sankhya.
+                </p>
+              </div>
+            )}
+
             {/* ── OOH: Planejamento mensal ─────────────────────────────── */}
             {aba==='OOH'&&(
               <div className="space-y-5">
@@ -3889,7 +4047,7 @@ export default function App(){
 
                 <div className="bg-white rounded-2xl border border-slate-200 p-4">
                   <p className="text-xs font-black text-slate-500 uppercase tracking-wide mb-3">Direcionar novo projeto para produção</p>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3 items-end">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-6 gap-3 items-end">
                     <Field label="Projeto BR"><Inp placeholder="BR14170/26" value={novaOPForm.br} onChange={e=>setNovaOPForm({...novaOPForm,br:e.target.value})} className="uppercase"/></Field>
                     <Field label="Cliente"><Inp placeholder="Opcional" value={novaOPForm.cliente} onChange={e=>setNovaOPForm({...novaOPForm,cliente:e.target.value})}/></Field>
                     <Field label="Setor">
@@ -3898,6 +4056,7 @@ export default function App(){
                         {SETORES.map(st=><option key={st} value={st}>{SETOR_LABEL[st]}</option>)}
                       </Sel>
                     </Field>
+                    <Field label="Qtd. peças"><Inp type="number" placeholder="Opcional" value={novaOPForm.quantidade} onChange={e=>setNovaOPForm({...novaOPForm,quantidade:e.target.value})}/></Field>
                     <Field label="Descrição (opcional)"><Inp placeholder="ex: só as chapas" value={novaOPForm.descricao} onChange={e=>setNovaOPForm({...novaOPForm,descricao:e.target.value})}/></Field>
                     <Btn variant="dark" onClick={criarOrdemProducao}><PackageOpen className="w-4 h-4"/>Direcionar</Btn>
                   </div>
@@ -3911,7 +4070,7 @@ export default function App(){
                   ))}
                 </div>
 
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-4">
                   {SETORES.filter(st=>setorSelecionado==='TODOS'||setorSelecionado===st).map(setor=>{
                     const opsDoSetor=ordensProducao.filter(o=>o.setor===setor&&o.status!=='CONCLUIDO');
                     return(
@@ -3925,13 +4084,44 @@ export default function App(){
                           {opsDoSetor.map(o=>{
                             const stBadge={FILA:{l:'Na Fila',c:'bg-slate-200 text-slate-600'},EM_PRODUCAO:{l:'Em Produção',c:'bg-blue-100 text-blue-700'},PROBLEMA:{l:'Problema',c:'bg-red-100 text-red-700'}}[o.status||'FILA'];
                             return(
-                              <div key={o.id} className={`bg-white rounded-xl border p-3 ${o.status==='PROBLEMA'?'border-red-300':'border-slate-200'}`}>
-                                <p className="text-xs font-bold text-slate-900">{s(o.br)}</p>
+                              <div key={o.id} className={`bg-white rounded-xl border p-3 relative ${o.status==='PROBLEMA'?'border-red-300':o.prioridade?'border-blue-300':'border-slate-200'}`}>
+                                {o.prioridade&&<span className="absolute top-2 right-2 w-2.5 h-2.5 rounded-sm bg-blue-600" title="Prioridade"/>}
+                                <div className="flex items-center gap-1.5">
+                                  <p className="text-xs font-bold text-slate-900">{s(o.br)}</p>
+                                  {o.quantidade&&<span className="text-[10px] font-bold text-slate-400">· {o.quantidade} pçs</span>}
+                                </div>
                                 {o.cliente&&<p className="text-[11px] text-slate-500 truncate">{s(o.cliente)}</p>}
                                 {o.descricao&&<p className="text-[10px] text-slate-400 mt-0.5">{s(o.descricao)}</p>}
-                                <div className="flex items-center gap-1.5 mt-2 flex-wrap">
+
+                                {/* Início/Término — igual ao quadro físico (INÍCIO:/TERM:) */}
+                                <div className="grid grid-cols-2 gap-1.5 mt-2">
+                                  <label className="text-[9px] font-black text-slate-400 uppercase block">
+                                    Início
+                                    <input type="date" value={o.data_inicio||''} onChange={e=>atualizarCampoProducao(o.id,'data_inicio',e.target.value||null)}
+                                      className="w-full text-[11px] font-bold text-slate-700 border border-slate-200 rounded px-1 py-0.5 mt-0.5"/>
+                                  </label>
+                                  <label className="text-[9px] font-black text-slate-400 uppercase block">
+                                    Térm.
+                                    <input type="date" value={o.data_termino||''} onChange={e=>atualizarCampoProducao(o.id,'data_termino',e.target.value||null)}
+                                      className="w-full text-[11px] font-bold text-slate-700 border border-slate-200 rounded px-1 py-0.5 mt-0.5"/>
+                                  </label>
+                                </div>
+
+                                {/* OE (OP Entregue), Prioridade e Bloqueio — igual às marcações do quadro */}
+                                <div className="flex items-center gap-2 mt-2 flex-wrap">
+                                  <button onClick={()=>atualizarCampoProducao(o.id,'op_entregue',!o.op_entregue)}
+                                    className={`text-[9px] font-black px-2 py-0.5 rounded-full border ${o.op_entregue?'bg-teal-50 text-teal-700 border-teal-200':'bg-slate-50 text-slate-400 border-slate-200'}`}>
+                                    OE {o.op_entregue?'✓':''}
+                                  </button>
+                                  <button onClick={()=>atualizarCampoProducao(o.id,'prioridade',!o.prioridade)}
+                                    className={`text-[9px] font-black px-2 py-0.5 rounded-full border ${o.prioridade?'bg-blue-50 text-blue-700 border-blue-200':'bg-slate-50 text-slate-400 border-slate-200'}`}>
+                                    Prioridade
+                                  </button>
                                   <span className={`text-[9px] font-black px-2 py-0.5 rounded-full ${stBadge.c}`}>{stBadge.l}</span>
                                 </div>
+                                <input value={o.bloqueio||''} onChange={e=>atualizarCampoProducao(o.id,'bloqueio',e.target.value||null)} placeholder="Bloqueio (ex: JATO, PRENSA, PIROCLAVE)"
+                                  className={`w-full text-[11px] font-bold mt-1.5 rounded-lg px-2 py-1 border ${o.bloqueio?'bg-red-50 text-red-700 border-red-200':'bg-slate-50 text-slate-400 border-slate-200'}`}/>
+
                                 {o.observacao&&<p className="text-[10px] text-red-600 font-semibold mt-1.5 bg-red-50 rounded-lg px-2 py-1">{o.observacao}</p>}
                                 <div className="flex gap-1 mt-2">
                                   {o.status!=='EM_PRODUCAO'&&<button onClick={()=>atualizarStatusProducao(o.id,'EM_PRODUCAO')} className="text-[9px] font-bold bg-blue-50 text-blue-700 px-2 py-1 rounded-lg hover:bg-blue-100">Iniciar</button>}
@@ -6468,6 +6658,24 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
             />
           </div>
         )}
+      </Modal>
+
+      {/* ── MODAL: Itens de matéria-prima de uma OP ─────────────────────── */}
+      <Modal open={!!opSelecionadaDetalhe} onClose={()=>setOpSelecionadaDetalhe(null)} title={`OP ${opSelecionadaDetalhe?.nuapo} — ${s(opSelecionadaDetalhe?.br)||'sem projeto'}`} subtitle={`${s(opSelecionadaDetalhe?.processo)} · ${s(opSelecionadaDetalhe?.produtoAcabado)}`} maxWidth="max-w-2xl">
+        <div className="space-y-2">
+          {(opSelecionadaDetalhe?.itens||[]).map((it,i)=>(
+            <div key={i} className="bg-slate-50 border border-slate-100 rounded-xl px-4 py-3 flex items-center justify-between gap-3">
+              <div className="min-w-0">
+                <p className="text-sm font-bold text-slate-900 truncate">{s(it.materia_prima_descricao)||s(it.cod_materia_prima)}</p>
+                <p className="text-xs text-slate-500 mt-0.5">Código: {s(it.cod_materia_prima)}</p>
+              </div>
+              <span className="text-sm font-black text-slate-700 whitespace-nowrap">{it.quantidade_mp}</span>
+            </div>
+          ))}
+          {(!opSelecionadaDetalhe?.itens||opSelecionadaDetalhe.itens.length===0)&&(
+            <p className="text-sm text-slate-400 text-center py-6">Nenhum item encontrado.</p>
+          )}
+        </div>
       </Modal>
 
       {/* ── MODAL: Itens aguardando compra/importação ───────────────────── */}
