@@ -349,6 +349,7 @@ const OOHProjetoRow=React.memo(function OOHProjetoRow({p,onAndamento,onReprogram
       <td className="px-3 py-2 font-bold text-indigo-700 whitespace-nowrap">
         {p.br}
         {p.precisaEntrarNaEsteira&&<span className="ml-1.5 text-red-500" title="Faltam 20 dias ou menos pro CP — colocar na esteira de fabricação">⚠</span>}
+        {p.jaProduzidoViaEstoque&&<span className="ml-1.5 text-[9px] font-black text-teal-700 bg-teal-50 border border-teal-200 rounded-full px-1.5 py-0.5" title="Já existe OP concluída pra este BR (direto ou vínculo confirmado) — alerta de esteira desligado">✓ produzido</span>}
       </td>
       <td className="px-3 py-2 text-slate-700 max-w-[160px] truncate" title={txt(p.cliente)}>{txt(p.cliente)}</td>
       <td className="px-3 py-2 text-slate-500 max-w-[120px] truncate" title={txt(p.vendedor)}>{txt(p.vendedor)}</td>
@@ -1079,7 +1080,7 @@ export default function App(){
     }catch(e){setOpsSankhyaErro('Erro ao buscar OPs: '+e.message);}
     finally{setOpsSankhyaLoading(false);}
   },[supabase]);
-  useEffect(()=>{if(supabase&&(aba==='ORDENS_PRODUCAO_SK'||aba==='PRODUCAO')&&opsSankhyaItens.length===0)fetchOpsSankhya();},[supabase,aba]);
+  useEffect(()=>{if(supabase&&(aba==='ORDENS_PRODUCAO_SK'||aba==='PRODUCAO'||aba==='OOH')&&opsSankhyaItens.length===0)fetchOpsSankhya();},[supabase,aba]);
 
   const sincronizarOpsSankhya=async()=>{
     setOpsSankhyaLoading(true);
@@ -1726,8 +1727,22 @@ export default function App(){
 
   useEffect(()=>{if(supabase&&aba==='OOH'&&oohProjetos.length===0)fetchOOH();},[supabase,aba]);
 
+  // Cruza o OOH com a produção real do Sankhya: se já existe OP concluída pra esse
+  // BR — direto (cadeia formal) OU por vínculo confirmado manualmente na aba OPs
+  // (Sankhya) — não faz sentido continuar alertando "precisa entrar na esteira",
+  // mesmo que a produção tenha sido "solta" (pra estoque, sem NUNOTA vinculado).
+  // Nunca usa sugestão pendente (não confirmada) pra isso — só o que já é considerado
+  // produção confirmada.
+  const oohProjetosComProducao=useMemo(()=>{
+    const brsProduzidos=new Set(opsSankhyaAgrupadas.filter(o=>o.situacao==='C'&&o.brEfetivo).map(o=>o.brEfetivo));
+    return oohProjetos.map(p=>{
+      const jaProduzidoViaEstoque=brsProduzidos.has(p.br);
+      return{...p,jaProduzidoViaEstoque,precisaEntrarNaEsteira:p.precisaEntrarNaEsteira&&!jaProduzidoViaEstoque};
+    });
+  },[oohProjetos,opsSankhyaAgrupadas]);
+
   // Projetos do mês selecionado + atrasados (não atendidos de meses anteriores)
-  const oohDoMes=useMemo(()=>oohProjetos.filter(p=>p.mesPrevisto===oohMesRef&&!p.atendido),[oohProjetos,oohMesRef]);
+  const oohDoMes=useMemo(()=>oohProjetosComProducao.filter(p=>p.mesPrevisto===oohMesRef&&!p.atendido),[oohProjetosComProducao,oohMesRef]);
 
   // Status de andamento (A Iniciar/Em Andamento/Concluído/Faturado) é campo manual do
   // PCP — mesmo vocabulário usado na planilha OOH. Atualiza no banco e localmente.
@@ -1755,7 +1770,7 @@ export default function App(){
     });
     return Object.values(grupos).sort((a,b)=>(a.semana===b.semana?0:a.semana<b.semana?-1:1));
   },[oohDoMes]);
-  const oohAtrasados=useMemo(()=>oohProjetos.filter(p=>p.mesPrevisto<oohMesRef&&!p.atendido),[oohProjetos,oohMesRef]);
+  const oohAtrasados=useMemo(()=>oohProjetosComProducao.filter(p=>p.mesPrevisto<oohMesRef&&!p.atendido),[oohProjetosComProducao,oohMesRef]);
 
   // Resumo do mês pros cards do topo — visão executiva antes de entrar no detalhe
   const oohResumoMes=useMemo(()=>{
@@ -1771,10 +1786,10 @@ export default function App(){
   // Projetos "efetivos" do mês: os previstos originalmente (que não foram reprogramados pra fora)
   // + os antecipados de outros meses pra este mês
   const oohEfetivosDoMes=useMemo(()=>{
-    const previstos=oohProjetos.filter(p=>p.mesPrevisto===oohMesRef&&!p.atendido&&p.plano?.status!=='REPROGRAMADO');
-    const antecipados=oohProjetos.filter(p=>p.mesPrevisto!==oohMesRef&&!p.atendido&&p.plano?.status==='ANTECIPADO'&&s(p.plano?.nova_data).slice(0,7)===oohMesRef);
+    const previstos=oohProjetosComProducao.filter(p=>p.mesPrevisto===oohMesRef&&!p.atendido&&p.plano?.status!=='REPROGRAMADO');
+    const antecipados=oohProjetosComProducao.filter(p=>p.mesPrevisto!==oohMesRef&&!p.atendido&&p.plano?.status==='ANTECIPADO'&&s(p.plano?.nova_data).slice(0,7)===oohMesRef);
     return[...previstos,...antecipados];
-  },[oohProjetos,oohMesRef]);
+  },[oohProjetosComProducao,oohMesRef]);
 
   // Previsão de consumo de matéria-prima: soma (quantidade do item × qtd de MP por unidade, via composição) por código de MP
   const previsaoMP=useMemo(()=>{
