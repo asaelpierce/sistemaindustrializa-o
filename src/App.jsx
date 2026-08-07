@@ -5,7 +5,7 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import {
   Search, Upload, Trash2, Database, AlertCircle, FileSpreadsheet,
-  CheckCircle, RefreshCcw, Loader2, Cloud, CloudOff, Truck, MapPin, Check,
+  CheckCircle, RefreshCcw, Loader2, Cloud, CloudOff, Truck, MapPin, Check, Maximize2, Minimize2,
   PackageOpen, ArrowRight, LayoutDashboard, History, UploadCloud, Users,
   Clock, ArrowLeftRight, ListChecks, Lock, LogOut, User, Shield,
   UserPlus, Settings, XCircle, Info, FileSearch, Construction, Edit3,
@@ -138,9 +138,16 @@ function CartesianChartE({data=[],layout="horizontal",containerWidth=400,contain
               });
             })}
             {series.filter(s=>s.type==='line').map((s,si)=>{
-              const pts=data.map((item,i)=>{const v=parseFloat(item[s.dataKey])||0;return{x:gCC(i),y:gY(v,s.yAxisId),v};});
-              const d=pts.map((p,i)=>`${i===0?'M':'L'} ${p.x} ${p.y}`).join(' ');
-              return<g key={`l-${si}`}><path d={d} fill="none" stroke={s.stroke||ENT_COLORS[si]} strokeWidth={s.props.strokeWidth||2.5} strokeLinecap="round" strokeLinejoin="round"/>{pts.map((p,i)=><circle key={i} cx={p.x} cy={p.y} r={4} fill={s.stroke||ENT_COLORS[si]} stroke="#fff" strokeWidth={2}/>)}</g>;
+              const raw=data.map((item,i)=>{const val=item[s.dataKey];const vazio=val===null||val===undefined||val==='';const v=vazio?null:parseFloat(val);return{x:gCC(i),y:vazio?null:gY(v,s.yAxisId),v};});
+              const pts=raw.filter(p=>p.y!==null);
+              // Corta a linha nos pontos sem valor (null) em vez de despencar pra zero —
+              // importante pro "Realizado" parar na semana atual sem criar um degrau falso.
+              let d='';let comecouTraco=false;
+              raw.forEach(p=>{
+                if(p.y===null){comecouTraco=false;return;}
+                d+=`${comecouTraco?'L':'M'} ${p.x} ${p.y} `;comecouTraco=true;
+              });
+              return<g key={`l-${si}`}><path d={d} fill="none" stroke={s.stroke||ENT_COLORS[si]} strokeWidth={s.props.strokeWidth||2.5} strokeLinecap="round" strokeLinejoin="round"/>{(s.props.dot===false?[]:pts).map((p,i)=><circle key={i} cx={p.x} cy={p.y} r={4} fill={s.stroke||ENT_COLORS[si]} stroke="#fff" strokeWidth={2}/>)}</g>;
             })}
           </>
         ):(
@@ -334,7 +341,7 @@ function SkeletonRows({linhas=6,colunas=6}){
 
 const OOHProjetoRow=React.memo(function OOHProjetoRow({p,onAndamento,onReprogramar}){
   const txt=v=>(v===null||v===undefined)?'':String(v);
-  const dt=v=>v?new Date(v).toLocaleDateString('pt-BR'):'—';
+  const dt=v=>{if(!v)return'—';const m=String(v).match(/^(\d{4})-(\d{2})-(\d{2})/);return m?`${m[3]}/${m[2]}/${m[1]}`:new Date(v).toLocaleDateString('pt-BR');};
   const moeda=v=>{const n=Number(v)||0;return n.toLocaleString('pt-BR',{style:'currency',currency:'BRL',maximumFractionDigits:0});};
   const sitCfg={PENDENTE:{l:'Pendente',c:'bg-orange-50 text-orange-700 border-orange-200'},CANCELADO:{l:'Cancelado',c:'bg-slate-200 text-slate-700 border-slate-300'}}[p.situacaoEspecial?.status];
   return(
@@ -662,7 +669,7 @@ export default function App(){
   const s=v=>(v===null||v===undefined)?'':String(v);
   const fmtD=(v,u='')=>{if(v===undefined||v===null||isNaN(v)||v==='')return'—';const n=parseFloat(v);const st=Number.isInteger(n)?n.toString():n.toFixed(2).replace('.',',');return u?`${st} ${u}`:st;};
   const fmtMoeda=v=>{const n=Number(v)||0;return n.toLocaleString('pt-BR',{style:'currency',currency:'BRL',maximumFractionDigits:0});};
-  const fmtDt=v=>v?new Date(v).toLocaleDateString('pt-BR'):'—';
+  const fmtDt=v=>{if(!v)return'—';const m=String(v).match(/^(\d{4})-(\d{2})-(\d{2})/);return m?`${m[3]}/${m[2]}/${m[1]}`:new Date(v).toLocaleDateString('pt-BR');};
   // Semana ISO do ano (padrão europeu, mesmo usado pelo Excel) — pra bater com a
   // granularidade "SEMANA 02, 03..." que o PCP usa na planilha de programação.
   const semanaISODoAno=iso=>{
@@ -762,6 +769,7 @@ export default function App(){
   const [mestraNotasSel,setMestraNotasSel]=useState(null); // BR selecionado pra ver detalhamento de notas
   const [mestraSituacaoModal,setMestraSituacaoModal]=useState(null); // pedido sendo marcado como pendente/cancelado/desconsiderar
   const [mestraSituacaoForm,setMestraSituacaoForm]=useState({status:'PENDENTE',motivo:''});
+  const [importacaoDetalheSel,setImportacaoDetalheSel]=useState(null); // BR selecionado pra ver itens aguardando importação
   const salvarSituacaoEspecial=async()=>{
     if(!mestraSituacaoModal)return;
     if(!mestraSituacaoForm.motivo.trim())return addToast('Informe o motivo.','error');
@@ -992,18 +1000,22 @@ export default function App(){
 
     const hojePM=new Date().toISOString().slice(0,10);
 
+    const subtrairDiasISO=(iso,dias)=>{if(!iso)return null;const d=new Date(iso+'T00:00:00Z');d.setUTCDate(d.getUTCDate()-dias);return d.toISOString().slice(0,10);};
+
     return Object.values(porBR).map(g=>{
       const manual=planilhaMestreCampos[g.br]||{};
       const dataEntregaCP=g.datasEntregaCP.sort()[0]||null; // mais antiga em aberto
       const dataReferencia=g.datasReferencia.sort()[0]||dataEntregaCP; // reprogramada, se houver
       const mes=dataReferencia?MESES_PT[new Date(dataReferencia+'T00:00:00Z').getUTCMonth()]:'—';
       const semana=dataReferencia?semanaISODoAno(dataReferencia):null;
-      // STATUS OP é manual (o usuário define depois de imprimir e entregar a
-      // ordem de produção pro almoxarifado) — não é derivado de quantidade entregue.
-      const statusOP=manual.status_op||'NAO_ENTREGUE';
-      const percentualFaturado=g.valorTotal>0?g.valorFaturadoQtd/g.valorTotal:0;
       // FATURAMENTO: pega a nota mais recente de fato (não um VLOOKUP que só acha a primeira)
       const dataFaturamento=g.notas[0]?.dataFaturamento||null;
+      // Se já existe nota emitida, o Sankhya já prova que a OP saiu pro almoxarifado —
+      // a planilha "anda de acordo com o Sankhya" e sobrescreve o manual automaticamente.
+      const jaFaturado=!!dataFaturamento;
+      const statusOP=jaFaturado?'ENTREGUE':(manual.status_op||'NAO_ENTREGUE');
+      const andamento=jaFaturado?'FATURADO':(manual.andamento||'A_INICIAR');
+      const percentualFaturado=g.valorTotal>0?g.valorFaturadoQtd/g.valorTotal:0;
       const indicador=(dataFaturamento&&dataEntregaCP)?Math.round((new Date(dataFaturamento)-new Date(dataEntregaCP))/86400000):null;
       let descricaoIndicador='Não foi faturado';
       if(indicador!==null){
@@ -1011,13 +1023,17 @@ export default function App(){
         else if(indicador===0)descricaoIndicador='Atendeu a data do CP';
         else descricaoIndicador='Antecipou';
       }
+      // Início do Projeto = Estimativa de Faturamento (Data Referência) − 20 dias.
+      // É a data-limite pra entrar na esteira de fabricação — usada pra ordenar a tabela
+      // por urgência (quem já devia ter começado aparece primeiro).
+      const dataInicioProjeto=dataReferencia?subtrairDiasISO(dataReferencia,20):null;
       return{
-        ...g,dataEntregaCP,dataReferencia,mes,semana,statusOP,percentualFaturado,dataFaturamento,indicador,descricaoIndicador,
+        ...g,dataEntregaCP,dataReferencia,dataInicioProjeto,mes,semana,statusOP,andamento:manual.andamento,andamentoEfetivo:andamento,jaFaturado,percentualFaturado,dataFaturamento,indicador,descricaoIndicador,
         status:g.situacaoEspecial?.status||null,
         descricaoResumo:g.descricoes.slice(0,1).join(', ')||'—',
-        andamento:manual.andamento||'A_INICIAR',definicao:manual.definicao||'',escopo2:manual.escopo2||'',observacao:manual.observacao||'',
+        definicao:manual.definicao||'',escopo2:manual.escopo2||'',observacao:manual.observacao||'',
       };
-    }).sort((a,b)=>(a.dataReferencia||'9999').localeCompare(b.dataReferencia||'9999'));
+    }).sort((a,b)=>(a.dataInicioProjeto||'9999').localeCompare(b.dataInicioProjeto||'9999'));
   },[mestraDb,planilhaMestreCampos]);
 
   // Busca + filtros + paginação — com ~500 projetos, montar todas as linhas de uma vez
@@ -1026,6 +1042,7 @@ export default function App(){
   const [planilhaMestreFiltros,setPlanilhaMestreFiltros]=useState({statusOp:'TODOS',andamento:'TODOS',escopo2:'TODOS',situacao:'TODOS',mes:'TODOS'});
   const [planilhaMestrePagina,setPlanilhaMestrePagina]=useState(1);
   const [planilhaMestrePorPagina,setPlanilhaMestrePorPagina]=useState(60);
+  const [planilhaMestreExpandida,setPlanilhaMestreExpandida]=useState(false);
 
   // Opções de Escopo2 e Mês são construídas a partir do que já existe nos dados —
   // assim o filtro nunca fica desatualizado quando o PCP cadastra um escopo novo.
@@ -1038,7 +1055,7 @@ export default function App(){
     return planilhaMestreLinhas.filter(r=>{
       if(termo&&!(r.br.toLowerCase().includes(termo)||s(r.cliente).toLowerCase().includes(termo)||s(r.vendedor).toLowerCase().includes(termo)||s(r.escopo2).toLowerCase().includes(termo)))return false;
       if(f.statusOp!=='TODOS'&&r.statusOP!==f.statusOp)return false;
-      if(f.andamento!=='TODOS'&&r.andamento!==f.andamento)return false;
+      if(f.andamento!=='TODOS'&&r.andamentoEfetivo!==f.andamento)return false;
       if(f.escopo2!=='TODOS'&&r.escopo2!==f.escopo2)return false;
       if(f.mes!=='TODOS'&&r.mes!==f.mes)return false;
       if(f.situacao!=='TODOS'){
@@ -1061,12 +1078,12 @@ export default function App(){
   // ── Faturamento Semanal: Meta x Realizado ──────────────────────────────
   // Meta = trajetória linear (100% dividido pelo número de semanas do ano).
   // Realizado = % acumulado de fato faturado até aquela semana.
+  const META_FATURAMENTO_ANUAL_PCP=33500000;
+
   const faturamentoSemanalAcompanhamento=useMemo(()=>{
     const anoRef=new Date().getFullYear();
     const totalSemanas=semanaISODoAno(`${anoRef}-12-28`)||52; // 28/dez está sempre na última semana ISO do ano
     const semanaAtual=semanaISODoAno(new Date().toISOString().slice(0,10));
-
-    const totalEsperado=planilhaMestreLinhas.reduce((a,r)=>a+r.valorTotal,0);
 
     const valorPorSemana=Array(totalSemanas+1).fill(0); // índice 1..totalSemanas
     planilhaMestreLinhas.forEach(r=>{
@@ -1086,11 +1103,11 @@ export default function App(){
       pontos.push({
         semana:sem,
         name:`S${sem}`,
-        Meta:Number(((sem/totalSemanas)*100).toFixed(1)),
-        Realizado:sem<=semanaAtual?Number((totalEsperado>0?(acumulado/totalEsperado)*100:0).toFixed(1)):null,
+        Meta:Math.round((sem/totalSemanas)*META_FATURAMENTO_ANUAL_PCP),
+        Realizado:sem<=semanaAtual?Math.round(acumulado):null,
       });
     }
-    return{pontos,totalEsperado,semanaAtual,totalSemanas,anoRef};
+    return{pontos,totalEsperado:META_FATURAMENTO_ANUAL_PCP,acumuladoAtual:Math.round(acumulado),semanaAtual,totalSemanas,anoRef};
   },[planilhaMestreLinhas]);
 
   // Gráfico por MÊS DE ENTREGA: mostra a saúde do compromisso, não o valor comercial
@@ -3363,7 +3380,7 @@ export default function App(){
                                         return(
                                           <span className="inline-flex items-center gap-1 flex-wrap">
                                             <span className={`text-[9px] font-black px-2 py-0.5 rounded-full border ${cfg.c}`} title={r.situacaoEspecial?.motivo||''}>{cfg.l}</span>
-                                            {impCfg&&<span className={`text-[9px] font-black px-2 py-0.5 rounded-full border ${impCfg.c}`} title={imp.itens.map(i=>`${s(i.fornecedor)}: ${s(i.descricao_produto)}`).join(' · ')}>{impCfg.l}</span>}
+                                            {impCfg&&<button onClick={()=>setImportacaoDetalheSel(imp)} className={`text-[9px] font-black px-2 py-0.5 rounded-full border ${impCfg.c}`}>{impCfg.l}</button>}
                                             <button onClick={()=>{setMestraSituacaoModal(r);setMestraSituacaoForm({status:r.situacaoEspecial?.status||'PENDENTE',motivo:r.situacaoEspecial?.motivo||''});}} title="Marcar como Pendente/Cancelado/Desconsiderar" aria-label="Marcar situação especial deste pedido" className="text-slate-300 hover:text-slate-600">
                                               <Edit3 className="w-3 h-3"/>
                                             </button>
@@ -3502,25 +3519,25 @@ export default function App(){
 
                 {/* Faturamento Semanal — Meta x Realizado: onde deveríamos estar x onde estamos */}
                 <div className="bg-white rounded-2xl border border-slate-200 p-6">
-                  <div className="flex items-center justify-between mb-1 flex-wrap gap-2">
-                    <p className="text-sm font-black text-slate-800">Faturamento Semanal {faturamentoSemanalAcompanhamento.anoRef} — Meta x Realizado</p>
-                    <div className="flex items-center gap-3 text-[10px] font-bold text-slate-500">
-                      <span className="flex items-center gap-1.5"><span className="w-2.5 h-0.5 bg-slate-400"/>Meta (linear)</span>
-                      <span className="flex items-center gap-1.5"><span className="w-2.5 h-0.5 bg-indigo-600"/>Realizado</span>
+                  <div className="flex items-center justify-between mb-1 flex-wrap gap-3">
+                    <div>
+                      <p className="text-base font-black text-slate-800">Faturamento Semanal {faturamentoSemanalAcompanhamento.anoRef} — Meta x Realizado</p>
+                      <p className="text-[11px] text-slate-400 mt-0.5">Meta do PCP: {fmtMoeda(META_FATURAMENTO_ANUAL_PCP)}/ano, dividida linearmente pelas {faturamentoSemanalAcompanhamento.totalSemanas} semanas. Realizado = valor líquido acumulado das notas emitidas. Semana atual: {faturamentoSemanalAcompanhamento.semanaAtual}.</p>
+                    </div>
+                    <div className="flex items-center gap-4 text-[11px] font-bold text-slate-500">
+                      <span className="flex items-center gap-1.5"><span className="w-3 h-[3px] rounded-full bg-red-600"/>Meta</span>
+                      <span className="flex items-center gap-1.5"><span className="w-3 h-[3px] rounded-full bg-blue-600"/>Realizado</span>
                     </div>
                   </div>
-                  <p className="text-[11px] text-slate-400 mb-4">
-                    Meta = 100% dividido por {faturamentoSemanalAcompanhamento.totalSemanas} semanas do ano (trajetória linear). Realizado = % acumulado de fato faturado (valor líquido das notas) sobre o total da carteira ({fmtMoeda(faturamentoSemanalAcompanhamento.totalEsperado)}). Estamos na semana {faturamentoSemanalAcompanhamento.semanaAtual}.
-                  </p>
-                  <div style={{height:280}}>
+                  <div style={{height:420}}>
                     <ResponsiveContainer width="100%" height="100%">
-                      <LineChart data={faturamentoSemanalAcompanhamento.pontos} margin={{top:10,right:10,left:0,bottom:0}}>
+                      <LineChart data={faturamentoSemanalAcompanhamento.pontos} margin={{top:15,right:15,left:0,bottom:0}}>
                         <CartesianGrid strokeDasharray="3 3" vertical={false}/>
-                        <XAxis dataKey="name" tick={{fontSize:9,fontWeight:'600',fill:'#64748b'}} interval={Math.max(0,Math.floor(faturamentoSemanalAcompanhamento.totalSemanas/16))}/>
-                        <YAxis tickFormatter={v=>`${v}%`} tick={{fontSize:10,fontWeight:'600',fill:'#64748b'}}/>
-                        <Tooltip formatter={v=>v!==null?`${v}%`:'—'}/>
-                        <Line type="monotone" dataKey="Meta" stroke="#94a3b8" strokeWidth={2} name="Meta"/>
-                        <Line type="monotone" dataKey="Realizado" stroke="#4f46e5" strokeWidth={2.5} name="Realizado"/>
+                        <XAxis dataKey="name" tick={{fontSize:10,fontWeight:'700',fill:'#64748b'}} interval={Math.max(0,Math.floor(faturamentoSemanalAcompanhamento.totalSemanas/20))}/>
+                        <YAxis tickFormatter={v=>`${(v/1000000).toFixed(1)}M`} tick={{fontSize:11,fontWeight:'700',fill:'#64748b'}} width={50}/>
+                        <Tooltip formatter={v=>v!==null?fmtMoeda(v):'—'}/>
+                        <Line type="monotone" dataKey="Meta" stroke="#dc2626" strokeWidth={3} dot={false} name="Meta" connectNulls/>
+                        <Line type="monotone" dataKey="Realizado" stroke="#2563eb" strokeWidth={3.5} dot={false} name="Realizado" connectNulls/>
                       </LineChart>
                     </ResponsiveContainer>
                   </div>
@@ -3529,9 +3546,14 @@ export default function App(){
                     if(!pontoAtual||pontoAtual.Realizado===null)return null;
                     const gap=pontoAtual.Realizado-pontoAtual.Meta;
                     return(
-                      <p className={`text-xs font-bold mt-3 ${gap>=0?'text-teal-700':'text-red-700'}`}>
-                        {gap>=0?`${gap.toFixed(1)}pp à frente da meta`:`${Math.abs(gap).toFixed(1)}pp atrás da meta`} — meta na semana {faturamentoSemanalAcompanhamento.semanaAtual}: {pontoAtual.Meta.toFixed(1)}%, realizado: {pontoAtual.Realizado.toFixed(1)}%.
-                      </p>
+                      <div className={`flex items-center justify-between mt-4 pt-4 border-t border-slate-100`}>
+                        <p className={`text-sm font-black ${gap>=0?'text-teal-700':'text-red-700'}`}>
+                          {gap>=0?`${fmtMoeda(gap)} à frente da meta`:`${fmtMoeda(Math.abs(gap))} atrás da meta`}
+                        </p>
+                        <p className="text-xs text-slate-500 font-semibold">
+                          Meta na semana {faturamentoSemanalAcompanhamento.semanaAtual}: <strong className="text-red-600">{fmtMoeda(pontoAtual.Meta)}</strong> · Realizado: <strong className="text-blue-600">{fmtMoeda(pontoAtual.Realizado)}</strong>
+                        </p>
+                      </div>
                     );
                   })()}
                 </div>
@@ -3573,10 +3595,13 @@ export default function App(){
                     <button onClick={()=>setPlanilhaMestreFiltros({statusOp:'TODOS',andamento:'TODOS',escopo2:'TODOS',situacao:'TODOS',mes:'TODOS'})} className="text-xs font-bold text-red-600 hover:underline">Limpar filtros</button>
                   )}
                   <span className="text-xs text-slate-400 ml-auto">{planilhaMestreFiltrada.length} de {planilhaMestreLinhas.length} projetos</span>
+                  <button onClick={()=>setPlanilhaMestreExpandida(v=>!v)} className="flex items-center gap-1.5 text-xs font-bold text-indigo-600 border border-indigo-200 bg-indigo-50 rounded-full px-3 py-1.5 hover:bg-indigo-100">
+                    {planilhaMestreExpandida?<><Minimize2 className="w-3.5 h-3.5"/>Recolher</>:<><Maximize2 className="w-3.5 h-3.5"/>Expandir tabela</>}
+                  </button>
                 </div>
 
                 <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
-                  <div className="overflow-x-auto custom-scrollbar" style={{maxHeight:'75vh'}}>
+                  <div className="overflow-x-auto custom-scrollbar" style={{maxHeight:planilhaMestreExpandida?'none':'75vh'}}>
                     <table className="text-sm border-collapse" style={{minWidth:'2400px'}}>
                       <thead className="bg-slate-50 border-b border-slate-200 sticky top-0 z-10">
                         <tr className="text-left text-[9px] font-black text-slate-500 uppercase tracking-wider">
@@ -3592,6 +3617,7 @@ export default function App(){
                           <th className="px-2 py-2" style={{minWidth:110}}>Escopo2</th>
                           <th className="px-2 py-2 text-center" style={{minWidth:90}}>Status</th>
                           <th className="px-2 py-2 text-right" style={{minWidth:90}}>Estimativa Fat. PCP</th>
+                          <th className="px-2 py-2 text-right bg-amber-50" style={{minWidth:90}} title="Estimativa de faturamento − 20 dias — data-limite pra entrar na esteira de fabricação">Início do Projeto</th>
                           <th className="px-2 py-2 text-center" style={{minWidth:110}}>Andamento</th>
                           <th className="px-2 py-2 text-right" style={{minWidth:80}}>Data Entrega CP</th>
                           <th className="px-2 py-2 text-right" style={{minWidth:80}}>Data Referência</th>
@@ -3608,10 +3634,10 @@ export default function App(){
                       </thead>
                       <tbody className="divide-y divide-slate-100">
                         {(mestraLoading||planilhaMestreLoading)&&(
-                          <tr><td colSpan={24} className="p-0"><SkeletonRows linhas={8} colunas={9}/></td></tr>
+                          <tr><td colSpan={25} className="p-0"><SkeletonRows linhas={8} colunas={9}/></td></tr>
                         )}
                         {!mestraLoading&&planilhaMestreFiltrada.length===0&&(
-                          <tr><td colSpan={24} className="px-5 py-10 text-center text-slate-400 font-semibold">{planilhaMestreBusca?'Nenhum resultado pra essa busca.':'Nenhum projeto encontrado.'}</td></tr>
+                          <tr><td colSpan={25} className="px-5 py-10 text-center text-slate-400 font-semibold">{planilhaMestreBusca?'Nenhum resultado pra essa busca.':'Nenhum projeto encontrado.'}</td></tr>
                         )}
                         {!mestraLoading&&planilhaMestrePaginada.map(r=>{
                           const indCfg={
@@ -3624,15 +3650,21 @@ export default function App(){
                             <tr key={r.br} className="hover:bg-slate-50">
                               <td className="px-2 py-1.5 font-bold text-indigo-700 whitespace-nowrap sticky left-0 bg-white hover:bg-slate-50">
                                 {r.br}{r.semPedidoSincronizado&&<span className="ml-1 text-[8px] text-violet-500" title="Sem pedido sincronizado">•</span>}
-                                {importacaoPorBR[r.br]&&<span className={`ml-1 ${importacaoPorBR[r.br].prioridadeMin<=2?'text-red-500':'text-amber-500'}`} title={`Aguardando importação de MP${importacaoPorBR[r.br].maiorAtrasoEmbarque>0?` — ${importacaoPorBR[r.br].maiorAtrasoEmbarque}d de atraso no embarque`:''}`}>⏳</span>}
+                                {importacaoPorBR[r.br]&&(
+                                  <button onClick={()=>setImportacaoDetalheSel(importacaoPorBR[r.br])} className={`ml-1 ${importacaoPorBR[r.br].prioridadeMin<=2?'text-red-500':'text-amber-500'}`} title={`Ver itens aguardando importação${importacaoPorBR[r.br].maiorAtrasoEmbarque>0?` — ${importacaoPorBR[r.br].maiorAtrasoEmbarque}d de atraso no embarque`:''}`}>⏳</button>
+                                )}
                               </td>
                               <td className="px-2 py-1.5 text-slate-700 truncate max-w-[160px]" title={s(r.cliente)}>{s(r.cliente)}</td>
                               <td className="px-2 py-1.5 text-center whitespace-nowrap">
-                                <button onClick={()=>salvarCampoManualBR(r.br,'status_op',r.statusOP==='ENTREGUE'?'NAO_ENTREGUE':'ENTREGUE')}
-                                  title="Clique pra alternar — depende de imprimir e entregar a OP pro almoxarifado"
-                                  className={`text-[9px] font-black px-1.5 py-0.5 rounded-full border cursor-pointer transition-colors ${r.statusOP==='ENTREGUE'?'bg-teal-50 text-teal-700 border-teal-200 hover:bg-teal-100':'bg-slate-100 text-slate-600 border-slate-200 hover:bg-slate-200'}`}>
-                                  {r.statusOP==='ENTREGUE'?'ENTREGUE':'NÃO ENTREGUE'}
-                                </button>
+                                {r.jaFaturado?(
+                                  <span className="text-[9px] font-black px-1.5 py-0.5 rounded-full border bg-teal-50 text-teal-700 border-teal-200" title="Já existe nota emitida no Sankhya — não editável">ENTREGUE</span>
+                                ):(
+                                  <button onClick={()=>salvarCampoManualBR(r.br,'status_op',r.statusOP==='ENTREGUE'?'NAO_ENTREGUE':'ENTREGUE')}
+                                    title="Clique pra alternar — depende de imprimir e entregar a OP pro almoxarifado"
+                                    className={`text-[9px] font-black px-1.5 py-0.5 rounded-full border cursor-pointer transition-colors ${r.statusOP==='ENTREGUE'?'bg-teal-50 text-teal-700 border-teal-200 hover:bg-teal-100':'bg-slate-100 text-slate-600 border-slate-200 hover:bg-slate-200'}`}>
+                                    {r.statusOP==='ENTREGUE'?'ENTREGUE':'NÃO ENTREGUE'}
+                                  </button>
+                                )}
                               </td>
                               <td className="px-1 py-1"><EditableCell value={r.definicao} onSave={v=>salvarCampoManualBR(r.br,'definicao',v)} placeholder="Corte/Padrão"/></td>
                               <td className="px-2 py-1.5 text-slate-500 truncate max-w-[110px]" title={s(r.vendedor)}>{s(r.vendedor)}</td>
@@ -3645,7 +3677,14 @@ export default function App(){
                                 {r.status?<span className={`text-[9px] font-black px-1.5 py-0.5 rounded-full border ${r.status==='PENDENTE'?'bg-orange-50 text-orange-700 border-orange-200':'bg-slate-200 text-slate-700 border-slate-300'}`} title={r.situacaoEspecial?.motivo}>{r.status}</span>:<span className="text-slate-300">—</span>}
                               </td>
                               <td className="px-2 py-1.5 text-right text-slate-500 whitespace-nowrap">{fmtDt(r.dataReferencia)}</td>
-                              <td className="px-1 py-1 text-center"><AndamentoSelect value={r.andamento} onChange={v=>salvarCampoManualBR(r.br,'andamento',v)}/></td>
+                              <td className={`px-2 py-1.5 text-right font-bold whitespace-nowrap bg-amber-50/40 ${r.dataInicioProjeto&&r.dataInicioProjeto<=new Date().toISOString().slice(0,10)&&!r.jaFaturado?'text-red-600':'text-amber-700'}`}>{fmtDt(r.dataInicioProjeto)}</td>
+                              <td className="px-1 py-1 text-center">
+                                {r.jaFaturado?(
+                                  <span className={`text-[11px] font-bold px-2.5 py-1 rounded-full border ${ANDAMENTO_CFG.FATURADO.cls}`} title="Já existe nota emitida no Sankhya — não editável">{ANDAMENTO_CFG.FATURADO.label}</span>
+                                ):(
+                                  <AndamentoSelect value={r.andamentoEfetivo} onChange={v=>salvarCampoManualBR(r.br,'andamento',v)}/>
+                                )}
+                              </td>
                               <td className="px-2 py-1.5 text-right text-slate-500 whitespace-nowrap">{fmtDt(r.dataEntregaCP)}</td>
                               <td className="px-2 py-1.5 text-right font-semibold text-slate-700 whitespace-nowrap">{fmtDt(r.dataReferencia)}</td>
                               <td className="px-2 py-1.5 text-center text-slate-600 font-semibold whitespace-nowrap">{r.mes}</td>
@@ -6413,6 +6452,27 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
             />
           </div>
         )}
+      </Modal>
+
+      {/* ── MODAL: Itens aguardando importação ──────────────────────────── */}
+      <Modal open={!!importacaoDetalheSel} onClose={()=>setImportacaoDetalheSel(null)} title={`Aguardando importação — ${s(importacaoDetalheSel?.br)}`} subtitle="Itens de matéria-prima em ordens de compra abertas, ainda não chegados (Portal Supply Chain)" maxWidth="max-w-2xl">
+        <div className="space-y-2">
+          {(importacaoDetalheSel?.itens||[]).map((it,i)=>(
+            <div key={i} className="bg-slate-50 border border-slate-100 rounded-xl px-4 py-3">
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <p className="text-sm font-bold text-slate-900 truncate">{s(it.descricao_produto)}</p>
+                  <p className="text-xs text-slate-500 mt-0.5">Fornecedor: {s(it.fornecedor)} · Pedido de compra: {s(it.numero_pedido)}</p>
+                  <p className="text-xs text-slate-500">Qtd. pendente: <strong>{it.quantidade_pendente}</strong> · Embarque previsto: <strong>{fmtDt(it.data_embarque)}</strong>{it.dias_atraso_embarque>0&&<span className="text-red-600 font-bold"> ({it.dias_atraso_embarque}d de atraso)</span>}</p>
+                </div>
+                <span className={`text-[9px] font-black px-2 py-0.5 rounded-full border whitespace-nowrap ${(it.prioridade??5)<=2?'bg-red-50 text-red-700 border-red-200':'bg-amber-50 text-amber-700 border-amber-200'}`}>Prioridade {it.prioridade??'—'}</span>
+              </div>
+            </div>
+          ))}
+          {(!importacaoDetalheSel?.itens||importacaoDetalheSel.itens.length===0)&&(
+            <p className="text-sm text-slate-400 text-center py-6">Nenhum item encontrado.</p>
+          )}
+        </div>
       </Modal>
 
       {/* ── MODAL MESTRA: Marcar Pendente/Cancelado/Desconsiderar ───────── */}
