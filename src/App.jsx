@@ -1092,6 +1092,46 @@ export default function App(){
     }catch(e){addToast('Erro ao sincronizar OPs: '+e.message,'error');setOpsSankhyaLoading(false);}
   };
 
+  // ── Vínculo OP → BR por inferência (quando a cadeia formal do Sankhya não liga
+  // a OP a nenhum pedido — produção "solta", pra estoque). A sugestão nunca decide
+  // por conta própria: só populamos "sugestoesVinculo" e quem confirma é o PCP,
+  // aqui na tela mesmo (ver Modal de detalhe da OP).
+  const [sugerindoVinculos,setSugerindoVinculos]=useState(false);
+  const sugerirVinculosOps=async()=>{
+    setSugerindoVinculos(true);
+    try{
+      const res=await fetch(`${SUPABASE_URL}/functions/v1/sankhya-sugerir-vinculos-op`,{method:'POST',headers:{'Content-Type':'application/json','apikey':SUPABASE_KEY},body:JSON.stringify({})});
+      const d=await res.json();
+      if(!d.ok)throw new Error(d.erro);
+      addToast(`${d.com_sugestao} OP(s) com sugestão de vínculo pra revisar (de ${d.processadas} sem BR).`);
+      fetchOpsSankhya();
+    }catch(e){addToast('Erro ao sugerir vínculos: '+e.message,'error');}
+    finally{setSugerindoVinculos(false);}
+  };
+
+  const confirmarVinculoOP=async(nuapo,candidato)=>{
+    try{
+      const{error}=await supabase.from('ordens_producao_sankhya').update({
+        vinculo_status:'confirmado',br_confirmado:candidato.br,nunota_confirmado:candidato.nunota,
+        vinculo_confirmado_por:s(usuarioLogado?.nome)||'—',vinculo_confirmado_em:new Date().toISOString(),
+      }).eq('nuapo',nuapo);
+      if(error)throw error;
+      setOpsSankhyaItens(prev=>prev.map(it=>it.nuapo===nuapo?{...it,vinculo_status:'confirmado',br_confirmado:candidato.br,nunota_confirmado:candidato.nunota}:it));
+      setOpSelecionadaDetalhe(prev=>prev&&prev.nuapo===nuapo?{...prev,vinculoStatus:'confirmado',brConfirmado:candidato.br,nunotaConfirmado:candidato.nunota,brEfetivo:candidato.br}:prev);
+      addToast(`Vínculo confirmado: OP ${nuapo} → ${candidato.br}.`);
+    }catch(e){addToast('Erro ao confirmar vínculo: '+e.message,'error');}
+  };
+
+  const rejeitarVinculoOP=async(nuapo)=>{
+    try{
+      const{error}=await supabase.from('ordens_producao_sankhya').update({vinculo_status:'rejeitado'}).eq('nuapo',nuapo);
+      if(error)throw error;
+      setOpsSankhyaItens(prev=>prev.map(it=>it.nuapo===nuapo?{...it,vinculo_status:'rejeitado'}:it));
+      setOpSelecionadaDetalhe(prev=>prev&&prev.nuapo===nuapo?{...prev,vinculoStatus:'rejeitado'}:prev);
+      addToast('Marcado como sem vínculo — não vai perguntar de novo.');
+    }catch(e){addToast('Erro: '+e.message,'error');}
+  };
+
   // Agrupa os itens (um por MP consumida) em OPs — uma linha por NUAPO, com a
   // lista de itens dentro. Isso é o que "saber qual OP de cada projeto" pede.
   const opsSankhyaAgrupadas=useMemo(()=>{
@@ -1101,10 +1141,22 @@ export default function App(){
         nuapo:it.nuapo,br:it.br,situacao:it.situacao_op,processo:it.processo_produtivo,
         produtoAcabado:it.produto_acabado_descricao,dataApontamento:it.data_apontamento,
         nroOrdemProducao:it.nro_ordem_producao,itens:[],
+        // Vínculo por inferência (produto+data), usado só quando a cadeia formal do
+        // Sankhya não linkou a OP a nenhum BR (produção "solta", pra estoque).
+        // Nunca é automático: vinculoStatus só vira 'confirmado' depois de alguém
+        // revisar os candidatos na tela e confirmar manualmente.
+        vinculoStatus:it.vinculo_status||'sem_sugestao',
+        sugestoesVinculo:it.sugestoes_vinculo||[],
+        brConfirmado:it.br_confirmado,
+        nunotaConfirmado:it.nunota_confirmado,
       };
       porNuapo[it.nuapo].itens.push(it);
     });
-    return Object.values(porNuapo).sort((a,b)=>(b.dataApontamento||'').localeCompare(a.dataApontamento||''));
+    // brEfetivo = o que deve ser usado em qualquer cruzamento (Produção por setor etc.):
+    // o BR direto do Sankhya quando existe, senão o BR confirmado manualmente. Nunca usa
+    // sugestão pendente — essa só serve pra mostrar o aviso de revisão.
+    return Object.values(porNuapo).map(o=>({...o,brEfetivo:o.br||(o.vinculoStatus==='confirmado'?o.brConfirmado:null)}))
+      .sort((a,b)=>(b.dataApontamento||'').localeCompare(a.dataApontamento||''));
   },[opsSankhyaItens]);
 
   const opsSankhyaOpcoesProcesso=useMemo(()=>[...new Set(opsSankhyaAgrupadas.map(o=>o.processo).filter(Boolean))].sort(),[opsSankhyaAgrupadas]);
@@ -1788,10 +1840,14 @@ export default function App(){
       });
     });
     opsSankhyaAgrupadas.forEach(o=>{
-      if(!o.br||!porBR[o.br])return; // só cruza quem já está no escopo do mês selecionado
+      // brEfetivo cobre tanto o BR formal do Sankhya quanto um vínculo por inferência
+      // já CONFIRMADO manualmente (nunca uma sugestão pendente — essa só aparece na
+      // aba OPs (Sankhya) esperando revisão, não conta como produção comprovada aqui).
+      const brOP=o.brEfetivo;
+      if(!brOP||!porBR[brOP])return; // só cruza quem já está no escopo do mês selecionado
       const key=o.processo||'—';
-      if(!porBR[o.br].setoresReais[key])porBR[o.br].setoresReais[key]={processo:key,pendente:0,concluido:0};
-      if(o.situacao==='P')porBR[o.br].setoresReais[key].pendente++;else porBR[o.br].setoresReais[key].concluido++;
+      if(!porBR[brOP].setoresReais[key])porBR[brOP].setoresReais[key]={processo:key,pendente:0,concluido:0};
+      if(o.situacao==='P')porBR[brOP].setoresReais[key].pendente++;else porBR[brOP].setoresReais[key].concluido++;
     });
     return Object.values(porBR).map(p=>({
       ...p,
@@ -1820,10 +1876,11 @@ export default function App(){
       });
     });
     opsSankhyaAgrupadas.forEach(o=>{
-      if(!o.br||!porBR[o.br])return;
+      const brOP=o.brEfetivo;
+      if(!brOP||!porBR[brOP])return;
       const key=o.processo||'—';
-      if(!porBR[o.br].setoresReais[key])porBR[o.br].setoresReais[key]={processo:key,pendente:0,concluido:0};
-      if(o.situacao==='P')porBR[o.br].setoresReais[key].pendente++;else porBR[o.br].setoresReais[key].concluido++;
+      if(!porBR[brOP].setoresReais[key])porBR[brOP].setoresReais[key]={processo:key,pendente:0,concluido:0};
+      if(o.situacao==='P')porBR[brOP].setoresReais[key].pendente++;else porBR[brOP].setoresReais[key].concluido++;
     });
     return Object.values(porBR).map(p=>({
       ...p,setoresLista:Object.values(p.setoresReais),
@@ -3936,14 +3993,20 @@ export default function App(){
             {aba==='ORDENS_PRODUCAO_SK'&&isAdmin&&(
               <div className="space-y-4">
                 <SectionHeader title="OPs (Sankhya)" subtitle="Ordens de Produção reais — qual OP é de qual projeto, setor (Processo Produtivo) e itens de matéria-prima consumidos"
-                  actions={<Btn variant="dark" size="sm" onClick={sincronizarOpsSankhya} disabled={opsSankhyaLoading}><RefreshCw className={`w-4 h-4 ${opsSankhyaLoading?'animate-spin':''}`}/>Sincronizar Sankhya</Btn>}/>
+                  actions={<div className="flex items-center gap-2">
+                    <Btn variant="secondary" size="sm" onClick={sugerirVinculosOps} disabled={sugerindoVinculos} title="Pra OPs sem BR (produção pra estoque), sugere possíveis pedidos com o mesmo produto perto da data — nada vira oficial sem confirmar aqui na tela.">
+                      <Search className={`w-4 h-4 ${sugerindoVinculos?'animate-spin':''}`}/>Sugerir vínculos
+                    </Btn>
+                    <Btn variant="dark" size="sm" onClick={sincronizarOpsSankhya} disabled={opsSankhyaLoading}><RefreshCw className={`w-4 h-4 ${opsSankhyaLoading?'animate-spin':''}`}/>Sincronizar Sankhya</Btn>
+                  </div>}/>
 
                 {opsSankhyaErro&&<div className="bg-red-50 border border-red-200 text-red-700 text-sm font-semibold rounded-xl px-4 py-3">{opsSankhyaErro}</div>}
 
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                <div className="grid grid-cols-1 sm:grid-cols-4 gap-4">
                   <ExecKPICard tone="slate" icon={Factory} label="OPs distintas" value={String(opsSankhyaAgrupadas.length)} trendLabel={`${opsSankhyaItens.length} itens de MP`}/>
                   <ExecKPICard tone="blue" icon={Clock} label="Pendente (em produção)" value={String(opsSankhyaAgrupadas.filter(o=>o.situacao==='P').length)} selected={opsSankhyaFiltroSituacao==='P'} onClick={()=>setOpsSankhyaFiltroSituacao(v=>v==='P'?'TODOS':'P')}/>
                   <ExecKPICard tone="teal" icon={CheckCircle} label="Concluído" value={String(opsSankhyaAgrupadas.filter(o=>o.situacao==='C').length)} selected={opsSankhyaFiltroSituacao==='C'} onClick={()=>setOpsSankhyaFiltroSituacao(v=>v==='C'?'TODOS':'C')}/>
+                  <ExecKPICard tone="amber" icon={AlertTriangle} label="Vínculo p/ revisar" value={String(opsSankhyaAgrupadas.filter(o=>o.vinculoStatus==='pendente').length)} trendLabel="produção sem BR formal, com sugestão"/>
                 </div>
 
                 <div className="flex items-center gap-3 flex-wrap">
@@ -3984,7 +4047,15 @@ export default function App(){
                         {!opsSankhyaLoading&&opsSankhyaFiltradas.slice(0,300).map(o=>(
                           <tr key={o.nuapo} className="hover:bg-slate-50">
                             <td className="px-3 py-2 font-bold text-slate-700 whitespace-nowrap">{o.nuapo}</td>
-                            <td className="px-3 py-2 font-bold text-indigo-700 whitespace-nowrap">{s(o.br)||'—'}</td>
+                            <td className="px-3 py-2 font-bold text-indigo-700 whitespace-nowrap">
+                              {o.br?s(o.br):o.vinculoStatus==='confirmado'?(
+                                <span title="Vínculo por inferência (produto+data), confirmado manualmente">{s(o.brConfirmado)} <span className="text-[9px] font-black text-emerald-600">✓ confirmado</span></span>
+                              ):o.vinculoStatus==='pendente'?(
+                                <button onClick={()=>setOpSelecionadaDetalhe(o)} className="text-[10px] font-black text-amber-700 bg-amber-50 border border-amber-200 rounded-full px-2 py-0.5 hover:bg-amber-100">🟡 revisar vínculo</button>
+                              ):o.vinculoStatus==='rejeitado'?(
+                                <span className="text-slate-400 font-semibold">— sem vínculo (revisado)</span>
+                              ):'—'}
+                            </td>
                             <td className="px-3 py-2 text-slate-600 max-w-[220px] truncate" title={s(o.processo)}>{s(o.processo)}</td>
                             <td className="px-3 py-2 text-slate-500 max-w-[260px] truncate" title={s(o.produtoAcabado)}>{s(o.produtoAcabado)}</td>
                             <td className="px-3 py-2 text-right text-slate-500 whitespace-nowrap">{fmtDt(o.dataApontamento)}</td>
@@ -6844,7 +6915,31 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
       </Modal>
 
       {/* ── MODAL: Itens de matéria-prima de uma OP ─────────────────────── */}
-      <Modal open={!!opSelecionadaDetalhe} onClose={()=>setOpSelecionadaDetalhe(null)} title={`OP ${opSelecionadaDetalhe?.nuapo} — ${s(opSelecionadaDetalhe?.br)||'sem projeto'}`} subtitle={`${s(opSelecionadaDetalhe?.processo)} · ${s(opSelecionadaDetalhe?.produtoAcabado)}`} maxWidth="max-w-2xl">
+      <Modal open={!!opSelecionadaDetalhe} onClose={()=>setOpSelecionadaDetalhe(null)} title={`OP ${opSelecionadaDetalhe?.nuapo} — ${s(opSelecionadaDetalhe?.br)||(opSelecionadaDetalhe?.vinculoStatus==='confirmado'?s(opSelecionadaDetalhe?.brConfirmado):'sem projeto')}`} subtitle={`${s(opSelecionadaDetalhe?.processo)} · ${s(opSelecionadaDetalhe?.produtoAcabado)}`} maxWidth="max-w-2xl">
+        {!opSelecionadaDetalhe?.br&&opSelecionadaDetalhe?.vinculoStatus!=='sem_sugestao'&&(
+          <div className="mb-4 bg-amber-50/60 border border-amber-200 rounded-xl px-4 py-3">
+            <p className="text-[11px] font-black text-amber-700 uppercase tracking-wide mb-2">Vínculo com pedido — sem cadeia formal no Sankhya</p>
+            <p className="text-xs text-slate-600 mb-3">Essa OP não tem NUNOTA vinculado (produção pra estoque). Abaixo, pedidos com o mesmo produto perto da data de apontamento — <strong>confirme só se tiver certeza</strong>, pode ser coincidência.</p>
+            {opSelecionadaDetalhe?.vinculoStatus==='pendente'&&(opSelecionadaDetalhe?.sugestoesVinculo||[]).map((c,i)=>(
+              <div key={i} className="flex items-center justify-between gap-3 bg-white border border-amber-100 rounded-lg px-3 py-2 mb-2">
+                <div className="min-w-0">
+                  <p className="text-sm font-bold text-slate-900">{c.br} <span className="text-slate-400 font-normal">· {s(c.cliente)}</span></p>
+                  <p className="text-[11px] text-slate-500">Pedido {c.nunota} · {fmtDt(c.data_referencia)} ({c.dias_diferenca===0?'mesmo dia':`${c.dias_diferenca} dia(s) de diferença`}) · qtd pedida: {c.quantidade_pedida}</p>
+                </div>
+                <Btn variant="success" size="sm" onClick={()=>confirmarVinculoOP(opSelecionadaDetalhe.nuapo,c)}>Confirmar</Btn>
+              </div>
+            ))}
+            {opSelecionadaDetalhe?.vinculoStatus==='pendente'&&(
+              <button onClick={()=>rejeitarVinculoOP(opSelecionadaDetalhe.nuapo)} className="text-[11px] font-bold text-slate-500 hover:text-slate-700 hover:underline mt-1">Nenhum destes procede — marcar como sem vínculo</button>
+            )}
+            {opSelecionadaDetalhe?.vinculoStatus==='confirmado'&&(
+              <p className="text-xs font-bold text-emerald-700">✓ Confirmado: {s(opSelecionadaDetalhe.brConfirmado)} (pedido {opSelecionadaDetalhe.nunotaConfirmado})</p>
+            )}
+            {opSelecionadaDetalhe?.vinculoStatus==='rejeitado'&&(
+              <p className="text-xs font-bold text-slate-500">Revisado — nenhum candidato procedia.</p>
+            )}
+          </div>
+        )}
         <div className="space-y-2">
           {(opSelecionadaDetalhe?.itens||[]).map((it,i)=>(
             <div key={i} className="bg-slate-50 border border-slate-100 rounded-xl px-4 py-3 flex items-center justify-between gap-3">
