@@ -1828,6 +1828,32 @@ export default function App(){
     }catch(e){addToast('Erro: '+e.message,'error');}
   };
 
+  // Direciona um item classificado (esperado) direto pra produção, com um clique —
+  // sem precisar preencher o formulário. "Direto p/ Expedição" não vira OP porque
+  // não passa por produção interna; só confirma a decisão em toast.
+  const SETOR_POR_CLASSIFICACAO={'VULCANIZAÇÃO (esperado)':'VULCANIZACAO'};
+  const direcionarItemClassificado=async(p,tipo,qtd)=>{
+    if(tipo==='Direto p/ Expedição'){
+      addToast(`${p.br}: item vai direto pra expedição, não precisa de OP de produção.`);
+      return;
+    }
+    const setor=SETOR_POR_CLASSIFICACAO[tipo];
+    if(!setor)return addToast('Não sei direcionar esse tipo ainda — marque manualmente.','error');
+    const jaExiste=ordensProducao.some(o=>o.br===p.br&&o.setor===setor&&o.status!=='CONCLUIDO');
+    if(jaExiste)return addToast(`${p.br} já está direcionado pra ${SETOR_LABEL[setor]}.`);
+    try{
+      const id=`OP-${Date.now()}`;
+      const{error}=await supabase.from('ordens_producao').insert([{
+        id,br:p.br,cliente:s(p.cliente),setor,quantidade:qtd,
+        descricao:`Direcionado automaticamente — classificação "${tipo}" (regra PG1)`,
+        status:'FILA',criado_por:s(usuarioLogado?.nome),
+      }]);
+      if(error)throw error;
+      addToast(`${p.br} direcionado pra ${SETOR_LABEL[setor]}!`);
+      fetchOrdensProducao();
+    }catch(e){addToast('Erro ao direcionar: '+e.message,'error');}
+  };
+
   const atualizarStatusProducao=async(opId,novoStatus,obs)=>{
     try{
       const{error}=await supabase.from('ordens_producao').update({
@@ -4150,11 +4176,17 @@ export default function App(){
                             )}
                             {p.itensEsperadosLista.length>0&&(
                               <div className="flex flex-wrap gap-1.5 mt-1.5">
-                                {p.itensEsperadosLista.map((it,i)=>(
-                                  <span key={i} className="text-[9px] font-black px-2 py-0.5 rounded-full border bg-amber-50 text-amber-700 border-amber-200" title="Classificação esperada pela descrição do item — ainda sem OP real">
-                                    {it.tipo} ({it.qtd})
-                                  </span>
-                                ))}
+                                {p.itensEsperadosLista.map((it,i)=>{
+                                  const jaDirecionado=it.tipo!=='Direto p/ Expedição'&&ordensProducao.some(o=>o.br===p.br&&o.setor===SETOR_POR_CLASSIFICACAO[it.tipo]&&o.status!=='CONCLUIDO');
+                                  return(
+                                    <button key={i} onClick={()=>direcionarItemClassificado(p,it.tipo,it.qtd)}
+                                      disabled={jaDirecionado}
+                                      title={jaDirecionado?'Já direcionado':it.tipo==='Direto p/ Expedição'?'Clique pra confirmar — não vira OP':'Clique pra direcionar pra produção com 1 clique'}
+                                      className={`text-[9px] font-black px-2 py-0.5 rounded-full border transition-colors ${jaDirecionado?'bg-slate-100 text-slate-400 border-slate-200 cursor-default':'bg-amber-50 text-amber-700 border-amber-200 hover:bg-amber-100 cursor-pointer'}`}>
+                                      {it.tipo} ({it.qtd}){jaDirecionado?' ✓':''}
+                                    </button>
+                                  );
+                                })}
                               </div>
                             )}
                             {!p.temOP&&p.itensEsperadosLista.length===0&&(
@@ -4164,7 +4196,7 @@ export default function App(){
                         ))}
                       </div>
                       <p className="text-[11px] text-slate-400 mt-4">
-                        <span className="text-blue-700 font-bold">Azul</span> = OP real pendente (Sankhya). <span className="text-teal-700 font-bold">Verde</span> = OP real concluída. <span className="text-amber-700 font-bold">Âmbar</span> = classificação esperada pela descrição do item (Kalfix/Kalpoxy/Chockybar/Kalocer/Abresist = direto p/ expedição; Manta/Mangote = Vulcanização) — ainda sem OP aberta. Base: todo projeto com entrega prevista no mês selecionado, não só quem já tem OP.
+                        <span className="text-blue-700 font-bold">Azul</span> = OP real pendente (Sankhya). <span className="text-teal-700 font-bold">Verde</span> = OP real concluída. <span className="text-amber-700 font-bold">Âmbar</span> = classificação esperada (Kalfix/Kalpoxy/Chockybar/Kalocer/Abresist = direto p/ expedição; Manta/Mangote = Vulcanização) — <strong>clique pra direcionar pra produção com 1 clique</strong>. Base: todo projeto com entrega prevista no mês selecionado, não só quem já tem OP.
                       </p>
                     </div>
                   )}
