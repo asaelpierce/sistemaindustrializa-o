@@ -525,7 +525,8 @@ function Toast({message,type='success',onClose}){
 // ============================================================================
 export default function App(){
   const [supabase,setSupa]=useState(null);
-  const [supaSupply,setSupaSupply]=useState(null); // projeto "Supply Chain" — só leitura, pra dados de importação de MP
+  // Portal Supply Chain (tocyzucfgwhvpfihakvj) não é mais usado — compras_pendentes
+  // agora sincroniza direto do Sankhya com credenciais próprias (compras-pendentes-sync).
   
   const [dbOnline,setDbOnline]=useState(false);
   const [usuarioLogado,setUsuarioLogado]=useState(null);
@@ -694,7 +695,6 @@ export default function App(){
     scripts.forEach(sc=>{if(!document.getElementById(sc.id)){const el=document.createElement('script');el.id=sc.id;el.src=sc.src;el.async=true;document.body.appendChild(el);}});
     const chk=setInterval(()=>{if(window.supabase){try{
       const cl=window.supabase.createClient(SUPABASE_URL,SUPABASE_KEY);setSupa(cl);
-      const clSupply=window.supabase.createClient('https://tocyzucfgwhvpfihakvj.supabase.co','sb_publishable_BhQK0Wn95R_pZI1eNz6CdQ_PNdR5rVX');setSupaSupply(clSupply);
       clearInterval(chk);
     }catch(e){}}},500);
     return()=>clearInterval(chk);
@@ -744,25 +744,33 @@ export default function App(){
   // Cruza pelo mesmo campo BR (PRJ.IDENTIFICACAO no Sankhya, igual ao nosso).
   const [importacaoPorBR,setImportacaoPorBR]=useState({});
   const [importacaoLoading,setImportacaoLoading]=useState(false);
+  // Fonte própria (não depende mais do Portal Supply Chain) — sincronizada direto do
+  // Sankhya com credenciais nossas. tipo_pedido distingue IMPORTAÇÃO de NACIONAL:
+  // nem todo pedido pendente é importação, muita matéria-prima é comprada aqui mesmo.
   const fetchImportacaoPendente=useCallback(async()=>{
-    if(!supaSupply)return;
+    if(!supabase)return;
     setImportacaoLoading(true);
     try{
-      const{data,error}=await supaSupply.from('pedidos_abertos').select('projeto,fornecedor,descricao_produto,quantidade_pendente,data_embarque,data_prevista_entrega,dias_atraso_embarque,dias_atraso_entrega,prioridade,numero_pedido').not('projeto','is',null).neq('projeto','<SEM PROJETO>');
+      const{data,error}=await supabase.from('compras_pendentes').select('br,fornecedor,descricao_produto,quantidade_pendente,data_embarque,data_prevista_entrega,dias_atraso_embarque,dias_atraso_entrega,prioridade,numero_pedido,tipo_pedido').not('br','is',null);
       if(error)throw error;
       const porBR={};
       (data||[]).forEach(p=>{
-        const br=s(p.projeto);if(!br)return;
-        if(!porBR[br])porBR[br]={br,itens:[],prioridadeMin:5,maiorAtrasoEmbarque:-9999};
-        porBR[br].itens.push(p);
-        if((p.prioridade??5)<porBR[br].prioridadeMin)porBR[br].prioridadeMin=p.prioridade??5;
-        if((p.dias_atraso_embarque??-9999)>porBR[br].maiorAtrasoEmbarque)porBR[br].maiorAtrasoEmbarque=p.dias_atraso_embarque??-9999;
+        const br=s(p.br);if(!br)return;
+        if(!porBR[br])porBR[br]={br,itensImportacao:[],itensNacional:[],prioridadeMin:5,maiorAtrasoEmbarque:-9999};
+        const g=porBR[br];
+        if(p.tipo_pedido==='importacao'){
+          g.itensImportacao.push(p);
+          if((p.prioridade??5)<g.prioridadeMin)g.prioridadeMin=p.prioridade??5;
+          if((p.dias_atraso_embarque??-9999)>g.maiorAtrasoEmbarque)g.maiorAtrasoEmbarque=p.dias_atraso_embarque??-9999;
+        }else{
+          g.itensNacional.push(p);
+        }
       });
       setImportacaoPorBR(porBR);
-    }catch(e){addToast('Erro ao buscar importações pendentes (Supply Chain): '+e.message,'error');}
+    }catch(e){addToast('Erro ao buscar compras pendentes: '+e.message,'error');}
     finally{setImportacaoLoading(false);}
-  },[supaSupply]);
-  useEffect(()=>{if(supaSupply&&(aba==='MESTRA'||aba==='PLANILHA_MESTRE')&&Object.keys(importacaoPorBR).length===0)fetchImportacaoPendente();},[supaSupply,aba]);
+  },[supabase]);
+  useEffect(()=>{if(supabase&&(aba==='MESTRA'||aba==='PLANILHA_MESTRE')&&Object.keys(importacaoPorBR).length===0)fetchImportacaoPendente();},[supabase,aba]);
 
   const [mestraNotasTotais,setMestraNotasTotais]=useState({bruto:0,liquido:0,brs:0});
   const [mestraFiltro,setMestraFiltro]=useState('TODOS'); // TODOS | FATURADO | PARCIAL | PENDENTE
@@ -1199,16 +1207,19 @@ export default function App(){
     if(!supabase)return;
     setSincronizandoPedidos(true);
     try{
-      const[r1,r2,r3]=await Promise.all([
+      const[r1,r2,r3,r4]=await Promise.all([
         fetch(`${SUPABASE_URL}/functions/v1/pedidos-itens-sync`,{method:'POST',headers:{'Content-Type':'application/json','apikey':SUPABASE_KEY},body:JSON.stringify({})}),
         fetch(`${SUPABASE_URL}/functions/v1/nota-venda-itens-sync`,{method:'POST',headers:{'Content-Type':'application/json','apikey':SUPABASE_KEY},body:JSON.stringify({})}),
-        fetch(`${SUPABASE_URL}/functions/v1/faturamento-resumo-sync`,{method:'POST',headers:{'Content-Type':'application/json','apikey':SUPABASE_KEY},body:JSON.stringify({})})
+        fetch(`${SUPABASE_URL}/functions/v1/faturamento-resumo-sync`,{method:'POST',headers:{'Content-Type':'application/json','apikey':SUPABASE_KEY},body:JSON.stringify({})}),
+        fetch(`${SUPABASE_URL}/functions/v1/compras-pendentes-sync`,{method:'POST',headers:{'Content-Type':'application/json','apikey':SUPABASE_KEY},body:JSON.stringify({})})
       ]);
-      const[d1,d2,d3]=await Promise.all([r1.json(),r2.json(),r3.json()]);
+      const[d1,d2,d3,d4]=await Promise.all([r1.json(),r2.json(),r3.json(),r4.json()]);
       if(!d1.ok)throw new Error('Pedidos: '+d1.erro);
       if(!d2.ok)throw new Error('Nota de venda: '+d2.erro);
       if(!d3.ok)throw new Error('Faturamento resumo: '+d3.erro);
+      if(!d4.ok)addToast('Compras pendentes não sincronizou: '+d4.erro,'error'); // não bloqueia o resto
       pedidosItensCacheRef.current={data:null,ts:0}; // força recarregar dado fresco após sync
+      setImportacaoPorBR({}); // força recarregar compras pendentes também
 
       // Auto-correção: projetos que têm nota mas cujo pedido é de ano anterior à janela
       // sincronizada ficariam "sem pedido" na carteira. Busca esses pedidos por projeto,
@@ -3236,13 +3247,13 @@ export default function App(){
                         </p>
                       </div>
 
-                      {/* Aguardando importação de MP — cruza com o projeto Supply Chain (pedidos_abertos) */}
+                      {/* Aguardando importação de MP — só projetos com importação de verdade (CODTIPOPER=2001) */}
                       <div>
                         <p className="text-[11px] font-black text-slate-500 uppercase tracking-wide mb-3">Aguardando Importação de MP</p>
-                        {importacaoLoading&&<p className="text-xs text-slate-400">Carregando do Supply Chain...</p>}
-                        {!importacaoLoading&&Object.keys(importacaoPorBR).length===0&&<p className="text-xs text-slate-400">Nenhum projeto aguardando importação no momento.</p>}
+                        {importacaoLoading&&<p className="text-xs text-slate-400">Carregando...</p>}
+                        {!importacaoLoading&&Object.values(importacaoPorBR).filter(imp=>imp.itensImportacao.length>0).length===0&&<p className="text-xs text-slate-400">Nenhum projeto aguardando importação no momento.</p>}
                         <div className="space-y-2.5 max-h-[280px] overflow-y-auto custom-scrollbar">
-                          {Object.values(importacaoPorBR).sort((a,b)=>b.maiorAtrasoEmbarque-a.maiorAtrasoEmbarque).slice(0,10).map(imp=>(
+                          {Object.values(importacaoPorBR).filter(imp=>imp.itensImportacao.length>0).sort((a,b)=>b.maiorAtrasoEmbarque-a.maiorAtrasoEmbarque).slice(0,10).map(imp=>(
                             <div key={imp.br} className="text-xs">
                               <div className="flex items-baseline justify-between gap-2">
                                 <span className="font-bold text-slate-700">{imp.br}</span>
@@ -3250,11 +3261,11 @@ export default function App(){
                                   {imp.maiorAtrasoEmbarque>0?`${imp.maiorAtrasoEmbarque}d atraso`:'a caminho'}
                                 </span>
                               </div>
-                              <p className="text-[10px] text-slate-400 truncate" title={imp.itens.map(i=>s(i.descricao_produto)).join(', ')}>{imp.itens.length} item{imp.itens.length>1?'s':''} · {s(imp.itens[0]?.fornecedor)}</p>
+                              <p className="text-[10px] text-slate-400 truncate" title={imp.itensImportacao.map(i=>s(i.descricao_produto)).join(', ')}>{imp.itensImportacao.length} item{imp.itensImportacao.length>1?'s':''} · {s(imp.itensImportacao[0]?.fornecedor)}</p>
                             </div>
                           ))}
                         </div>
-                        <p className="text-[11px] text-slate-400 mt-3 pt-3 border-t border-slate-100">Fonte: projeto Supply Chain — pedidos de compra em aberto vinculados ao BR.</p>
+                        <p className="text-[11px] text-slate-400 mt-3 pt-3 border-t border-slate-100">Fonte: Sankhya (ordens de compra CODTIPOPER=2001), sincronizado direto — não depende mais do Portal Supply Chain.</p>
                       </div>
                     </div>
                   )}
@@ -3376,11 +3387,13 @@ export default function App(){
                                           SERVICO:{l:'Serviço (comercial)',c:'bg-violet-50 text-violet-700 border-violet-200'},
                                         }[r.situacaoPrazo]||{l:s(r.situacaoPrazo),c:'bg-slate-100 text-slate-600 border-slate-200'};
                                         const imp=importacaoPorBR[r.br];
-                                        const impCfg=imp?(imp.prioridadeMin<=2?{l:`⏳ Importação ${imp.maiorAtrasoEmbarque>0?imp.maiorAtrasoEmbarque+'d':''}`,c:'bg-red-50 text-red-700 border-red-200'}:{l:'⏳ Importação',c:'bg-amber-50 text-amber-700 border-amber-200'}):null;
+                                        const impCfg=(imp&&imp.itensImportacao.length>0)?(imp.prioridadeMin<=2?{l:`⏳ Importação ${imp.maiorAtrasoEmbarque>0?imp.maiorAtrasoEmbarque+'d':''}`,c:'bg-red-50 text-red-700 border-red-200'}:{l:'⏳ Importação',c:'bg-amber-50 text-amber-700 border-amber-200'}):null;
+                                        const nacCfg=(imp&&imp.itensNacional.length>0)?{l:`📦 Compra nacional (${imp.itensNacional.length})`,c:'bg-slate-100 text-slate-600 border-slate-200'}:null;
                                         return(
                                           <span className="inline-flex items-center gap-1 flex-wrap">
                                             <span className={`text-[9px] font-black px-2 py-0.5 rounded-full border ${cfg.c}`} title={r.situacaoEspecial?.motivo||''}>{cfg.l}</span>
                                             {impCfg&&<button onClick={()=>setImportacaoDetalheSel(imp)} className={`text-[9px] font-black px-2 py-0.5 rounded-full border ${impCfg.c}`}>{impCfg.l}</button>}
+                                            {nacCfg&&<button onClick={()=>setImportacaoDetalheSel(imp)} className={`text-[9px] font-black px-2 py-0.5 rounded-full border ${nacCfg.c}`} title="Matéria-prima comprada no Brasil, ainda não recebida — não é importação">{nacCfg.l}</button>}
                                             <button onClick={()=>{setMestraSituacaoModal(r);setMestraSituacaoForm({status:r.situacaoEspecial?.status||'PENDENTE',motivo:r.situacaoEspecial?.motivo||''});}} title="Marcar como Pendente/Cancelado/Desconsiderar" aria-label="Marcar situação especial deste pedido" className="text-slate-300 hover:text-slate-600">
                                               <Edit3 className="w-3 h-3"/>
                                             </button>
@@ -3650,8 +3663,11 @@ export default function App(){
                             <tr key={r.br} className="hover:bg-slate-50">
                               <td className="px-2 py-1.5 font-bold text-indigo-700 whitespace-nowrap sticky left-0 bg-white hover:bg-slate-50">
                                 {r.br}{r.semPedidoSincronizado&&<span className="ml-1 text-[8px] text-violet-500" title="Sem pedido sincronizado">•</span>}
-                                {importacaoPorBR[r.br]&&(
+                                {importacaoPorBR[r.br]?.itensImportacao.length>0&&(
                                   <button onClick={()=>setImportacaoDetalheSel(importacaoPorBR[r.br])} className={`ml-1 ${importacaoPorBR[r.br].prioridadeMin<=2?'text-red-500':'text-amber-500'}`} title={`Ver itens aguardando importação${importacaoPorBR[r.br].maiorAtrasoEmbarque>0?` — ${importacaoPorBR[r.br].maiorAtrasoEmbarque}d de atraso no embarque`:''}`}>⏳</button>
+                                )}
+                                {importacaoPorBR[r.br]?.itensNacional.length>0&&(
+                                  <button onClick={()=>setImportacaoDetalheSel(importacaoPorBR[r.br])} className="ml-1 text-slate-400" title="Aguardando matéria-prima de compra nacional (não é importação)">📦</button>
                                 )}
                               </td>
                               <td className="px-2 py-1.5 text-slate-700 truncate max-w-[160px]" title={s(r.cliente)}>{s(r.cliente)}</td>
@@ -6454,22 +6470,47 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
         )}
       </Modal>
 
-      {/* ── MODAL: Itens aguardando importação ──────────────────────────── */}
-      <Modal open={!!importacaoDetalheSel} onClose={()=>setImportacaoDetalheSel(null)} title={`Aguardando importação — ${s(importacaoDetalheSel?.br)}`} subtitle="Itens de matéria-prima em ordens de compra abertas, ainda não chegados (Portal Supply Chain)" maxWidth="max-w-2xl">
-        <div className="space-y-2">
-          {(importacaoDetalheSel?.itens||[]).map((it,i)=>(
-            <div key={i} className="bg-slate-50 border border-slate-100 rounded-xl px-4 py-3">
-              <div className="flex items-start justify-between gap-3">
-                <div className="min-w-0">
-                  <p className="text-sm font-bold text-slate-900 truncate">{s(it.descricao_produto)}</p>
-                  <p className="text-xs text-slate-500 mt-0.5">Fornecedor: {s(it.fornecedor)} · Pedido de compra: {s(it.numero_pedido)}</p>
-                  <p className="text-xs text-slate-500">Qtd. pendente: <strong>{it.quantidade_pendente}</strong> · Embarque previsto: <strong>{fmtDt(it.data_embarque)}</strong>{it.dias_atraso_embarque>0&&<span className="text-red-600 font-bold"> ({it.dias_atraso_embarque}d de atraso)</span>}</p>
-                </div>
-                <span className={`text-[9px] font-black px-2 py-0.5 rounded-full border whitespace-nowrap ${(it.prioridade??5)<=2?'bg-red-50 text-red-700 border-red-200':'bg-amber-50 text-amber-700 border-amber-200'}`}>Prioridade {it.prioridade??'—'}</span>
+      {/* ── MODAL: Itens aguardando compra/importação ───────────────────── */}
+      <Modal open={!!importacaoDetalheSel} onClose={()=>setImportacaoDetalheSel(null)} title={`Matéria-prima pendente — ${s(importacaoDetalheSel?.br)}`} subtitle="Ordens de compra abertas, ainda não recebidas — sincronizado direto do Sankhya" maxWidth="max-w-2xl">
+        <div className="space-y-4">
+          {importacaoDetalheSel?.itensImportacao.length>0&&(
+            <div>
+              <p className="text-[11px] font-black text-red-600 uppercase tracking-wide mb-2">⏳ Importação ({importacaoDetalheSel.itensImportacao.length})</p>
+              <div className="space-y-2">
+                {importacaoDetalheSel.itensImportacao.map((it,i)=>(
+                  <div key={i} className="bg-red-50/40 border border-red-100 rounded-xl px-4 py-3">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <p className="text-sm font-bold text-slate-900 truncate">{s(it.descricao_produto)}</p>
+                        <p className="text-xs text-slate-500 mt-0.5">Fornecedor: {s(it.fornecedor)} · Pedido de compra: {s(it.numero_pedido)}</p>
+                        <p className="text-xs text-slate-500">Qtd. pendente: <strong>{it.quantidade_pendente}</strong> · Embarque previsto: <strong>{fmtDt(it.data_embarque)}</strong>{it.dias_atraso_embarque>0&&<span className="text-red-600 font-bold"> ({it.dias_atraso_embarque}d de atraso)</span>}</p>
+                      </div>
+                      <span className={`text-[9px] font-black px-2 py-0.5 rounded-full border whitespace-nowrap ${(it.prioridade??5)<=2?'bg-red-50 text-red-700 border-red-200':'bg-amber-50 text-amber-700 border-amber-200'}`}>Prioridade {it.prioridade??'—'}</span>
+                    </div>
+                  </div>
+                ))}
               </div>
             </div>
-          ))}
-          {(!importacaoDetalheSel?.itens||importacaoDetalheSel.itens.length===0)&&(
+          )}
+          {importacaoDetalheSel?.itensNacional.length>0&&(
+            <div>
+              <p className="text-[11px] font-black text-slate-500 uppercase tracking-wide mb-2">📦 Compra nacional ({importacaoDetalheSel.itensNacional.length}) — não é importação</p>
+              <div className="space-y-2">
+                {importacaoDetalheSel.itensNacional.map((it,i)=>(
+                  <div key={i} className="bg-slate-50 border border-slate-100 rounded-xl px-4 py-3">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <p className="text-sm font-bold text-slate-900 truncate">{s(it.descricao_produto)}</p>
+                        <p className="text-xs text-slate-500 mt-0.5">Fornecedor: {s(it.fornecedor)} · Pedido de compra: {s(it.numero_pedido)}</p>
+                        <p className="text-xs text-slate-500">Qtd. pendente: <strong>{it.quantidade_pendente}</strong> · Entrega prevista: <strong>{fmtDt(it.data_prevista_entrega)}</strong>{it.dias_atraso_entrega>0&&<span className="text-red-600 font-bold"> ({it.dias_atraso_entrega}d de atraso)</span>}</p>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+          {(!importacaoDetalheSel?.itensImportacao.length&&!importacaoDetalheSel?.itensNacional.length)&&(
             <p className="text-sm text-slate-400 text-center py-6">Nenhum item encontrado.</p>
           )}
         </div>
