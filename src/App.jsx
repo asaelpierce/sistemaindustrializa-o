@@ -1571,7 +1571,7 @@ export default function App(){
     }
   },[supabase]);
 
-  useEffect(()=>{if(supabase&&(aba==='MESTRA'||aba==='PLANILHA_MESTRE')&&mestraDb.length===0)fetchMestra();},[supabase,aba]);
+  useEffect(()=>{if(supabase&&(aba==='MESTRA'||aba==='PLANILHA_MESTRE'||aba==='PRODUCAO')&&mestraDb.length===0)fetchMestra();},[supabase,aba]);
 
   // ── OOH: Planejamento mensal (projetos do Portal de Engenharia + reprogramações locais) ──
   const [oohMesRef,setOohMesRef]=useState(new Date().toISOString().slice(0,7)); // YYYY-MM
@@ -1755,24 +1755,51 @@ export default function App(){
   const [producaoRealMes,setProducaoRealMes]=useState('TODOS');
   const [producaoRealVisivel,setProducaoRealVisivel]=useState(true);
 
-  // Visão real por projeto (Sankhya): o mesmo BR pode ter itens em setores
-  // diferentes ao mesmo tempo (ex: chapa na Vulcanização, cerâmica padrão na
-  // Pintura, cerâmica recortada no Corte) — cada um é uma OP distinta.
-  const producaoRealOpcoesMes=useMemo(()=>[...new Set(opsSankhyaAgrupadas.filter(o=>o.br).map(o=>s(o.dataApontamento).slice(0,7)).filter(Boolean))].sort().reverse(),[opsSankhyaAgrupadas]);
+  // Classificação PG1: alguns itens são "passagem direta" (não passam por
+  // produção interna, vão reto pra expedição) — Kalfix, Kalpoxy, Chockybar,
+  // Kalocer, Abresist. Mantas e mangotes SÃO produção — vão pra Vulcanização.
+  // É uma decisão do PCP, mas dá pra derivar automaticamente pela descrição
+  // do item (já sincronizada), sem esperar a OP existir.
+  const classificarRoteiroEsperado=descricao=>{
+    const d=s(descricao).toUpperCase();
+    if(/MANTA|MANGOTE/.test(d))return 'VULCANIZAÇÃO (esperado)';
+    if(/KALFIX|KALPOXY|CHOCKYBAR|KALOCER|ABRESIST/.test(d))return 'Direto p/ Expedição';
+    return null;
+  };
+
+  // Visão real por projeto: base é o ESCOPO DO MÊS INTEIRO (todo BR previsto pra
+  // entrega naquele mês, vindo do Mestra) — não só quem já tem OP no Sankhya.
+  // Cruza com as OPs reais quando existem; quando não existem ainda (projeto
+  // "A Iniciar"), mostra a classificação esperada derivada da descrição do item.
+  const producaoRealOpcoesMes=useMemo(()=>[...new Set(mestraDb.map(r=>r.mesReferencia).filter(m=>m&&m!=='sem-prazo'))].sort().reverse(),[mestraDb]);
   const producaoRealPorBR=useMemo(()=>{
     const porBR={};
-    opsSankhyaAgrupadas.forEach(o=>{
-      if(!o.br)return;
-      const mes=s(o.dataApontamento).slice(0,7);
-      if(producaoRealMes!=='TODOS'&&mes!==producaoRealMes)return;
-      if(!porBR[o.br])porBR[o.br]={br:o.br,setores:{}};
-      const key=o.processo||'—';
-      if(!porBR[o.br].setores[key])porBR[o.br].setores[key]={processo:key,pendente:0,concluido:0};
-      if(o.situacao==='P')porBR[o.br].setores[key].pendente++;else porBR[o.br].setores[key].concluido++;
+    mestraDb.forEach(r=>{
+      if(!r.br)return;
+      if(producaoRealMes!=='TODOS'&&r.mesReferencia!==producaoRealMes)return;
+      if(!porBR[r.br])porBR[r.br]={br:r.br,cliente:r.cliente,setoresReais:{},itensEsperados:{}};
+      (r.itens||[]).forEach(it=>{
+        const cls=classificarRoteiroEsperado(it.descricao);
+        if(cls){
+          if(!porBR[r.br].itensEsperados[cls])porBR[r.br].itensEsperados[cls]=0;
+          porBR[r.br].itensEsperados[cls]++;
+        }
+      });
     });
-    return Object.values(porBR).map(p=>({...p,setoresLista:Object.values(p.setores),temPendente:Object.values(p.setores).some(s=>s.pendente>0)}))
-      .sort((a,b)=>(b.temPendente?1:0)-(a.temPendente?1:0));
-  },[opsSankhyaAgrupadas,producaoRealMes]);
+    opsSankhyaAgrupadas.forEach(o=>{
+      if(!o.br||!porBR[o.br])return; // só cruza quem já está no escopo do mês selecionado
+      const key=o.processo||'—';
+      if(!porBR[o.br].setoresReais[key])porBR[o.br].setoresReais[key]={processo:key,pendente:0,concluido:0};
+      if(o.situacao==='P')porBR[o.br].setoresReais[key].pendente++;else porBR[o.br].setoresReais[key].concluido++;
+    });
+    return Object.values(porBR).map(p=>({
+      ...p,
+      setoresLista:Object.values(p.setoresReais),
+      itensEsperadosLista:Object.entries(p.itensEsperados).map(([tipo,qtd])=>({tipo,qtd})),
+      temOP:Object.keys(p.setoresReais).length>0,
+      temPendente:Object.values(p.setoresReais).some(st=>st.pendente>0),
+    })).sort((a,b)=>(b.temPendente?1:0)-(a.temPendente?1:0));
+  },[mestraDb,opsSankhyaAgrupadas,producaoRealMes]);
 
 
   const fetchOrdensProducao=useCallback(async()=>{
@@ -4111,18 +4138,33 @@ export default function App(){
                         {producaoRealPorBR.map(p=>(
                           <div key={p.br} className={`rounded-xl border p-3 ${p.temPendente?'border-blue-200 bg-blue-50/20':'border-slate-200'}`}>
                             <p className="text-xs font-bold text-indigo-700">{p.br}</p>
-                            <div className="flex flex-wrap gap-1.5 mt-2">
-                              {p.setoresLista.map((st,i)=>(
-                                <span key={i} className={`text-[9px] font-black px-2 py-0.5 rounded-full border ${st.pendente>0?'bg-blue-50 text-blue-700 border-blue-200':'bg-teal-50 text-teal-700 border-teal-200'}`} title={`${st.pendente} pendente(s), ${st.concluido} concluída(s)`}>
-                                  {st.processo}{st.pendente>0?` (${st.pendente})`:' ✓'}
-                                </span>
-                              ))}
-                            </div>
+                            {p.cliente&&<p className="text-[10px] text-slate-400 truncate">{s(p.cliente)}</p>}
+                            {p.setoresLista.length>0&&(
+                              <div className="flex flex-wrap gap-1.5 mt-2">
+                                {p.setoresLista.map((st,i)=>(
+                                  <span key={i} className={`text-[9px] font-black px-2 py-0.5 rounded-full border ${st.pendente>0?'bg-blue-50 text-blue-700 border-blue-200':'bg-teal-50 text-teal-700 border-teal-200'}`} title={`${st.pendente} pendente(s), ${st.concluido} concluída(s) — OP real do Sankhya`}>
+                                    {st.processo}{st.pendente>0?` (${st.pendente})`:' ✓'}
+                                  </span>
+                                ))}
+                              </div>
+                            )}
+                            {p.itensEsperadosLista.length>0&&(
+                              <div className="flex flex-wrap gap-1.5 mt-1.5">
+                                {p.itensEsperadosLista.map((it,i)=>(
+                                  <span key={i} className="text-[9px] font-black px-2 py-0.5 rounded-full border bg-amber-50 text-amber-700 border-amber-200" title="Classificação esperada pela descrição do item — ainda sem OP real">
+                                    {it.tipo} ({it.qtd})
+                                  </span>
+                                ))}
+                              </div>
+                            )}
+                            {!p.temOP&&p.itensEsperadosLista.length===0&&(
+                              <p className="text-[10px] text-slate-400 mt-2">Sem OP ainda — projeto não iniciado na produção.</p>
+                            )}
                           </div>
                         ))}
                       </div>
                       <p className="text-[11px] text-slate-400 mt-4">
-                        Azul = setor com OP ainda pendente (em produção). Verde = setor já concluído pra esse projeto. Fonte: OPs reais do Sankhya (aba "OPs (Sankhya)"), não a ordem manual criada abaixo.
+                        <span className="text-blue-700 font-bold">Azul</span> = OP real pendente (Sankhya). <span className="text-teal-700 font-bold">Verde</span> = OP real concluída. <span className="text-amber-700 font-bold">Âmbar</span> = classificação esperada pela descrição do item (Kalfix/Kalpoxy/Chockybar/Kalocer/Abresist = direto p/ expedição; Manta/Mangote = Vulcanização) — ainda sem OP aberta. Base: todo projeto com entrega prevista no mês selecionado, não só quem já tem OP.
                       </p>
                     </div>
                   )}
