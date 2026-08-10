@@ -1823,6 +1823,7 @@ export default function App(){
   const [producaoRealBusca,setProducaoRealBusca]=useState('');
   const [producaoRealVisivel,setProducaoRealVisivel]=useState(true);
   const [itensDirecionarBR,setItensDirecionarBR]=useState(null); // {br,cliente,itensCompletos} — modal "Ver itens e direcionar"
+  const [itemComposicaoAberta,setItemComposicaoAberta]=useState(null); // codProduto expandido no modal acima
 
   // Classificação PG1: alguns itens são "passagem direta" (não passam por
   // produção interna, vão reto pra expedição) — Kalfix, Kalpoxy, Chockybar,
@@ -6999,19 +7000,47 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
 
       {/* ── MODAL: Direcionar itens de um BR por área (cada item pode ir pra um
            setor diferente — a classificação automática só cobre 2 padrões) ── */}
-      <Modal open={!!itensDirecionarBR} onClose={()=>setItensDirecionarBR(null)} title={`Direcionar itens — ${itensDirecionarBR?.br}`} subtitle={`${s(itensDirecionarBR?.cliente)} · escolha a área de cada item, um por um`} maxWidth="max-w-2xl">
+      <Modal open={!!itensDirecionarBR} onClose={()=>{setItensDirecionarBR(null);setItemComposicaoAberta(null);}} title={`Direcionar itens — ${itensDirecionarBR?.br}`} subtitle={`${s(itensDirecionarBR?.cliente)} · escolha a área de cada item, um por um`} maxWidth="max-w-2xl">
         <div className="space-y-2">
           {(itensDirecionarBR?.itensCompletos||[]).map((item,i)=>{
             const atual=ordensProducao.find(o=>o.br===itensDirecionarBR.br&&o.cod_produto===item.codProduto&&o.status!=='CONCLUIDO');
+            const materiais=produtosDb[item.codProduto]?.materiais;
+            const composicaoAberta=itemComposicaoAberta===item.codProduto;
             return(
               <div key={i} className="bg-slate-50 border border-slate-100 rounded-xl px-4 py-3">
                 <div className="flex items-start justify-between gap-3 mb-2">
-                  <div className="min-w-0">
-                    <p className="text-sm font-bold text-slate-900 truncate" title={item.descricao}>{item.descricao}</p>
-                    <p className="text-xs text-slate-500 mt-0.5">Código: {item.codProduto} · Qtd pedida: {item.qtdPedida} {item.unidade}</p>
-                  </div>
-                  {atual&&<span className="text-[9px] font-black text-blue-700 bg-blue-50 border border-blue-200 rounded-full px-2 py-0.5 whitespace-nowrap">→ {SETOR_LABEL[atual.setor]||atual.setor}</span>}
+                  <button onClick={()=>setItemComposicaoAberta(composicaoAberta?null:item.codProduto)} className="min-w-0 text-left flex items-start gap-1.5 group">
+                    <ArrowDown className={`w-3 h-3 mt-1 text-slate-400 flex-shrink-0 transition-transform ${composicaoAberta?'':'-rotate-90'}`}/>
+                    <span>
+                      <p className="text-sm font-bold text-slate-900 group-hover:text-indigo-700 truncate" title={item.descricao}>{item.descricao}</p>
+                      <p className="text-xs text-slate-500 mt-0.5">Código PA: {item.codProduto} · Qtd pedida: {item.qtdPedida} {item.unidade} {Array.isArray(materiais)?`· ${materiais.length} insumo(s) na composição`:'· composição não cadastrada'}</p>
+                    </span>
+                  </button>
+                  {atual&&<span className="text-[9px] font-black text-blue-700 bg-blue-50 border border-blue-200 rounded-full px-2 py-0.5 whitespace-nowrap flex-shrink-0">→ {SETOR_LABEL[atual.setor]||atual.setor}</span>}
                 </div>
+                {composicaoAberta&&(
+                  <div className="mb-2.5 bg-white border border-slate-200 rounded-lg overflow-hidden">
+                    {!Array.isArray(materiais)&&<p className="text-xs text-slate-400 px-3 py-2">Este produto não tem ficha técnica (composição) cadastrada em "produtos".</p>}
+                    {Array.isArray(materiais)&&materiais.map((m,j)=>{
+                      const est=estoqueDb[m.codigoMP];
+                      const necessario=Number(m.quantidade||0)*Number(item.qtdPedida||0);
+                      const saldo=Number(est?.saldo_disponivel||0);
+                      const falta=necessario-saldo;
+                      return(
+                        <div key={j} className={`flex items-center justify-between gap-3 px-3 py-1.5 text-xs ${j>0?'border-t border-slate-100':''}`}>
+                          <div className="min-w-0">
+                            <span className="font-bold text-slate-700">{m.codigoMP}</span>
+                            <span className="text-slate-500"> — {s(est?.descricao)||'não catalogado no estoque'}</span>
+                          </div>
+                          <div className="flex-shrink-0 text-right">
+                            <span className="text-slate-600">{necessario.toLocaleString('pt-BR',{maximumFractionDigits:3})} {m.um}</span>
+                            {falta>0?<span className="ml-2 font-bold text-red-600" title="Falta em estoque pra essa quantidade">falta {falta.toLocaleString('pt-BR',{maximumFractionDigits:3})}</span>:<span className="ml-2 font-bold text-emerald-600">✓ tem saldo</span>}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
                 <Sel defaultValue="" onChange={e=>{const v=e.target.value;if(v)direcionarItemManual(itensDirecionarBR,item,v);e.target.value='';}}>
                   <option value="">{atual?'Mover pra outro setor...':'Direcionar pra...'}</option>
                   {SETORES.filter(st=>st!==atual?.setor).map(st=><option key={st} value={st}>{SETOR_LABEL[st]}</option>)}
