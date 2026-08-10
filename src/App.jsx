@@ -4386,7 +4386,10 @@ export default function App(){
                             <td className="px-5 py-2.5 text-slate-600 max-w-xs truncate" title={m.descricao}>{m.descricao}</td>
                             <td className="px-5 py-2.5 text-right font-semibold">{fmtD(m.necessario,m.um)}</td>
                             <td className="px-5 py-2.5 text-right text-slate-500">{fmtD(m.saldo,m.um)}</td>
-                            <td className="px-5 py-2.5 text-right font-black">{m.falta>0?<span className="text-red-600">{fmtD(m.falta,m.um)}</span>:<span className="text-emerald-600">OK</span>}</td>
+                            <td className="px-5 py-2.5 text-right font-black">{m.falta>0?(
+                              <button onClick={()=>abrirMotivoFalta({codigoMP:m.codigoMP,descricao:m.descricao,um:m.um,necessario:m.necessario,saldo:m.saldo,falta:m.falta,brOrigem:null,itemDescricao:null})}
+                                className="text-red-600 hover:text-red-700 hover:underline" title="Clique pra ver se já tem compra em andamento">{fmtD(m.falta,m.um)}</button>
+                            ):<span className="text-emerald-600">OK</span>}</td>
                             <td className="px-5 py-2.5 text-slate-400 text-xs">{m.projetos.slice(0,3).join(', ')}{m.projetos.length>3?` +${m.projetos.length-3}`:''}</td>
                           </tr>
                         ))}
