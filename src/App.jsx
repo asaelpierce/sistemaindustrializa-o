@@ -3108,7 +3108,8 @@ export default function App(){
   }),[projAgrup,filtC]);
 
   const navItems=[
-    ...(isAdmin?[{id:'DASHBOARD',label:'Painel Executivo',icon:LayoutDashboard,group:'Visão Geral'},{id:'MESTRA',label:'Mestra PCP',icon:FileSpreadsheet,group:'Visão Geral'},{id:'PLANILHA_MESTRE',label:'Planilha Mestre',icon:FileSpreadsheet,group:'Visão Geral'},{id:'ORDENS_PRODUCAO_SK',label:'OPs (Sankhya)',icon:Factory,group:'Visão Geral'}]:[]),
+    ...(isAdmin?[{id:'DASHBOARD',label:'Painel Executivo',icon:LayoutDashboard,group:'Visão Geral'}]:[]),
+    ...((isAdmin||isPCP)?[{id:'MESTRA',label:'Mestra PCP',icon:FileSpreadsheet,group:'Visão Geral'},{id:'PLANILHA_MESTRE',label:'Planilha Mestre',icon:FileSpreadsheet,group:'Visão Geral'},{id:'ORDENS_PRODUCAO_SK',label:'OPs (Sankhya)',icon:Factory,group:'Visão Geral'}]:[]),
     ...(isPCP?[{id:'OOH',label:'Planejamento (OOH)',icon:Calendar,group:'PCP'}]:[]),
     ...((isPCP||isExp)?[{id:'PRODUCAO',label:'Produção por Setor',icon:Factory,group:'PCP'}]:[]),
     ...(isPCP?[{id:'NOVA_OP',label:'Nova Remessa',icon:PackageOpen,group:'PCP'},{id:'HISTORICO_PCP',label:'Histórico de Envios',icon:History,group:'PCP'},{id:'UPLOAD_ESTOQUE',label:'Sincronizar ERP',icon:UploadCloud,group:'PCP'}]:[]),
@@ -3480,7 +3481,7 @@ export default function App(){
             )}
 
             {/* ── MESTRA PCP (Pedidos de Venda + Faturamento, via Portal de Engenharia) ── */}
-            {aba==='MESTRA'&&isAdmin&&(
+            {aba==='MESTRA'&&(isAdmin||isPCP)&&(
               <div className="space-y-4">
                 <SectionHeader title="Mestra PCP" subtitle="Pedidos de Venda x Faturamento por Projeto BR — dados sincronizados do Portal de Engenharia"
                   actions={<div className="flex gap-2"><Btn variant="dark" size="sm" onClick={sincronizarPedidosEFaturamento} disabled={sincronizandoPedidos}><RefreshCw className={`w-4 h-4 ${sincronizandoPedidos?'animate-spin':''}`}/>Sincronizar Sankhya</Btn><Btn variant="secondary" size="sm" onClick={()=>{fetchMestra();fetchImportacaoPendente();}} disabled={mestraLoading}><RefreshCw className={`w-4 h-4 ${mestraLoading?'animate-spin':''}`}/>Recarregar</Btn></div>}/>
@@ -3943,7 +3944,7 @@ export default function App(){
             )}
 
             {/* ── PLANILHA MESTRE — réplica literal da planilha do PCP ─────── */}
-            {aba==='PLANILHA_MESTRE'&&isAdmin&&(
+            {aba==='PLANILHA_MESTRE'&&(isAdmin||isPCP)&&(
               <div className="space-y-4">
                 <SectionHeader title="Planilha Mestre" subtitle="Mesmas colunas da planilha do PCP — uma linha por BR, dados já sincronizados do Sankhya"
                   actions={<div className="flex gap-2"><Btn variant="dark" size="sm" onClick={sincronizarPedidosEFaturamento} disabled={sincronizandoPedidos}><RefreshCw className={`w-4 h-4 ${sincronizandoPedidos?'animate-spin':''}`}/>Sincronizar Sankhya</Btn><Btn variant="secondary" size="sm" onClick={()=>{fetchMestra();fetchPlanilhaMestreCampos();fetchImportacaoPendente();}} disabled={mestraLoading||planilhaMestreLoading}><RefreshCw className={`w-4 h-4 ${(mestraLoading||planilhaMestreLoading)?'animate-spin':''}`}/>Recarregar</Btn></div>}/>
@@ -4162,7 +4163,7 @@ export default function App(){
             )}
 
             {/* ── OPs (Sankhya) — Ordens de Produção reais, com itens de MP ── */}
-            {aba==='ORDENS_PRODUCAO_SK'&&isAdmin&&(
+            {aba==='ORDENS_PRODUCAO_SK'&&(isAdmin||isPCP)&&(
               <div className="space-y-4">
                 <SectionHeader title="OPs (Sankhya)" subtitle="Ordens de Produção reais — qual OP é de qual projeto, setor (Processo Produtivo) e itens de matéria-prima consumidos"
                   actions={<div className="flex items-center gap-2">
