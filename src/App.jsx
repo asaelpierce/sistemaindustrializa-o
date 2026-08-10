@@ -1700,7 +1700,7 @@ export default function App(){
         const sit=situacaoDoPedidoOOH(br,p.nunota);
         if(sit&&!agrup[br].situacaoEspecial)agrup[br].situacaoEspecial=sit;
         if(!itensPorBR[br])itensPorBR[br]=[];
-        if(p.cod_produto)itensPorBR[br].push({codProduto:s(p.cod_produto),quantidade:qtd});
+        if(p.cod_produto)itensPorBR[br].push({codProduto:s(p.cod_produto),descricao:p.produto_descricao,quantidade:qtd});
       });
 
       const planPorBR={};
@@ -1852,10 +1852,19 @@ export default function App(){
   // Previsão de consumo de matéria-prima: soma (quantidade do item × qtd de MP por unidade, via composição) por código de MP
   const previsaoMP=useMemo(()=>{
     const necessidade={};
+    const semFichaTecnicaPorCod={};
     oohEfetivosDoMes.forEach(proj=>{
       (proj.itens||[]).forEach(it=>{
         const prod=produtosDb[it.codProduto];
-        if(!prod||!Array.isArray(prod.materiais))return;
+        if(!prod||!Array.isArray(prod.materiais)){
+          // Sem isso, o item some do cálculo sem deixar rastro — parece "sem risco de
+          // falta" quando na verdade é "sem dado pra saber". Registrado pra avisar,
+          // não simplesmente ignorado.
+          const key=it.codProduto;
+          if(!semFichaTecnicaPorCod[key])semFichaTecnicaPorCod[key]={codProduto:it.codProduto,descricao:it.descricao,brs:new Set()};
+          semFichaTecnicaPorCod[key].brs.add(proj.br);
+          return;
+        }
         prod.materiais.forEach(m=>{
           const qtdNecessaria=Number(m.quantidade||0)*it.quantidade;
           if(!necessidade[m.codigoMP])necessidade[m.codigoMP]={codigoMP:m.codigoMP,um:m.um,necessario:0,projetos:new Set()};
@@ -1864,11 +1873,13 @@ export default function App(){
         });
       });
     });
-    return Object.values(necessidade).map(n=>{
+    const lista=Object.values(necessidade).map(n=>{
       const saldo=estoqueDb[n.codigoMP]?.saldo_disponivel||0;
       const descricao=estoqueDb[n.codigoMP]?.descricao||'—';
       return{...n,projetos:[...n.projetos],saldo,falta:Math.max(0,n.necessario-saldo),descricao};
     }).sort((a,b)=>b.falta-a.falta);
+    const semFichaTecnica=Object.values(semFichaTecnicaPorCod).map(x=>({...x,brs:[...x.brs]})).sort((a,b)=>b.brs.length-a.brs.length);
+    return Object.assign(lista,{semFichaTecnica});
   },[oohEfetivosDoMes,produtosDb,estoqueDb]);
 
   // ── Produção por Setor: Ordem de Produção própria, por BR (independente de remessas) ──
@@ -4364,7 +4375,22 @@ export default function App(){
                     {previsaoMP.filter(m=>m.falta>0).length>0&&<span className="text-[10px] font-black text-red-600 bg-red-50 px-2 py-1 rounded-full">{previsaoMP.filter(m=>m.falta>0).length} materiais com risco de falta</span>}
                   </button>
                   {oohSecaoMPAberta&&(
-                  <div className="overflow-x-auto custom-scrollbar border-t border-slate-100">
+                  <div className="border-t border-slate-100">
+                    {previsaoMP.semFichaTecnica?.length>0&&(
+                      <div className="px-5 py-3 bg-amber-50 border-b border-amber-100">
+                        <p className="text-xs font-black text-amber-800">
+                          ⚠ {previsaoMP.semFichaTecnica.length} produto(s) sem ficha técnica cadastrada — NÃO entram nesse cálculo (não é "sem risco", é "sem dado"):
+                        </p>
+                        <div className="mt-1.5 space-y-0.5 max-h-32 overflow-y-auto custom-scrollbar">
+                          {previsaoMP.semFichaTecnica.map((x,i)=>(
+                            <p key={i} className="text-[11px] text-amber-700">
+                              <span className="font-bold">{x.codProduto}</span> — {s(x.descricao)?.slice(0,70)||'—'} <span className="text-amber-500">({x.brs.join(', ')})</span>
+                            </p>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                    <div className="overflow-x-auto custom-scrollbar">
                     <table className="w-full text-sm">
                       <thead className="bg-slate-50/50 border-b border-slate-100">
                         <tr className="text-left text-[10px] font-black text-slate-500 uppercase tracking-wider">
@@ -4395,6 +4421,7 @@ export default function App(){
                         ))}
                       </tbody>
                     </table>
+                    </div>
                   </div>
                   )}
                 </div>
