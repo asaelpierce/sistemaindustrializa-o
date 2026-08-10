@@ -302,10 +302,11 @@ function AndamentoSelect({value,onChange}){
 // usa formatação própria pra funcionar como componente top-level.
 const OOH_COLUNAS=['BR / Pedido','Cliente','Vendedor','Descrição','Previsto (CP)','MP Pronta','Valor','Situação','Andamento','Ação'];
 
-function OOHTabelaHeader(){
+function OOHTabelaHeader({comSelecao}){
   return(
     <thead className="bg-slate-50 border-b border-slate-200">
       <tr className="text-left text-[10px] font-black text-slate-500 uppercase tracking-wider">
+        {comSelecao&&<th className="px-3 py-2.5 w-8"></th>}
         <th className="px-3 py-2.5">BR</th>
         <th className="px-3 py-2.5">Cliente</th>
         <th className="px-3 py-2.5">Vendedor</th>
@@ -339,13 +340,18 @@ function SkeletonRows({linhas=6,colunas=6}){
   );
 }
 
-const OOHProjetoRow=React.memo(function OOHProjetoRow({p,onAndamento,onReprogramar}){
+const OOHProjetoRow=React.memo(function OOHProjetoRow({p,onAndamento,onReprogramar,selecionavel,selecionado,onToggleSelecao}){
   const txt=v=>(v===null||v===undefined)?'':String(v);
   const dt=v=>{if(!v)return'—';const m=String(v).match(/^(\d{4})-(\d{2})-(\d{2})/);return m?`${m[3]}/${m[2]}/${m[1]}`:new Date(v).toLocaleDateString('pt-BR');};
   const moeda=v=>{const n=Number(v)||0;return n.toLocaleString('pt-BR',{style:'currency',currency:'BRL',maximumFractionDigits:0});};
   const sitCfg={PENDENTE:{l:'Pendente',c:'bg-orange-50 text-orange-700 border-orange-200'},CANCELADO:{l:'Cancelado',c:'bg-slate-200 text-slate-700 border-slate-300'}}[p.situacaoEspecial?.status];
   return(
-    <tr className={`hover:bg-slate-50 ${p.precisaEntrarNaEsteira?'bg-red-50/40':''}`}>
+    <tr className={`hover:bg-slate-50 ${p.precisaEntrarNaEsteira?'bg-red-50/40':''} ${selecionavel&&!selecionado?'opacity-40':''}`}>
+      {selecionavel&&(
+        <td className="px-3 py-2">
+          <input type="checkbox" checked={!!selecionado} onChange={onToggleSelecao} className="w-4 h-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-400 cursor-pointer"/>
+        </td>
+      )}
       <td className="px-3 py-2 font-bold text-indigo-700 whitespace-nowrap">
         {p.br}
         {p.precisaEntrarNaEsteira&&<span className="ml-1.5 text-red-500" title="Faltam 20 dias ou menos pro CP — colocar na esteira de fabricação">⚠</span>}
@@ -1636,6 +1642,14 @@ export default function App(){
   const [oohSecaoAtrasadosAberta,setOohSecaoAtrasadosAberta]=useState(true);
   const [oohSecaoMPAberta,setOohSecaoMPAberta]=useState(false);
   const [oohModalBR,setOohModalBR]=useState(null);
+  // Fechamento mensal: o PCP revisa os projetos previstos pro mês, desmarca os
+  // que não vão entrar de fato, e "fecha" — isso grava um snapshot (quem fechou,
+  // quando, quais BRs) que não é recalculado depois, diferente do resto do OOH
+  // que é sempre ao vivo a partir dos pedidos.
+  const [oohFechamentos,setOohFechamentos]=useState({}); // {[mesReferencia]: {brsSelecionados:[...],fechadoPor,fechadoEm}}
+  const [oohSelecao,setOohSelecao]=useState({}); // {[br]: boolean} — override manual da sessão atual, por cima do snapshot
+  const [fechandoOOH,setFechandoOOH]=useState(false);
+  useEffect(()=>{setOohSelecao({});},[oohMesRef]); // troca de mês reseta os overrides manuais
   const abrirReprogramarOOH=useCallback(p=>{
     setOohModalBR(p);
     setOohForm({status:p.plano?.status||'REPROGRAMADO',novaData:p.plano?.nova_data||'',justificativa:p.plano?.justificativa||''});
@@ -1724,6 +1738,50 @@ export default function App(){
       setOohLoading(false);
     }
   },[supabase]);
+
+  const fetchFechamentosOOH=useCallback(async()=>{
+    if(!supabase)return;
+    try{
+      const{data,error}=await supabase.from('ooh_fechamentos_mensais').select('*');
+      if(error)throw error;
+      const m={};
+      (data||[]).forEach(f=>{m[f.mes_referencia]={brsSelecionados:(f.brs_selecionados||[]).map(x=>x.br),snapshot:f.brs_selecionados||[],fechadoPor:f.fechado_por,fechadoEm:f.fechado_em};});
+      setOohFechamentos(m);
+    }catch(e){addToast('Erro ao buscar fechamentos do OOH: '+e.message,'error');}
+  },[supabase]);
+  useEffect(()=>{if(supabase&&aba==='OOH')fetchFechamentosOOH();},[supabase,aba]);
+
+  // Checked = override manual desta sessão, senão o que já foi fechado (se o mês
+  // já foi fechado), senão TRUE por padrão (todo previsto começa marcado, o PCP
+  // desmarca quem não vai entrar de fato).
+  const oohBrSelecionado=useCallback((br)=>{
+    if(oohSelecao[br]!==undefined)return oohSelecao[br];
+    const fech=oohFechamentos[oohMesRef];
+    return fech?fech.brsSelecionados.includes(br):true;
+  },[oohSelecao,oohFechamentos,oohMesRef]);
+  const toggleOohSelecao=br=>setOohSelecao(prev=>({...prev,[br]:!oohBrSelecionado(br)}));
+
+  const fecharPlanejamentoOOH=async()=>{
+    const selecionados=oohDoMes.filter(p=>oohBrSelecionado(p.br));
+    if(selecionados.length===0)return addToast('Selecione ao menos um projeto antes de fechar.','error');
+    const jaFechado=!!oohFechamentos[oohMesRef];
+    if(!window.confirm(`${jaFechado?'Re-fechar':'Fechar'} o planejamento de ${oohMesRef} com ${selecionados.length} de ${oohDoMes.length} projeto(s) selecionado(s)?\n\nIsso fica registrado como a decisão oficial do PCP pra este mês.`))return;
+    setFechandoOOH(true);
+    try{
+      const snapshot=selecionados.map(p=>({br:p.br,cliente:p.cliente,valorPrevisto:p.valorTotal}));
+      const valorSelecionado=selecionados.reduce((acc,p)=>acc+Number(p.valorTotal||0),0);
+      const{error}=await supabase.from('ooh_fechamentos_mensais').upsert([{
+        mes_referencia:oohMesRef,brs_selecionados:snapshot,total_previstos:oohDoMes.length,
+        total_selecionados:selecionados.length,valor_selecionado:valorSelecionado,
+        fechado_por:s(usuarioLogado?.nome),fechado_em:new Date().toISOString(),atualizado_em:new Date().toISOString(),
+      }]);
+      if(error)throw error;
+      addToast(`Planejamento de ${oohMesRef} fechado: ${selecionados.length} projeto(s).`);
+      setOohSelecao({});
+      fetchFechamentosOOH();
+    }catch(e){addToast('Erro ao fechar planejamento: '+e.message,'error');}
+    finally{setFechandoOOH(false);}
+  };
 
   useEffect(()=>{if(supabase&&aba==='OOH'&&oohProjetos.length===0)fetchOOH();},[supabase,aba]);
 
@@ -1822,6 +1880,7 @@ export default function App(){
   const [producaoRealMes,setProducaoRealMes]=useState('TODOS');
   const [producaoRealBusca,setProducaoRealBusca]=useState('');
   const [producaoRealVisivel,setProducaoRealVisivel]=useState(true);
+  const [producaoRealExpandido,setProducaoRealExpandido]=useState(false);
   const [itensDirecionarBR,setItensDirecionarBR]=useState(null); // {br,cliente,itensCompletos} — modal "Ver itens e direcionar"
   const [itemComposicaoAberta,setItemComposicaoAberta]=useState(null); // codProduto expandido no modal acima
   const [motivoFaltaMP,setMotivoFaltaMP]=useState(null); // {codigoMP,descricao,um,necessario,saldo,falta,brOrigem}
@@ -4237,15 +4296,26 @@ export default function App(){
                     </div>
                   </div>
 
+                  {oohFechamentos[oohMesRef]&&(
+                    <div className="px-5 py-2.5 bg-teal-50 border-b border-teal-100 flex items-center gap-2 flex-wrap">
+                      <CheckCircle className="w-3.5 h-3.5 text-teal-600 flex-shrink-0"/>
+                      <p className="text-xs font-bold text-teal-800">
+                        Fechado por {s(oohFechamentos[oohMesRef].fechadoPor)||'—'} em {fmtDt(oohFechamentos[oohMesRef].fechadoEm)} — {oohFechamentos[oohMesRef].brsSelecionados.length} projeto(s) confirmado(s).
+                      </p>
+                      <span className="text-[10px] text-teal-600">Pode ajustar a seleção abaixo e fechar de novo se algo mudou.</span>
+                    </div>
+                  )}
+
                   {oohLoading&&<SkeletonRows linhas={5} colunas={6}/>}
                   {!oohLoading&&oohDoMes.length===0&&<div className="px-5 py-10 text-center text-slate-400 font-semibold">Nenhum projeto previsto para este mês.</div>}
 
                   {!oohLoading&&oohDoMes.length>0&&!oohVisaoSemanal&&(
                     <div className="overflow-x-auto custom-scrollbar">
                       <table className="w-full text-sm">
-                        <OOHTabelaHeader/>
+                        <OOHTabelaHeader comSelecao/>
                         <tbody className="divide-y divide-slate-100">
-                          {oohDoMes.map(p=><OOHProjetoRow key={p.br} p={p} onAndamento={atualizarAndamento} onReprogramar={abrirReprogramarOOH}/>)}
+                          {oohDoMes.map(p=><OOHProjetoRow key={p.br} p={p} onAndamento={atualizarAndamento} onReprogramar={abrirReprogramarOOH}
+                            selecionavel selecionado={oohBrSelecionado(p.br)} onToggleSelecao={()=>toggleOohSelecao(p.br)}/>)}
                         </tbody>
                       </table>
                     </div>
@@ -4254,19 +4324,31 @@ export default function App(){
                   {!oohLoading&&oohDoMes.length>0&&oohVisaoSemanal&&(
                     <div className="overflow-x-auto custom-scrollbar">
                       <table className="w-full text-sm">
-                        <OOHTabelaHeader/>
+                        <OOHTabelaHeader comSelecao/>
                         {oohPorSemana.map(g=>(
                           <tbody key={g.semana} className="divide-y divide-slate-100">
                             <tr className="bg-slate-100/70">
-                              <td colSpan={OOH_COLUNAS.length} className="px-3 py-1.5">
+                              <td colSpan={OOH_COLUNAS.length+1} className="px-3 py-1.5">
                                 <span className="text-[11px] font-black text-slate-500 uppercase">Semana {g.semana}</span>
                                 <span className="text-[11px] font-bold text-slate-500 float-right">{g.projetos.length} projeto{g.projetos.length>1?'s':''} · {fmtMoeda(g.valorTotal)}</span>
                               </td>
                             </tr>
-                            {g.projetos.map(p=><OOHProjetoRow key={p.br} p={p} onAndamento={atualizarAndamento} onReprogramar={abrirReprogramarOOH}/>)}
+                            {g.projetos.map(p=><OOHProjetoRow key={p.br} p={p} onAndamento={atualizarAndamento} onReprogramar={abrirReprogramarOOH}
+                              selecionavel selecionado={oohBrSelecionado(p.br)} onToggleSelecao={()=>toggleOohSelecao(p.br)}/>)}
                           </tbody>
                         ))}
                       </table>
+                    </div>
+                  )}
+
+                  {!oohLoading&&oohDoMes.length>0&&(
+                    <div className="px-5 py-3.5 border-t border-slate-100 bg-slate-50 flex items-center justify-between flex-wrap gap-2">
+                      <p className="text-xs font-bold text-slate-500">
+                        {oohDoMes.filter(p=>oohBrSelecionado(p.br)).length} de {oohDoMes.length} selecionado(s) pra fechar
+                      </p>
+                      <Btn variant="dark" size="sm" onClick={fecharPlanejamentoOOH} disabled={fechandoOOH}>
+                        <CheckCircle className={`w-4 h-4 ${fechandoOOH?'animate-pulse':''}`}/>{oohFechamentos[oohMesRef]?'Re-fechar planejamento':'Fechar planejamento do mês'}
+                      </Btn>
                     </div>
                   )}
                 </div>
@@ -4347,14 +4429,20 @@ export default function App(){
                     diferentes ao mesmo tempo, porque cada item tem sua própria OP.
                     Ex: chapa na Vulcanização, cerâmica padrão na Pintura, cerâmica
                     recortada no Corte — tudo do mesmo projeto, simultaneamente. */}
-                <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
+                <div className={producaoRealExpandido?'fixed inset-0 z-50 bg-white overflow-y-auto':'bg-white rounded-2xl border border-slate-200 overflow-hidden'}>
                   <button onClick={()=>setProducaoRealVisivel(v=>!v)} className="w-full flex items-center justify-between px-5 py-3.5 hover:bg-slate-50 transition-colors">
                     <div className="flex items-center gap-2.5">
                       <ArrowDown className={`w-3.5 h-3.5 text-slate-400 transition-transform ${producaoRealVisivel?'':'-rotate-90'}`}/>
                       <span className="text-sm font-black text-slate-800">Visão Real por Projeto (Sankhya)</span>
-                      <span className="text-[10px] font-bold text-slate-400 bg-slate-100 px-2 py-0.5 rounded-full">um BR pode estar em vários setores ao mesmo tempo</span>
+                      <span className="text-[10px] font-bold text-slate-400 bg-slate-100 px-2 py-0.5 rounded-full hidden sm:inline">um BR pode estar em vários setores ao mesmo tempo</span>
                     </div>
-                    <span className="text-xs font-bold text-slate-400">{producaoRealPorBR.length} projetos</span>
+                    <div className="flex items-center gap-3">
+                      <span className="text-xs font-bold text-slate-400">{producaoRealPorBR.length} projetos</span>
+                      <span onClick={e=>{e.stopPropagation();setProducaoRealExpandido(v=>!v);}} title={producaoRealExpandido?'Sair da tela cheia':'Expandir pra tela cheia'}
+                        className="p-1.5 rounded-lg hover:bg-slate-100 text-slate-500 cursor-pointer">
+                        {producaoRealExpandido?<Minimize2 className="w-4 h-4"/>:<Maximize2 className="w-4 h-4"/>}
+                      </span>
+                    </div>
                   </button>
                   {producaoRealVisivel&&(
                     <div className="px-5 pb-5">
@@ -4377,7 +4465,7 @@ export default function App(){
                       {(mestraLoading||opsSankhyaLoading)&&(
                         <p className="text-xs text-amber-600 font-semibold mb-3 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">⏳ Carregando dados do Sankhya — os badges de OP real só ficam confiáveis depois que terminar.</p>
                       )}
-                      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3 max-h-[500px] overflow-y-auto custom-scrollbar">
+                      <div className={`grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 ${producaoRealExpandido?'xl:grid-cols-4 max-h-[calc(100vh-220px)]':'max-h-[500px]'} gap-3 overflow-y-auto custom-scrollbar`}>
                         {producaoRealPorBRFiltrada.length===0&&<p className="text-xs text-slate-400 col-span-full text-center py-6">Nenhum projeto encontrado.</p>}
                         {producaoRealPorBRFiltrada.map(p=>(
                           <div key={p.br} className={`rounded-xl border p-3 ${p.temPendente?'border-blue-200 bg-blue-50/20':'border-slate-200'}`}>                            <div className="flex items-center justify-between gap-2">
