@@ -1824,6 +1824,28 @@ export default function App(){
   const [producaoRealVisivel,setProducaoRealVisivel]=useState(true);
   const [itensDirecionarBR,setItensDirecionarBR]=useState(null); // {br,cliente,itensCompletos} — modal "Ver itens e direcionar"
   const [itemComposicaoAberta,setItemComposicaoAberta]=useState(null); // codProduto expandido no modal acima
+  const [motivoFaltaMP,setMotivoFaltaMP]=useState(null); // {codigoMP,descricao,um,necessario,saldo,falta,brOrigem}
+  const [comprasPendentesMP,setComprasPendentesMP]=useState([]);
+  const [carregandoMotivoFalta,setCarregandoMotivoFalta]=useState(false);
+  const [novoLoteQtd,setNovoLoteQtd]=useState({}); // {[codProduto]: quantidade digitada pro próximo lote}
+  // Por que uma MP está faltando pra esse item? Cruza: (1) quanto já está enviado
+  // pra terceiros/industrialização e não voltou ainda (ctrlTopMPs), (2) quanto
+  // outros projetos do mês também estão demandando dessa mesma MP (previsaoMP),
+  // e (3) se já existe compra em andamento pra ela (Sankhya, tabela compras_pendentes).
+  const abrirMotivoFalta=async(mpInfo)=>{
+    setMotivoFaltaMP(mpInfo);
+    setComprasPendentesMP([]);
+    setCarregandoMotivoFalta(true);
+    try{
+      const{data,error}=await supabase.from('compras_pendentes')
+        .select('numero_pedido,fornecedor,quantidade_pendente,data_prevista_entrega,dias_atraso_entrega,br')
+        .eq('codigo_produto',mpInfo.codigoMP).gt('quantidade_pendente',0)
+        .order('data_prevista_entrega',{ascending:true});
+      if(error)throw error;
+      setComprasPendentesMP(data||[]);
+    }catch(e){addToast('Erro ao buscar compras pendentes: '+e.message,'error');}
+    finally{setCarregandoMotivoFalta(false);}
+  };
 
   // Classificação PG1: alguns itens são "passagem direta" (não passam por
   // produção interna, vão reto pra expedição) — Kalfix, Kalpoxy, Chockybar,
@@ -1961,35 +1983,39 @@ export default function App(){
     }catch(e){addToast('Erro: '+e.message,'error');}
   };
 
-  // Direciona (ou redireciona) um item ESPECÍFICO de um BR pra um setor — de forma
-  // manual, item a item, porque a classificação automática (PG1) só cobre 2 padrões
-  // e a maioria dos itens não cai em nenhum deles. Se já existe uma ordem ativa
-  // (não concluída) pra esse mesmo item, ATUALIZA o setor dela em vez de duplicar —
-  // um item só está fisicamente em um lugar por vez.
-  const direcionarItemManual=async(p,item,setor)=>{
+  // Direciona parte (ou todo) de um item pra um setor — como um LOTE, não o item
+  // inteiro obrigatoriamente. Isso permite, por exemplo, mandar 4 peças de um
+  // item de 10 pra Vulcanização e as outras 6 pra Corte, em direcionamentos
+  // separados. Cada lote é uma linha própria em ordens_producao.
+  const direcionarLoteItem=async(p,item,setor,quantidade)=>{
     if(setor==='EXPEDICAO'){
-      addToast(`${p.br}: "${s(item.descricao).slice(0,40)}" vai direto pra expedição, não precisa de OP de produção.`);
+      addToast(`${p.br}: ${quantidade} ${item.unidade||''} de "${s(item.descricao).slice(0,40)}" vai direto pra expedição, não precisa de OP de produção.`);
       return;
     }
     if(!setor)return addToast('Selecione um setor.','error');
+    const qtd=Number(quantidade);
+    if(!qtd||qtd<=0)return addToast('Informe uma quantidade válida pro lote.','error');
     try{
-      const existente=ordensProducao.find(o=>o.br===p.br&&o.cod_produto===item.codProduto&&o.status!=='CONCLUIDO');
-      if(existente){
-        if(existente.setor===setor)return addToast(`Já está em ${SETOR_LABEL[setor]}.`);
-        const{error}=await supabase.from('ordens_producao').update({setor,atualizado_por:s(usuarioLogado?.nome),atualizado_em:new Date().toISOString()}).eq('id',existente.id);
-        if(error)throw error;
-        addToast(`Movido: "${s(item.descricao).slice(0,30)}" → ${SETOR_LABEL[setor]}.`);
-      }else{
-        const id=`OP-${Date.now()}-${item.codProduto}`;
-        const{error}=await supabase.from('ordens_producao').insert([{
-          id,br:p.br,cliente:s(p.cliente),setor,cod_produto:item.codProduto,quantidade:item.qtdPedida,
-          descricao:s(item.descricao),status:'FILA',criado_por:s(usuarioLogado?.nome),
-        }]);
-        if(error)throw error;
-        addToast(`"${s(item.descricao).slice(0,30)}" direcionado pra ${SETOR_LABEL[setor]}!`);
-      }
+      const id=`OP-${Date.now()}-${item.codProduto}`;
+      const{error}=await supabase.from('ordens_producao').insert([{
+        id,br:p.br,cliente:s(p.cliente),setor,cod_produto:item.codProduto,quantidade:qtd,
+        descricao:s(item.descricao),status:'FILA',criado_por:s(usuarioLogado?.nome),
+      }]);
+      if(error)throw error;
+      addToast(`${qtd} ${item.unidade||''} de "${s(item.descricao).slice(0,30)}" direcionado(s) pra ${SETOR_LABEL[setor]}!`);
       fetchOrdensProducao();
-    }catch(e){addToast('Erro ao direcionar item: '+e.message,'error');}
+    }catch(e){addToast('Erro ao direcionar lote: '+e.message,'error');}
+  };
+
+  // Move um lote JÁ CRIADO pra outro setor (não muda a quantidade, só o destino).
+  const moverLoteExistente=async(lote,novoSetor)=>{
+    if(lote.setor===novoSetor)return;
+    try{
+      const{error}=await supabase.from('ordens_producao').update({setor:novoSetor,atualizado_por:s(usuarioLogado?.nome),atualizado_em:new Date().toISOString()}).eq('id',lote.id);
+      if(error)throw error;
+      addToast(`Lote de ${lote.quantidade||'?'} movido pra ${SETOR_LABEL[novoSetor]}.`);
+      fetchOrdensProducao();
+    }catch(e){addToast('Erro ao mover lote: '+e.message,'error');}
   };
 
 
@@ -7000,24 +7026,38 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
 
       {/* ── MODAL: Direcionar itens de um BR por área (cada item pode ir pra um
            setor diferente — a classificação automática só cobre 2 padrões) ── */}
-      <Modal open={!!itensDirecionarBR} onClose={()=>{setItensDirecionarBR(null);setItemComposicaoAberta(null);}} title={`Direcionar itens — ${itensDirecionarBR?.br}`} subtitle={`${s(itensDirecionarBR?.cliente)} · escolha a área de cada item, um por um`} maxWidth="max-w-2xl">
+      <Modal open={!!itensDirecionarBR} onClose={()=>{setItensDirecionarBR(null);setItemComposicaoAberta(null);}} title={`Direcionar itens — ${itensDirecionarBR?.br}`} subtitle={`${s(itensDirecionarBR?.cliente)} · pode dividir um item em lotes pra setores diferentes`} maxWidth="max-w-2xl">
         <div className="space-y-2">
           {(itensDirecionarBR?.itensCompletos||[]).map((item,i)=>{
-            const atual=ordensProducao.find(o=>o.br===itensDirecionarBR.br&&o.cod_produto===item.codProduto&&o.status!=='CONCLUIDO');
+            const lotes=ordensProducao.filter(o=>o.br===itensDirecionarBR.br&&o.cod_produto===item.codProduto&&o.status!=='CONCLUIDO');
+            const qtdAlocada=lotes.reduce((acc,l)=>acc+Number(l.quantidade||0),0);
+            const qtdRestante=Math.max(0,Number(item.qtdPedida||0)-qtdAlocada);
             const materiais=produtosDb[item.codProduto]?.materiais;
             const composicaoAberta=itemComposicaoAberta===item.codProduto;
+            const qtdNovoLote=novoLoteQtd[item.codProduto]??qtdRestante;
             return(
               <div key={i} className="bg-slate-50 border border-slate-100 rounded-xl px-4 py-3">
-                <div className="flex items-start justify-between gap-3 mb-2">
-                  <button onClick={()=>setItemComposicaoAberta(composicaoAberta?null:item.codProduto)} className="min-w-0 text-left flex items-start gap-1.5 group">
-                    <ArrowDown className={`w-3 h-3 mt-1 text-slate-400 flex-shrink-0 transition-transform ${composicaoAberta?'':'-rotate-90'}`}/>
-                    <span>
-                      <p className="text-sm font-bold text-slate-900 group-hover:text-indigo-700 truncate" title={item.descricao}>{item.descricao}</p>
-                      <p className="text-xs text-slate-500 mt-0.5">Código PA: {item.codProduto} · Qtd pedida: {item.qtdPedida} {item.unidade} {Array.isArray(materiais)?`· ${materiais.length} insumo(s) na composição`:'· composição não cadastrada'}</p>
-                    </span>
-                  </button>
-                  {atual&&<span className="text-[9px] font-black text-blue-700 bg-blue-50 border border-blue-200 rounded-full px-2 py-0.5 whitespace-nowrap flex-shrink-0">→ {SETOR_LABEL[atual.setor]||atual.setor}</span>}
-                </div>
+                <button onClick={()=>setItemComposicaoAberta(composicaoAberta?null:item.codProduto)} className="w-full text-left flex items-start gap-1.5 group mb-2">
+                  <ArrowDown className={`w-3 h-3 mt-1 text-slate-400 flex-shrink-0 transition-transform ${composicaoAberta?'':'-rotate-90'}`}/>
+                  <span className="min-w-0">
+                    <p className="text-sm font-bold text-slate-900 group-hover:text-indigo-700 truncate" title={item.descricao}>{item.descricao}</p>
+                    <p className="text-xs text-slate-500 mt-0.5">Código PA: {item.codProduto} · Qtd pedida: {item.qtdPedida} {item.unidade} {Array.isArray(materiais)?`· ${materiais.length} insumo(s) na composição`:'· composição não cadastrada'}</p>
+                  </span>
+                </button>
+
+                {lotes.length>0&&(
+                  <div className="flex flex-wrap gap-1.5 mb-2">
+                    {lotes.map((l,li)=>(
+                      <span key={li} className="inline-flex items-center gap-1 text-[10px] font-black bg-blue-50 text-blue-700 border border-blue-200 rounded-full pl-2.5 pr-1 py-0.5">
+                        {l.quantidade} {item.unidade} →
+                        <select value={l.setor} onChange={e=>moverLoteExistente(l,e.target.value)} className="bg-transparent border-none text-blue-700 font-black text-[10px] focus:outline-none cursor-pointer pr-1">
+                          {SETORES.map(st=><option key={st} value={st}>{SETOR_LABEL[st]}</option>)}
+                        </select>
+                      </span>
+                    ))}
+                  </div>
+                )}
+
                 {composicaoAberta&&(
                   <div className="mb-2.5 bg-white border border-slate-200 rounded-lg overflow-hidden">
                     {!Array.isArray(materiais)&&<p className="text-xs text-slate-400 px-3 py-2">Este produto não tem ficha técnica (composição) cadastrada em "produtos".</p>}
@@ -7034,18 +7074,34 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
                           </div>
                           <div className="flex-shrink-0 text-right">
                             <span className="text-slate-600">{necessario.toLocaleString('pt-BR',{maximumFractionDigits:3})} {m.um}</span>
-                            {falta>0?<span className="ml-2 font-bold text-red-600" title="Falta em estoque pra essa quantidade">falta {falta.toLocaleString('pt-BR',{maximumFractionDigits:3})}</span>:<span className="ml-2 font-bold text-emerald-600">✓ tem saldo</span>}
+                            {falta>0?(
+                              <button onClick={()=>abrirMotivoFalta({codigoMP:m.codigoMP,descricao:s(est?.descricao),um:m.um,necessario,saldo,falta,brOrigem:itensDirecionarBR.br,itemDescricao:item.descricao})}
+                                className="ml-2 font-bold text-red-600 hover:text-red-700 hover:underline" title="Clique pra ver o motivo da falta">
+                                falta {falta.toLocaleString('pt-BR',{maximumFractionDigits:3})}
+                              </button>
+                            ):<span className="ml-2 font-bold text-emerald-600">✓ tem saldo</span>}
                           </div>
                         </div>
                       );
                     })}
                   </div>
                 )}
-                <Sel defaultValue="" onChange={e=>{const v=e.target.value;if(v)direcionarItemManual(itensDirecionarBR,item,v);e.target.value='';}}>
-                  <option value="">{atual?'Mover pra outro setor...':'Direcionar pra...'}</option>
-                  {SETORES.filter(st=>st!==atual?.setor).map(st=><option key={st} value={st}>{SETOR_LABEL[st]}</option>)}
-                  <option value="EXPEDICAO">Direto p/ Expedição (não vira OP)</option>
-                </Sel>
+
+                {qtdRestante>0?(
+                  <div className="flex items-center gap-2">
+                    <input type="number" min="0" step="any" value={qtdNovoLote}
+                      onChange={e=>setNovoLoteQtd(prev=>({...prev,[item.codProduto]:e.target.value}))}
+                      className="w-20 text-xs border border-slate-200 rounded-lg px-2 py-1.5 focus:outline-none focus:ring-2 focus:ring-indigo-200"/>
+                    <span className="text-[10px] text-slate-400 whitespace-nowrap">de {qtdRestante} {item.unidade} restante</span>
+                    <Sel defaultValue="" onChange={e=>{const v=e.target.value;if(v){direcionarLoteItem(itensDirecionarBR,item,v,qtdNovoLote);setNovoLoteQtd(prev=>({...prev,[item.codProduto]:undefined}));}e.target.value='';}} className="flex-1 !py-1.5 !text-xs">
+                      <option value="">Direcionar esse lote pra...</option>
+                      {SETORES.map(st=><option key={st} value={st}>{SETOR_LABEL[st]}</option>)}
+                      <option value="EXPEDICAO">Direto p/ Expedição (não vira OP)</option>
+                    </Sel>
+                  </div>
+                ):(
+                  <p className="text-[10px] text-emerald-600 font-bold">✓ Item 100% direcionado ({lotes.length} lote{lotes.length>1?'s':''}).</p>
+                )}
               </div>
             );
           })}
@@ -7053,6 +7109,57 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
             <p className="text-sm text-slate-400 text-center py-6">Nenhum item encontrado.</p>
           )}
         </div>
+      </Modal>
+
+      {/* ── MODAL: Motivo da falta de uma matéria-prima ─────────────────── */}
+      <Modal open={!!motivoFaltaMP} onClose={()=>setMotivoFaltaMP(null)} title={`Por que falta: ${motivoFaltaMP?.codigoMP} — ${s(motivoFaltaMP?.descricao)}`} subtitle={motivoFaltaMP?.itemDescricao?`Pro item: ${s(motivoFaltaMP.itemDescricao).slice(0,60)}`:''} maxWidth="max-w-lg">
+        {motivoFaltaMP&&(()=>{
+          const naRua=ctrlTopMPs.find(m=>m.codigoMP===motivoFaltaMP.codigoMP);
+          const noMes=previsaoMP.find(m=>m.codigoMP===motivoFaltaMP.codigoMP);
+          const outrosProjetosNoMes=(noMes?.projetos||[]).filter(br=>br!==motivoFaltaMP.brOrigem);
+          return(
+            <div className="space-y-3">
+              <div className="grid grid-cols-3 gap-2 text-center">
+                <div className="bg-slate-50 rounded-lg py-2"><p className="text-[10px] text-slate-400 font-bold uppercase">Saldo atual</p><p className="text-sm font-black text-slate-800">{motivoFaltaMP.saldo.toLocaleString('pt-BR',{maximumFractionDigits:3})} {motivoFaltaMP.um}</p></div>
+                <div className="bg-slate-50 rounded-lg py-2"><p className="text-[10px] text-slate-400 font-bold uppercase">Necessário aqui</p><p className="text-sm font-black text-slate-800">{motivoFaltaMP.necessario.toLocaleString('pt-BR',{maximumFractionDigits:3})} {motivoFaltaMP.um}</p></div>
+                <div className="bg-red-50 rounded-lg py-2"><p className="text-[10px] text-red-500 font-bold uppercase">Falta</p><p className="text-sm font-black text-red-700">{motivoFaltaMP.falta.toLocaleString('pt-BR',{maximumFractionDigits:3})} {motivoFaltaMP.um}</p></div>
+              </div>
+
+              {naRua&&naRua.totalNaRua>0&&(
+                <div className="bg-amber-50 border border-amber-200 rounded-xl px-4 py-3">
+                  <p className="text-xs font-black text-amber-700">📦 {naRua.totalNaRua.toLocaleString('pt-BR',{maximumFractionDigits:3})} {motivoFaltaMP.um} enviado(s) a terceiros, aguardando retorno</p>
+                  <p className="text-[11px] text-slate-500 mt-1">Projeto(s): {naRua.projetos.slice(0,6).join(', ')}{naRua.projetos.length>6?` +${naRua.projetos.length-6}`:''}</p>
+                </div>
+              )}
+
+              {outrosProjetosNoMes.length>0&&(
+                <div className="bg-blue-50 border border-blue-200 rounded-xl px-4 py-3">
+                  <p className="text-xs font-black text-blue-700">🔀 Outros {outrosProjetosNoMes.length} projeto(s) do mês também precisam dessa MP</p>
+                  <p className="text-[11px] text-slate-500 mt-1">{outrosProjetosNoMes.slice(0,6).join(', ')}{outrosProjetosNoMes.length>6?` +${outrosProjetosNoMes.length-6}`:''} — a disputa pelo mesmo saldo pode ser parte do motivo.</p>
+                </div>
+              )}
+
+              <div>
+                <p className="text-xs font-black text-slate-600 mb-1.5">🛒 Compras em andamento</p>
+                {carregandoMotivoFalta&&<p className="text-xs text-slate-400">Buscando no Sankhya...</p>}
+                {!carregandoMotivoFalta&&comprasPendentesMP.length===0&&<p className="text-xs text-slate-400">Nenhuma compra pendente encontrada pra esse código.</p>}
+                {!carregandoMotivoFalta&&comprasPendentesMP.map((c,i)=>(
+                  <div key={i} className="flex items-center justify-between gap-3 bg-slate-50 rounded-lg px-3 py-2 text-xs mb-1">
+                    <div className="min-w-0">
+                      <p className="font-bold text-slate-700">Pedido {c.numero_pedido} · {s(c.fornecedor)}</p>
+                      <p className="text-slate-500">{c.br?`Pro BR ${c.br} · `:''}Previsão: {fmtDt(c.data_prevista_entrega)}{c.dias_atraso_entrega>0?` (${c.dias_atraso_entrega}d atrasado)`:''}</p>
+                    </div>
+                    <span className="font-black text-slate-700 whitespace-nowrap">{Number(c.quantidade_pendente).toLocaleString('pt-BR',{maximumFractionDigits:3})}</span>
+                  </div>
+                ))}
+              </div>
+
+              {!naRua&&outrosProjetosNoMes.length===0&&!carregandoMotivoFalta&&comprasPendentesMP.length===0&&(
+                <p className="text-xs text-slate-400 bg-slate-50 rounded-lg px-3 py-2">Não achei nenhum motivo registrado (nem em terceiros, nem disputa com outro projeto, nem compra em andamento) — parece ser falta real de estoque. Pode precisar abrir uma requisição de compra.</p>
+              )}
+            </div>
+          );
+        })()}
       </Modal>
 
       {/* ── MODAL: Itens de matéria-prima de uma OP ─────────────────────── */}
