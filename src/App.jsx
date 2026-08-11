@@ -1795,12 +1795,19 @@ export default function App(){
     const brsProduzidos=new Set(opsSankhyaAgrupadas.filter(o=>o.situacao==='C'&&o.brEfetivo).map(o=>o.brEfetivo));
     return oohProjetos.map(p=>{
       const jaProduzidoViaEstoque=brsProduzidos.has(p.br);
-      return{...p,jaProduzidoViaEstoque,precisaEntrarNaEsteira:p.precisaEntrarNaEsteira&&!jaProduzidoViaEstoque};
+      // mesEfetivo é o mês que REALMENTE vale pra esse projeto pra fins de listagem:
+      // o mês original (mesPrevisto), a menos que exista uma reprogramação/antecipação
+      // (plano), caso em que vale o mês da nova_data. Sem isso, "Reprogramar"/
+      // "Antecipar" salvava no banco mas a tabela continuava mostrando o projeto no
+      // mês antigo — o botão existia, mas não tinha efeito visível nenhum.
+      const mesEfetivo=(p.plano?.status&&p.plano?.nova_data)?s(p.plano.nova_data).slice(0,7):p.mesPrevisto;
+      return{...p,jaProduzidoViaEstoque,mesEfetivo,precisaEntrarNaEsteira:p.precisaEntrarNaEsteira&&!jaProduzidoViaEstoque};
     });
   },[oohProjetos,opsSankhyaAgrupadas]);
 
-  // Projetos do mês selecionado + atrasados (não atendidos de meses anteriores)
-  const oohDoMes=useMemo(()=>oohProjetosComProducao.filter(p=>p.mesPrevisto===oohMesRef&&!p.atendido),[oohProjetosComProducao,oohMesRef]);
+  // Projetos do mês selecionado (pelo mês EFETIVO, já considerando reprogramação/
+  // antecipação) + atrasados (não atendidos de meses anteriores, idem).
+  const oohDoMes=useMemo(()=>oohProjetosComProducao.filter(p=>p.mesEfetivo===oohMesRef&&!p.atendido),[oohProjetosComProducao,oohMesRef]);
 
   // Status de andamento (A Iniciar/Em Andamento/Concluído/Faturado) é campo manual do
   // PCP — mesmo vocabulário usado na planilha OOH. Atualiza no banco e localmente.
@@ -1828,7 +1835,7 @@ export default function App(){
     });
     return Object.values(grupos).sort((a,b)=>(a.semana===b.semana?0:a.semana<b.semana?-1:1));
   },[oohDoMes]);
-  const oohAtrasados=useMemo(()=>oohProjetosComProducao.filter(p=>p.mesPrevisto<oohMesRef&&!p.atendido),[oohProjetosComProducao,oohMesRef]);
+  const oohAtrasados=useMemo(()=>oohProjetosComProducao.filter(p=>p.mesEfetivo<oohMesRef&&!p.atendido),[oohProjetosComProducao,oohMesRef]);
 
   // Resumo do mês pros cards do topo — visão executiva antes de entrar no detalhe
   const oohResumoMes=useMemo(()=>{
@@ -1841,13 +1848,9 @@ export default function App(){
     return{valorPrevisto,valorAtrasado,reprogramados,emProducao,aIniciar,precisamEsteira,totalProjetos:oohDoMes.length};
   },[oohDoMes,oohAtrasados]);
 
-  // Projetos "efetivos" do mês: os previstos originalmente (que não foram reprogramados pra fora)
-  // + os antecipados de outros meses pra este mês
-  const oohEfetivosDoMes=useMemo(()=>{
-    const previstos=oohProjetosComProducao.filter(p=>p.mesPrevisto===oohMesRef&&!p.atendido&&p.plano?.status!=='REPROGRAMADO');
-    const antecipados=oohProjetosComProducao.filter(p=>p.mesPrevisto!==oohMesRef&&!p.atendido&&p.plano?.status==='ANTECIPADO'&&s(p.plano?.nova_data).slice(0,7)===oohMesRef);
-    return[...previstos,...antecipados];
-  },[oohProjetosComProducao,oohMesRef]);
+  // Antes duplicava a lógica de reprogramação/antecipação aqui (só pro cálculo de MP);
+  // agora oohDoMes já considera mesEfetivo, então é a mesma lista.
+  const oohEfetivosDoMes=oohDoMes;
 
   // Previsão de consumo de matéria-prima: soma (quantidade do item × qtd de MP por unidade, via composição) por código de MP
   const previsaoMP=useMemo(()=>{
