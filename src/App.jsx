@@ -1288,14 +1288,20 @@ export default function App(){
       (data||[]).forEach(row=>{
         const mes=s(row.data_neg).slice(0,7);
         if(!mes)return;
-        if(!grupos[mes])grupos[mes]={mes,bruto:0,liquido:0,notas:0,projetosSet:new Set()};
+        if(!grupos[mes])grupos[mes]={mes,bruto:0,liquido:0,notas:0,projetosSet:new Set(),porBR:{}};
         grupos[mes].bruto+=Number(row.valor_nota||0);
         grupos[mes].liquido+=Number(row.net_offer_value||0);
         grupos[mes].notas+=1;
         // "<SEM PROJETO>" é o texto literal que o Sankhya devolve quando não há
         // projeto vinculado — não conta como projeto real.
         const br=s(row.br);
-        if(br&&!br.toUpperCase().includes('SEM PROJETO'))grupos[mes].projetosSet.add(br);
+        if(br&&!br.toUpperCase().includes('SEM PROJETO')){
+          grupos[mes].projetosSet.add(br);
+          if(!grupos[mes].porBR[br])grupos[mes].porBR[br]={br,bruto:0,liquido:0,notas:0};
+          grupos[mes].porBR[br].bruto+=Number(row.valor_nota||0);
+          grupos[mes].porBR[br].liquido+=Number(row.net_offer_value||0);
+          grupos[mes].porBR[br].notas+=1;
+        }
       });
 
       const lista=Object.values(grupos).map(g=>({
@@ -1303,7 +1309,10 @@ export default function App(){
         bruto:g.bruto,
         liquido:g.liquido,
         notas:g.notas,
-        projetosDistintos:g.projetosSet.size
+        projetosDistintos:g.projetosSet.size,
+        // Detalhe por projeto, pra dar pra ver "quem compõe esse valor" ao clicar
+        // no gráfico ou na tabela — não só o número agregado.
+        projetosDetalhe:Object.values(g.porBR).sort((a,b)=>b.bruto-a.bruto),
       })).sort((a,b)=>a.mes.localeCompare(b.mes));
 
       setMestraFatPorMesNeg(lista);
@@ -1323,6 +1332,16 @@ export default function App(){
       'Líquido':Math.round(g.liquido),
     }))
   ,[mestraFatPorMesNeg]);
+
+  // Ver quais projetos compõem o valor de um mês — ao clicar na barra do gráfico
+  // ou na linha da tabela, não só o número agregado.
+  const [mesFaturamentoDetalhe,setMesFaturamentoDetalhe]=useState(null); // {mes,bruto,liquido,notas,projetosDetalhe}
+  const abrirDetalheFaturamentoMes=(mesOuEvento)=>{
+    const mes=typeof mesOuEvento==='string'?mesOuEvento:mesOuEvento?.payload?.name;
+    if(!mes)return;
+    const g=mestraFatPorMesNeg.find(x=>x.mes===mes);
+    if(g)setMesFaturamentoDetalhe(g);
+  };
 
   const mestraFatNegTotais=useMemo(()=>mestraFatPorMesNeg.reduce((acc,g)=>({
     bruto:acc.bruto+g.bruto,
@@ -3884,7 +3903,7 @@ export default function App(){
                     {mestraFatNegChartData.length>0&&(
                       <div style={{height:220}} className="mb-4">
                         <ResponsiveContainer width="100%" height="100%">
-                          <BarChart data={mestraFatNegChartData} margin={{top:20,right:0,left:0,bottom:0}}>
+                          <BarChart data={mestraFatNegChartData} margin={{top:20,right:0,left:0,bottom:0}} onBarClick={abrirDetalheFaturamentoMes}>
                             <CartesianGrid strokeDasharray="3 3" vertical={false}/>
                             <XAxis dataKey="name" tick={{fontSize:10,fontWeight:'600',fill:'#64748b'}}/>
                             <Tooltip/>
@@ -3915,12 +3934,12 @@ export default function App(){
                             <tr><td colSpan={5} className="px-4 py-6 text-center text-slate-400 font-semibold">Nenhum dado encontrado.</td></tr>
                           )}
                           {!mestraFatNegLoading&&[...mestraFatPorMesNeg].reverse().map(g=>(
-                            <tr key={g.mes} className="hover:bg-slate-50">
-                              <td className="px-4 py-2 font-bold text-slate-700">{g.mes}</td>
+                            <tr key={g.mes} onClick={()=>abrirDetalheFaturamentoMes(g.mes)} className="hover:bg-indigo-50 cursor-pointer transition-colors" title="Clique pra ver quais projetos compõem este mês">
+                              <td className="px-4 py-2 font-bold text-indigo-700">{g.mes}</td>
                               <td className="px-4 py-2 text-right font-semibold text-slate-500">{fmtMoeda(g.bruto)}</td>
                               <td className="px-4 py-2 text-right font-semibold text-violet-600">{fmtMoeda(g.liquido)}</td>
                               <td className="px-4 py-2 text-right text-slate-500">{g.notas}</td>
-                              <td className="px-4 py-2 text-right text-slate-500">{g.projetosDistintos}</td>
+                              <td className="px-4 py-2 text-right text-indigo-600 font-bold underline">{g.projetosDistintos}</td>
                             </tr>
                           ))}
                         </tbody>
@@ -7231,6 +7250,35 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
             <p className="text-sm text-slate-400 text-center py-6">Nenhum item encontrado.</p>
           )}
         </div>
+      </Modal>
+
+      {/* ── MODAL: Quais projetos compõem o faturamento de um mês ────────── */}
+      <Modal open={!!mesFaturamentoDetalhe} onClose={()=>setMesFaturamentoDetalhe(null)} title={`Faturamento de ${mesFaturamentoDetalhe?.mes}`} subtitle={`${mesFaturamentoDetalhe?.projetosDetalhe?.length||0} projeto(s) · ${mesFaturamentoDetalhe?.notas||0} nota(s)`} maxWidth="max-w-lg">
+        {mesFaturamentoDetalhe&&(
+          <div>
+            <div className="grid grid-cols-2 gap-2 mb-3">
+              <div className="bg-slate-50 rounded-lg py-2 text-center"><p className="text-[10px] text-slate-400 font-bold uppercase">Bruto</p><p className="text-sm font-black text-slate-800">{fmtMoeda(mesFaturamentoDetalhe.bruto)}</p></div>
+              <div className="bg-violet-50 rounded-lg py-2 text-center"><p className="text-[10px] text-violet-500 font-bold uppercase">Líquido</p><p className="text-sm font-black text-violet-700">{fmtMoeda(mesFaturamentoDetalhe.liquido)}</p></div>
+            </div>
+            <div className="max-h-96 overflow-y-auto custom-scrollbar space-y-1">
+              {(mesFaturamentoDetalhe.projetosDetalhe||[]).map((p,i)=>(
+                <div key={i} className="flex items-center justify-between gap-3 bg-slate-50 rounded-lg px-3 py-2">
+                  <div className="min-w-0">
+                    <p className="text-sm font-bold text-indigo-700">{p.br}</p>
+                    <p className="text-[11px] text-slate-400">{p.notas} nota(s)</p>
+                  </div>
+                  <div className="text-right whitespace-nowrap">
+                    <p className="text-sm font-bold text-slate-700">{fmtMoeda(p.bruto)}</p>
+                    <p className="text-[11px] text-violet-600">{fmtMoeda(p.liquido)} líq.</p>
+                  </div>
+                </div>
+              ))}
+              {(!mesFaturamentoDetalhe.projetosDetalhe||mesFaturamentoDetalhe.projetosDetalhe.length===0)&&(
+                <p className="text-sm text-slate-400 text-center py-6">Nenhum projeto vinculado (tudo "&lt;SEM PROJETO&gt;" nesse mês).</p>
+              )}
+            </div>
+          </div>
+        )}
       </Modal>
 
       {/* ── MODAL: Motivo da falta de uma matéria-prima ─────────────────── */}
