@@ -1672,6 +1672,34 @@ export default function App(){
   const [oohSelecao,setOohSelecao]=useState({}); // {[br]: boolean} — override manual da sessão atual, por cima do snapshot
   const [fechandoOOH,setFechandoOOH]=useState(false);
   useEffect(()=>{setOohSelecao({});},[oohMesRef]); // troca de mês reseta os overrides manuais
+
+  // Busca rápida pra trazer um projeto de OUTRO mês direto pro mês atual, sem
+  // precisar navegar até a aba dele — pede uma nova data (já validada dentro do
+  // mês selecionado) e grava como ANTECIPADO, reaproveitando a mesma tabela do
+  // "Reprogramar". Mostra bem claro se o projeto já foi faturado ou não, pra não
+  // trazer pra cá algo que já está resolvido.
+  const [trazerOutroMesModal,setTrazerOutroMesModal]=useState(false);
+  const [trazerOutroMesBusca,setTrazerOutroMesBusca]=useState('');
+  const [trazendoBR,setTrazendoBR]=useState(null);
+  const [trazerDataPorBR,setTrazerDataPorBR]=useState({});
+  const trazerProjetoParaMes=async(p,novaData)=>{
+    if(!novaData)return addToast('Informe a data dentro do mês.','error');
+    if(novaData.slice(0,7)!==oohMesRef)return addToast(`A data precisa ser dentro de ${oohMesRef}.`,'error');
+    setTrazendoBR(p.br);
+    try{
+      const id=`OOH-${p.br}-${p.mesPrevisto}`.replace(/[^A-Za-z0-9-]/g,'_');
+      const{error}=await supabase.from('ooh_planejamento').upsert({
+        id,br:p.br,mes_referencia:p.mesPrevisto,status:'ANTECIPADO',
+        data_original:p.dataPrevista,nova_data:novaData,
+        justificativa:`Trazido pra ${oohMesRef} via busca rápida (estava em ${p.mesPrevisto})`,
+        criado_por:s(usuarioLogado?.nome),atualizado_em:new Date().toISOString(),
+      },{onConflict:'br,mes_referencia'});
+      if(error)throw error;
+      addToast(`${p.br} antecipado pra ${oohMesRef}!`);
+      fetchOOH();
+    }catch(e){addToast('Erro ao antecipar: '+e.message,'error');}
+    finally{setTrazendoBR(null);}
+  };
   const abrirReprogramarOOH=useCallback(p=>{
     setOohModalBR(p);
     setOohForm({status:p.plano?.status||'REPROGRAMADO',novaData:p.plano?.nova_data||'',justificativa:p.plano?.justificativa||''});
@@ -1847,6 +1875,17 @@ export default function App(){
       return{...p,jaProduzidoViaEstoque,mesEfetivo,precisaEntrarNaEsteira:p.precisaEntrarNaEsteira&&!jaProduzidoViaEstoque};
     });
   },[oohProjetos,opsSankhyaAgrupadas]);
+
+  // Busca pro "Trazer de outro mês": procura em TODOS os projetos, de qualquer
+  // mês, e mostra bem claro se já foi atendido/faturado ou não antes de deixar
+  // trazer pra cá — não faz sentido antecipar algo que já está resolvido.
+  const trazerOutroMesResultados=useMemo(()=>{
+    const termo=trazerOutroMesBusca.trim().toLowerCase();
+    if(termo.length<2)return[];
+    return oohProjetosComProducao
+      .filter(p=>p.mesEfetivo!==oohMesRef&&(p.br.toLowerCase().includes(termo)||s(p.cliente).toLowerCase().includes(termo)))
+      .slice(0,15);
+  },[oohProjetosComProducao,trazerOutroMesBusca,oohMesRef]);
 
   // Projetos do mês selecionado (pelo mês EFETIVO, já considerando reprogramação/
   // antecipação) + atrasados (não atendidos de meses anteriores, idem).
@@ -4385,9 +4424,12 @@ export default function App(){
                 <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
                   <div className="px-5 py-3.5 border-b border-slate-100 bg-slate-50 flex items-center justify-between flex-wrap gap-2">
                     <p className="text-sm font-black text-slate-800">Projetos previstos para {oohMesRef} <span className="text-slate-400 font-bold">({oohDoMes.length})</span></p>
-                    <div className="flex items-center gap-1 bg-white border border-slate-200 rounded-full p-0.5">
-                      <button onClick={()=>setOohVisaoSemanal(false)} className={`text-[11px] font-bold px-3 py-1 rounded-full transition-colors ${!oohVisaoSemanal?'bg-indigo-600 text-white':'text-slate-500'}`}>Mensal</button>
-                      <button onClick={()=>setOohVisaoSemanal(true)} className={`text-[11px] font-bold px-3 py-1 rounded-full transition-colors ${oohVisaoSemanal?'bg-indigo-600 text-white':'text-slate-500'}`}>Semanal</button>
+                    <div className="flex items-center gap-2">
+                      <Btn variant="secondary" size="sm" onClick={()=>setTrazerOutroMesModal(true)}><Search className="w-4 h-4"/>Trazer de outro mês</Btn>
+                      <div className="flex items-center gap-1 bg-white border border-slate-200 rounded-full p-0.5">
+                        <button onClick={()=>setOohVisaoSemanal(false)} className={`text-[11px] font-bold px-3 py-1 rounded-full transition-colors ${!oohVisaoSemanal?'bg-indigo-600 text-white':'text-slate-500'}`}>Mensal</button>
+                        <button onClick={()=>setOohVisaoSemanal(true)} className={`text-[11px] font-bold px-3 py-1 rounded-full transition-colors ${oohVisaoSemanal?'bg-indigo-600 text-white':'text-slate-500'}`}>Semanal</button>
+                      </div>
                     </div>
                   </div>
 
@@ -7310,6 +7352,59 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
           {(!itensDirecionarBR?.itensCompletos||itensDirecionarBR.itensCompletos.length===0)&&(
             <p className="text-sm text-slate-400 text-center py-6">Nenhum item encontrado.</p>
           )}
+        </div>
+      </Modal>
+
+      {/* ── MODAL: Trazer projeto de outro mês, direto pro mês atual ─────── */}
+      <Modal open={trazerOutroMesModal} onClose={()=>{setTrazerOutroMesModal(false);setTrazerOutroMesBusca('');}} title={`Trazer projeto pra ${oohMesRef}`} subtitle="Busca em qualquer mês — mostra se já foi atendido/faturado antes de antecipar" maxWidth="max-w-2xl">
+        <div className="mb-3">
+          <div className="relative">
+            <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2"/>
+            <input autoFocus value={trazerOutroMesBusca} onChange={e=>setTrazerOutroMesBusca(e.target.value)} placeholder="Buscar por BR ou cliente..."
+              className="w-full pl-10 pr-4 py-2.5 text-sm border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-200"/>
+          </div>
+        </div>
+        <div className="space-y-2 max-h-96 overflow-y-auto custom-scrollbar">
+          {trazerOutroMesBusca.trim().length>=2&&trazerOutroMesResultados.length===0&&(
+            <p className="text-sm text-slate-400 text-center py-6">Nenhum projeto fora de {oohMesRef} encontrado com esse termo.</p>
+          )}
+          {trazerOutroMesBusca.trim().length<2&&(
+            <p className="text-sm text-slate-400 text-center py-6">Digite pelo menos 2 letras pra buscar.</p>
+          )}
+          {trazerOutroMesResultados.map(p=>{
+            const dataDefault=oohMesRef===new Date().toISOString().slice(0,7)?new Date().toISOString().slice(0,10):`${oohMesRef}-01`;
+            const dataEscolhida=trazerDataPorBR[p.br]||dataDefault;
+            return(
+              <div key={p.br} className="bg-slate-50 border border-slate-100 rounded-xl px-4 py-3">
+                <div className="flex items-start justify-between gap-3 mb-2">
+                  <div className="min-w-0">
+                    <p className="text-sm font-bold text-indigo-700">{p.br} <span className="text-slate-400 font-normal">· {s(p.cliente)}</span></p>
+                    <p className="text-[11px] text-slate-500 mt-0.5">Atualmente em <strong>{p.mesEfetivo}</strong>{p.mesEfetivo!==p.mesPrevisto?` (originalmente ${p.mesPrevisto})`:''} · {fmtMoeda(p.valorTotal)}</p>
+                  </div>
+                  <div className="flex flex-col items-end gap-1 flex-shrink-0">
+                    {/* Validação clara: já faturado/atendido, ou ainda em aberto */}
+                    {p.atendido?(
+                      <span className="text-[10px] font-black text-teal-700 bg-teal-50 border border-teal-200 rounded-full px-2 py-0.5" title="Já entregue/faturado ou situação especial — não costuma precisar ser antecipado">✓ {p.andamento==='FATURADO'?'Faturado':'Atendido'}</span>
+                    ):(
+                      <span className="text-[10px] font-black text-amber-700 bg-amber-50 border border-amber-200 rounded-full px-2 py-0.5">{Math.round(p.percentualFaturado*100)}% entregue</span>
+                    )}
+                    <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded-full border ${ANDAMENTO_CFG[p.andamento]?.cls||ANDAMENTO_CFG.A_INICIAR.cls}`}>{ANDAMENTO_LABEL[p.andamento]||p.andamento}</span>
+                  </div>
+                </div>
+                {p.atendido&&(
+                  <p className="text-[11px] text-teal-600 mb-2">Esse projeto já está atendido — trazer pra {oohMesRef} não é necessário, mas você pode fazer assim mesmo se quiser registro.</p>
+                )}
+                <div className="flex items-center gap-2">
+                  <input type="date" value={dataEscolhida} min={`${oohMesRef}-01`} max={new Date(Number(oohMesRef.slice(0,4)),Number(oohMesRef.slice(5,7)),0).toISOString().slice(0,10)}
+                    onChange={e=>setTrazerDataPorBR(prev=>({...prev,[p.br]:e.target.value}))}
+                    className="text-xs border border-slate-200 rounded-lg px-2 py-1.5 focus:outline-none focus:ring-2 focus:ring-indigo-200"/>
+                  <Btn variant="dark" size="sm" onClick={()=>trazerProjetoParaMes(p,dataEscolhida)} disabled={trazendoBR===p.br}>
+                    <ArrowDown className={`w-3.5 h-3.5 -rotate-90 ${trazendoBR===p.br?'animate-pulse':''}`}/>Trazer pra {oohMesRef}
+                  </Btn>
+                </div>
+              </div>
+            );
+          })}
         </div>
       </Modal>
 
