@@ -239,6 +239,7 @@ function ExecKPICard({label,value,icon:Icon,trendLabel,tone='slate',selected,onC
     amber:{bar:'bg-amber-700',iconBg:'bg-amber-50',icon:'text-amber-700',val:'text-slate-900',ring:'ring-amber-200'},
     blue:{bar:'bg-blue-700',iconBg:'bg-blue-50',icon:'text-blue-700',val:'text-slate-900',ring:'ring-blue-200'},
     teal:{bar:'bg-teal-700',iconBg:'bg-teal-50',icon:'text-teal-700',val:'text-slate-900',ring:'ring-teal-200'},
+    violet:{bar:'bg-violet-700',iconBg:'bg-violet-50',icon:'text-violet-700',val:'text-slate-900',ring:'ring-violet-200'},
     slate:{bar:'bg-slate-400',iconBg:'bg-slate-100',icon:'text-slate-500',val:'text-slate-900',ring:'ring-slate-200'},
   }[tone];
   return(
@@ -283,14 +284,15 @@ function KPICard({label,value,unit,icon:Icon,trend,trendLabel,color='indigo',onC
 const ANDAMENTO_CFG={
   A_INICIAR:{label:'A Iniciar',cls:'bg-slate-100 text-slate-600 border-slate-200'},
   EM_ANDAMENTO:{label:'Em Andamento',cls:'bg-blue-50 text-blue-700 border-blue-200'},
+  PENDENTE:{label:'Pendente',cls:'bg-amber-50 text-amber-700 border-amber-200'},
   CONCLUIDO:{label:'Concluído',cls:'bg-teal-50 text-teal-700 border-teal-200'},
   FATURADO:{label:'Faturado',cls:'bg-violet-50 text-violet-700 border-violet-200'},
 };
 
-function AndamentoSelect({value,onChange}){
+function AndamentoSelect({value,onChange,title}){
   const cfg=ANDAMENTO_CFG[value]||ANDAMENTO_CFG.A_INICIAR;
   return(
-    <select value={value} onChange={e=>onChange(e.target.value)} onClick={e=>e.stopPropagation()}
+    <select value={value} onChange={e=>onChange(e.target.value)} onClick={e=>e.stopPropagation()} title={title}
       className={`text-[11px] font-bold px-2.5 py-1 rounded-full border cursor-pointer ${cfg.cls}`}>
       {Object.entries(ANDAMENTO_CFG).map(([k,c])=><option key={k} value={k}>{c.label}</option>)}
     </select>
@@ -373,7 +375,7 @@ const OOHProjetoRow=React.memo(function OOHProjetoRow({p,onAndamento,onReprogram
       <td className="px-3 py-2 text-center whitespace-nowrap">
         {sitCfg?<span className={`text-[9px] font-black px-2 py-0.5 rounded-full border ${sitCfg.c}`} title={p.situacaoEspecial?.motivo}>{sitCfg.l}</span>:<span className="text-slate-300">—</span>}
       </td>
-      <td className="px-3 py-2 text-center whitespace-nowrap"><AndamentoSelect value={p.andamento} onChange={v=>onAndamento(p.br,v)}/></td>
+      <td className="px-3 py-2 text-center whitespace-nowrap"><AndamentoSelect value={p.andamento} onChange={v=>onAndamento(p.br,v)} title={p.andamento==='PENDENTE'?`Pendente: ${p.observacaoPendencia||'sem motivo registrado'}`:undefined}/></td>
       <td className="px-3 py-2 text-center whitespace-nowrap">
         <button onClick={()=>onReprogramar(p)} className="text-[11px] font-bold text-indigo-600 hover:underline">{p.plano?'Editar':'Reprogramar'}</button>
       </td>
@@ -1659,6 +1661,7 @@ export default function App(){
   const [oohErro,setOohErro]=useState('');
   const [oohVisaoSemanal,setOohVisaoSemanal]=useState(false);
   const [oohSecaoAtrasadosAberta,setOohSecaoAtrasadosAberta]=useState(true);
+  const [oohSecaoPendentesAberta,setOohSecaoPendentesAberta]=useState(false);
   const [oohSecaoMPAberta,setOohSecaoMPAberta]=useState(false);
   const [oohModalBR,setOohModalBR]=useState(null);
   // Fechamento mensal: o PCP revisa os projetos previstos pro mês, desmarca os
@@ -1689,9 +1692,6 @@ export default function App(){
       if(andamentoRes.error)throw andamentoRes.error;
       if(situacaoRes.error)throw situacaoRes.error;
 
-      const andamentoPorBR={};
-      (andamentoRes.data||[]).forEach(a=>{andamentoPorBR[s(a.br)]=a.andamento;});
-
       // Mesma marcação manual do PCP usada no Mestra: DESCONSIDERAR some do cálculo,
       // PENDENTE/CANCELADO saem da lista de atrasados (não é mais compromisso ativo).
       const situacaoPorNunota={};
@@ -1702,18 +1702,33 @@ export default function App(){
       });
       const situacaoDoPedidoOOH=(br,nunota)=>situacaoPorNunota[nunota]||situacaoPorBR[s(br)]||null;
 
+      const andamentoPorBR={};
+      const observacaoPorBR={};
+      (andamentoRes.data||[]).forEach(a=>{andamentoPorBR[s(a.br)]=a.andamento;observacaoPorBR[s(a.br)]=a.observacao;});
+
       const agrup={};
       const itensPorBR={};
       (pedidosItensData||[]).forEach(p=>{
         const br=s(p.br);if(!br||!p.data_prevista_entrega)return;
         if(situacaoDoPedidoOOH(br,p.nunota)?.status==='DESCONSIDERAR')return;
-        if(!agrup[br])agrup[br]={br,cliente:p.cliente_nome,vendedor:p.vendedor_nome,valorTotal:0,valorEntregue:0,dataPrevista:p.data_prevista_entrega,produtos:[],situacaoEspecial:null};
+        if(!agrup[br])agrup[br]={br,cliente:p.cliente_nome,vendedor:p.vendedor_nome,valorTotal:0,valorEntregue:0,valorTotalProducao:0,valorEntregueProducao:0,dataPrevista:p.data_prevista_entrega,produtos:[],situacaoEspecial:null};
         const qtd=Number(p.quantidade||0);
         const qtdEnt=Number(p.qtd_entregue||0);
-        agrup[br].valorTotal+=Number(p.valor_liquido||0);
+        const valorItem=Number(p.valor_liquido||0);
         // "Atendido" é por QUANTIDADE (QTDENTREGUE do Sankhya), nunca por comparação de valores
         // — valor líquido de nota já vem sem impostos e nunca bate 100% com o valor do pedido.
-        agrup[br].valorEntregue+=Number(p.valor_liquido||0)*(qtd>0?Math.min(1,qtdEnt/qtd):0);
+        const valorEntregueItem=valorItem*(qtd>0?Math.min(1,qtdEnt/qtd):0);
+        agrup[br].valorTotal+=valorItem;
+        agrup[br].valorEntregue+=valorEntregueItem;
+        // Serviço (ex: "SERVIÇO DE MÃO DE OBRA...") não é produção física do PCP — o
+        // timing de faturamento dele é de outra área, não pode contar como atraso de
+        // produção. Ainda soma no valor comercial total do projeto, só não entra na
+        // conta que decide se está atrasado.
+        const ehServico=/^SERVI/i.test(s(p.produto_descricao)||'');
+        if(!ehServico){
+          agrup[br].valorTotalProducao+=valorItem;
+          agrup[br].valorEntregueProducao+=valorEntregueItem;
+        }
         if(p.produto_descricao&&!agrup[br].produtos.includes(p.produto_descricao))agrup[br].produtos.push(p.produto_descricao);
         if(p.data_prevista_entrega<agrup[br].dataPrevista)agrup[br].dataPrevista=p.data_prevista_entrega;
         const sit=situacaoDoPedidoOOH(br,p.nunota);
@@ -1729,22 +1744,31 @@ export default function App(){
       const hojeOOH=new Date().toISOString().slice(0,10);
 
       const lista=Object.values(agrup).map(r=>{
-        const percentualFaturado=r.valorTotal>0?r.valorEntregue/r.valorTotal:0;
+        // Baseado só nos itens físicos (produção). Se o BR é 100% serviço (sem item
+        // físico nenhum), não tem o que atrasar de produção — conta como atendido.
+        const percentualFaturado=r.valorTotalProducao>0?r.valorEntregueProducao/r.valorTotalProducao:1;
         const mesPrevisto=s(r.dataPrevista).slice(0,7);
         const plano=planPorBR[`${r.br}|${mesPrevisto}`]||null;
         // Semana ISO da data que vale (reprogramada, se houver, senão a original) — mesma
         // granularidade que a aba "SEMANAS" da planilha do PCP.
         const dataVigenteOOH=plano?.nova_data||r.dataPrevista;
-        // Pendente/Cancelado = não é mais compromisso ativo, sai da lista de atrasados
-        // mesmo sem ter sido fisicamente entregue.
-        const atendido=percentualFaturado>=0.999||(r.situacaoEspecial&&(r.situacaoEspecial.status==='CANCELADO'||r.situacaoEspecial.status==='PENDENTE'));
+        const andamentoManual=andamentoPorBR[r.br]||'A_INICIAR';
+        const pendente=andamentoManual==='PENDENTE';
+        // Pendente/Cancelado (situação especial) ou Faturado/Pendente (andamento manual
+        // do PCP) = não é mais compromisso ativo pra fins de atraso, mesmo sem ter sido
+        // fisicamente entregue no Sankhya ainda — o PCP já sabe o real status, não o
+        // sistema. "Faturado" resolve o caso de "já faturei mas o sistema ainda cobra".
+        const atendido=percentualFaturado>=0.999||andamentoManual==='FATURADO'||(r.situacaoEspecial&&(r.situacaoEspecial.status==='CANCELADO'||r.situacaoEspecial.status==='PENDENTE'));
         // Data de referência = material tem que estar pronto 5 dias antes do CP.
         // Alerta de esteira = 20 dias antes do CP, pra entrar na fila de fabricação a tempo.
+        // Pendente não entra na esteira nem em atrasados — está bloqueado esperando algo
+        // fora do controle do PCP (aprovação de desenho, faturamento de terceiro etc.),
+        // continuar cobrando prazo dele não ajuda em nada.
         const dataMPPronta=somarDias(dataVigenteOOH,-5);
         const dataAlertaEsteira=somarDias(dataVigenteOOH,-20);
-        const precisaEntrarNaEsteira=!atendido&&dataAlertaEsteira&&hojeOOH>=dataAlertaEsteira;
-        return{...r,valorFaturado:r.valorEntregue,percentualFaturado,atendido,mesPrevisto,plano,
-          andamento:andamentoPorBR[r.br]||'A_INICIAR',
+        const precisaEntrarNaEsteira=!atendido&&!pendente&&dataAlertaEsteira&&hojeOOH>=dataAlertaEsteira;
+        return{...r,valorFaturado:r.valorEntregue,percentualFaturado,atendido,pendente,mesPrevisto,plano,
+          andamento:andamentoManual,observacaoPendencia:observacaoPorBR[r.br]||null,
           semanaISO:semanaISODoAno(dataVigenteOOH),
           dataMPPronta,dataAlertaEsteira,precisaEntrarNaEsteira,
           descricaoResumo:r.produtos.slice(0,1).join(', ')||'—',itens:itensPorBR[r.br]||[]};
@@ -1830,11 +1854,20 @@ export default function App(){
 
   // Status de andamento (A Iniciar/Em Andamento/Concluído/Faturado) é campo manual do
   // PCP — mesmo vocabulário usado na planilha OOH. Atualiza no banco e localmente.
-  const ANDAMENTO_LABEL={A_INICIAR:'A Iniciar',EM_ANDAMENTO:'Em Andamento',CONCLUIDO:'Concluído',FATURADO:'Faturado'};
+  const ANDAMENTO_LABEL={A_INICIAR:'A Iniciar',EM_ANDAMENTO:'Em Andamento',PENDENTE:'Pendente',CONCLUIDO:'Concluído',FATURADO:'Faturado'};
   const atualizarAndamento=useCallback(async(br,novoAndamento)=>{
-    setOohProjetos(prev=>prev.map(p=>p.br===br?{...p,andamento:novoAndamento}:p));
+    let motivoPendencia;
+    if(novoAndamento==='PENDENTE'){
+      // Exige motivo — "pendente" sem dizer do quê não ajuda ninguém a resolver.
+      motivoPendencia=window.prompt('O que está pendente nesse projeto? (ex: aguardando aprovação de desenho, faturamento de serviço que não é do PCP, etc.)');
+      if(!motivoPendencia||!motivoPendencia.trim())return;
+      motivoPendencia=motivoPendencia.trim();
+    }
+    setOohProjetos(prev=>prev.map(p=>p.br===br?{...p,andamento:novoAndamento,observacaoPendencia:motivoPendencia??p.observacaoPendencia}:p));
     try{
-      const{error}=await supabase.from('andamento_producao').upsert({br,andamento:novoAndamento,atualizado_em:new Date().toISOString()},{onConflict:'br'});
+      const payload={br,andamento:novoAndamento,atualizado_em:new Date().toISOString(),atualizado_por:s(usuarioLogado?.nome)};
+      if(motivoPendencia)payload.observacao=motivoPendencia;
+      const{error}=await supabase.from('andamento_producao').upsert(payload,{onConflict:'br'});
       if(error)throw error;
     }catch(e){
       addToast('Erro ao salvar andamento: '+e.message,'error');
@@ -1854,18 +1887,24 @@ export default function App(){
     });
     return Object.values(grupos).sort((a,b)=>(a.semana===b.semana?0:a.semana<b.semana?-1:1));
   },[oohDoMes]);
-  const oohAtrasados=useMemo(()=>oohProjetosComProducao.filter(p=>p.mesEfetivo<oohMesRef&&!p.atendido),[oohProjetosComProducao,oohMesRef]);
+  const oohAtrasados=useMemo(()=>oohProjetosComProducao.filter(p=>p.mesEfetivo<oohMesRef&&!p.atendido&&!p.pendente),[oohProjetosComProducao,oohMesRef]);
+  // Todos os projetos marcados como Pendente (qualquer mês, não só o selecionado) —
+  // saíram de "Atrasados" mas não podem desaparecer da visão, senão o PCP esquece
+  // que tem algo bloqueado esperando resolução.
+  const oohPendentes=useMemo(()=>oohProjetosComProducao.filter(p=>p.pendente&&!p.atendido),[oohProjetosComProducao]);
 
   // Resumo do mês pros cards do topo — visão executiva antes de entrar no detalhe
   const oohResumoMes=useMemo(()=>{
     const valorPrevisto=oohDoMes.reduce((a,p)=>a+p.valorTotal,0);
     const valorAtrasado=oohAtrasados.reduce((a,p)=>a+Math.max(0,p.valorTotal-p.valorFaturado),0);
+    const valorPendente=oohPendentes.reduce((a,p)=>a+Math.max(0,p.valorTotal-p.valorFaturado),0);
     const reprogramados=oohDoMes.filter(p=>p.plano).length;
     const emProducao=oohDoMes.filter(p=>p.andamento==='EM_ANDAMENTO'||p.andamento==='CONCLUIDO').length;
     const aIniciar=oohDoMes.filter(p=>p.andamento==='A_INICIAR').length;
     const precisamEsteira=[...oohDoMes,...oohAtrasados].filter(p=>p.precisaEntrarNaEsteira).length;
-    return{valorPrevisto,valorAtrasado,reprogramados,emProducao,aIniciar,precisamEsteira,totalProjetos:oohDoMes.length};
-  },[oohDoMes,oohAtrasados]);
+    return{valorPrevisto,valorAtrasado,valorPendente,reprogramados,emProducao,aIniciar,precisamEsteira,totalProjetos:oohDoMes.length,totalPendentes:oohPendentes.length};
+  },[oohDoMes,oohAtrasados,oohPendentes]);
+
 
   // Antes duplicava a lógica de reprogramação/antecipação aqui (só pro cálculo de MP);
   // agora oohDoMes já considera mesEfetivo, então é a mesma lista.
@@ -1879,6 +1918,10 @@ export default function App(){
       (proj.itens||[]).forEach(it=>{
         const prod=produtosDb[it.codProduto];
         if(!prod||!Array.isArray(prod.materiais)){
+          // Serviço (ex: "SERVIÇO DE MÃO DE OBRA...") não tem — nem deveria ter —
+          // ficha técnica cadastrada. Isso é esperado, não é um gap de dado; só avisa
+          // pra produto físico de verdade que devia ter composição e não tem.
+          if(/^SERVI/i.test(s(it.descricao)||''))return;
           // Sem isso, o item some do cálculo sem deixar rastro — parece "sem risco de
           // falta" quando na verdade é "sem dado pra saber". Registrado pra avisar,
           // não simplesmente ignorado.
@@ -4288,14 +4331,32 @@ export default function App(){
                 </div>
 
                 {/* Resumo executivo do mês — a foto antes de entrar no detalhe */}
-                <div className="grid grid-cols-1 sm:grid-cols-5 gap-4">
+                <div className="grid grid-cols-1 sm:grid-cols-3 lg:grid-cols-6 gap-4">
                   <ExecKPICard tone="slate" icon={LayoutDashboard} label="Previsto no mês" value={fmtMoeda(oohResumoMes.valorPrevisto)} trendLabel={`${oohResumoMes.totalProjetos} projetos`}/>
                   <ExecKPICard tone="red" icon={AlertTriangle} label="Atrasado (meses anteriores)" value={fmtMoeda(oohResumoMes.valorAtrasado)} trendLabel={`${oohAtrasados.length} projetos parados`}
                     selected={oohSecaoAtrasadosAberta} onClick={oohAtrasados.length>0?()=>setOohSecaoAtrasadosAberta(v=>!v):undefined}/>
+                  <ExecKPICard tone="violet" icon={AlertCircle} label="Pendente" value={fmtMoeda(oohResumoMes.valorPendente)} trendLabel={`${oohResumoMes.totalPendentes} projeto(s) — aguardando resolução, não conta como atraso`}
+                    selected={oohSecaoPendentesAberta} onClick={oohPendentes.length>0?()=>setOohSecaoPendentesAberta(v=>!v):undefined}/>
                   <ExecKPICard tone="amber" icon={Clock} label="Reprogramado/Antecipado" value={String(oohResumoMes.reprogramados)} trendLabel="projetos com nova data"/>
                   <ExecKPICard tone="blue" icon={Factory} label="Em produção" value={String(oohResumoMes.emProducao)} trendLabel={`${oohResumoMes.aIniciar} ainda a iniciar`}/>
                   <ExecKPICard tone="red" icon={AlertTriangle} label="Entrar na esteira (20d)" value={String(oohResumoMes.precisamEsteira)} trendLabel="faltam 20 dias ou menos pro CP"/>
                 </div>
+
+                {oohSecaoPendentesAberta&&oohPendentes.length>0&&(
+                  <div className="bg-white rounded-2xl border border-violet-200 overflow-hidden">
+                    <div className="px-5 py-3.5 border-b border-violet-100 bg-violet-50/50 flex items-center justify-between">
+                      <p className="text-sm font-black text-violet-800">Pendentes <span className="text-violet-400 font-bold">({oohPendentes.length})</span> — aguardando resolução, fora da conta de atraso</p>
+                    </div>
+                    <div className="overflow-x-auto custom-scrollbar">
+                      <table className="w-full text-sm">
+                        <OOHTabelaHeader/>
+                        <tbody className="divide-y divide-slate-100">
+                          {oohPendentes.map(p=><OOHProjetoRow key={p.br} p={p} onAndamento={atualizarAndamento} onReprogramar={abrirReprogramarOOH}/>)}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
 
                 {/* Atrasados de meses anteriores — recolhível, mas some por padrão só se vazio */}
                 {oohAtrasados.length>0&&(
