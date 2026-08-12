@@ -997,12 +997,13 @@ export default function App(){
       if(!porBR[br])porBR[br]={
         br,cliente:r.cliente,vendedor:r.vendedor,emissao:r.dataNeg,
         valorTotal:0,valorFaturadoQtd:0,valorAFaturar:0,qtdPecas:0,pedidosCount:0,
-        descricoes:[],datasEntregaCP:[],datasReferencia:[],situacaoEspecial:null,
+        descricoes:[],datasEntregaCP:[],datasReferencia:[],situacaoEspecial:null,reprogramacao:null,
         itensPendentesTotal:0,itensTotal:0,notas:r.notas||[],semPedidoSincronizado:r.semPedidoSincronizado,
       };
       const g=porBR[br];
       g.pedidosCount+=1;
       if(r.situacaoEspecial&&!g.situacaoEspecial)g.situacaoEspecial=r.situacaoEspecial;
+      if(r.reprogramacao&&!g.reprogramacao)g.reprogramacao=r.reprogramacao;
       g.valorTotal+=r.valorTotal;
       g.valorFaturadoQtd+=r.valorPedidoAtendido;
       g.valorAFaturar+=r.valorAFaturar;
@@ -1023,7 +1024,10 @@ export default function App(){
       const manual=planilhaMestreCampos[g.br]||{};
       const dataEntregaCP=g.datasEntregaCP.sort()[0]||null; // mais antiga em aberto
       const dataReferencia=g.datasReferencia.sort()[0]||dataEntregaCP; // reprogramada, se houver
-      const mes=dataReferencia?MESES_PT[new Date(dataReferencia+'T00:00:00Z').getUTCMonth()]:'—';
+      // mesChave (YYYY-MM) é o valor real de filtro/ordenação — nunca mistura anos.
+      // "mes" é só o rótulo bonito pra mostrar na tabela e no dropdown.
+      const mesChave=dataReferencia?dataReferencia.slice(0,7):null;
+      const mes=dataReferencia?`${MESES_PT[new Date(dataReferencia+'T00:00:00Z').getUTCMonth()]}/${dataReferencia.slice(0,4)}`:'—';
       const semana=dataReferencia?semanaISODoAno(dataReferencia):null;
       // FATURAMENTO: pega a nota mais recente de fato (só como referência de data — não
       // prova, por si só, que ESTE pedido foi entregue: o BR pode ter uma nota de um item
@@ -1049,7 +1053,7 @@ export default function App(){
       // por urgência (quem já devia ter começado aparece primeiro).
       const dataInicioProjeto=dataReferencia?subtrairDiasISO(dataReferencia,20):null;
       return{
-        ...g,dataEntregaCP,dataReferencia,dataInicioProjeto,mes,semana,statusOP,andamento:manual.andamento,andamentoEfetivo:andamento,jaFaturado,percentualFaturado,dataFaturamento,indicador,descricaoIndicador,
+        ...g,dataEntregaCP,dataReferencia,dataInicioProjeto,mes,mesChave,semana,statusOP,andamento:manual.andamento,andamentoEfetivo:andamento,jaFaturado,percentualFaturado,dataFaturamento,indicador,descricaoIndicador,reprogramacao:g.reprogramacao,
         status:g.situacaoEspecial?.status||null,
         descricaoResumo:g.descricoes.slice(0,1).join(', ')||'—',
         definicao:manual.definicao||'',escopo2:manual.escopo2||'',observacao:manual.observacao||'',
@@ -1184,7 +1188,11 @@ export default function App(){
   // Opções de Escopo2 e Mês são construídas a partir do que já existe nos dados —
   // assim o filtro nunca fica desatualizado quando o PCP cadastra um escopo novo.
   const planilhaMestreOpcoesEscopo2=useMemo(()=>[...new Set(planilhaMestreLinhas.map(r=>r.escopo2).filter(Boolean))].sort(),[planilhaMestreLinhas]);
-  const planilhaMestreOpcoesMes=useMemo(()=>[...new Set(planilhaMestreLinhas.map(r=>r.mes).filter(m=>m&&m!=='—'))],[planilhaMestreLinhas]);
+  const planilhaMestreOpcoesMes=useMemo(()=>{
+    const porChave={};
+    planilhaMestreLinhas.forEach(r=>{if(r.mesChave&&!porChave[r.mesChave])porChave[r.mesChave]=r.mes;});
+    return Object.entries(porChave).sort((a,b)=>a[0].localeCompare(b[0])).map(([chave,label])=>({chave,label}));
+  },[planilhaMestreLinhas]);
 
   const planilhaMestreFiltrada=useMemo(()=>{
     const termo=planilhaMestreBusca.trim().toLowerCase();
@@ -1194,7 +1202,7 @@ export default function App(){
       if(f.statusOp!=='TODOS'&&r.statusOP!==f.statusOp)return false;
       if(f.andamento!=='TODOS'&&r.andamentoEfetivo!==f.andamento)return false;
       if(f.escopo2!=='TODOS'&&r.escopo2!==f.escopo2)return false;
-      if(f.mes!=='TODOS'&&r.mes!==f.mes)return false;
+      if(f.mes!=='TODOS'&&r.mesChave!==f.mes)return false;
       if(f.situacao!=='TODOS'){
         if(f.situacao==='NENHUMA'){if(r.status)return false;}
         else if(r.status!==f.situacao)return false;
@@ -1435,7 +1443,7 @@ export default function App(){
       const reprogPorBR={};
       (planRes.data||[]).forEach(pl=>{
         const br=s(pl.br);if(!br||!pl.nova_data)return;
-        const valor={novaData:pl.nova_data,dataOriginal:pl.data_original,justificativa:pl.justificativa,criadoEm:pl.criado_em};
+        const valor={novaData:pl.nova_data,dataOriginal:pl.data_original,justificativa:pl.justificativa,criadoEm:pl.criado_em,status:pl.status};
         if(pl.mes_referencia){
           const key=`${br}|${pl.mes_referencia}`;
           const atual=reprogPorBRMes[key];
@@ -2314,7 +2322,8 @@ export default function App(){
       if(error)throw error;
       addToast('Planejamento atualizado!');
       setOohModalBR(null);setOohForm({status:'REPROGRAMADO',novaData:'',justificativa:''});
-      fetchOOH();
+      if(oohProjetos.length>0)fetchOOH();
+      if(mestraDb.length>0)fetchMestra();
     }catch(e){addToast('Erro ao salvar: '+e.message,'error');}
   };
 
@@ -4177,7 +4186,7 @@ export default function App(){
                   {planilhaMestreOpcoesMes.length>0&&(
                     <select value={planilhaMestreFiltros.mes} onChange={e=>setPlanilhaMestreFiltros(f=>({...f,mes:e.target.value}))} className="text-xs font-bold border border-slate-200 rounded-xl px-3 py-2 bg-white">
                       <option value="TODOS">Mês: Todos</option>
-                      {planilhaMestreOpcoesMes.map(m=><option key={m} value={m}>{m}</option>)}
+                      {planilhaMestreOpcoesMes.map(m=><option key={m.chave} value={m.chave}>{m.label}</option>)}
                     </select>
                   )}
                   {(planilhaMestreFiltros.statusOp!=='TODOS'||planilhaMestreFiltros.andamento!=='TODOS'||planilhaMestreFiltros.escopo2!=='TODOS'||planilhaMestreFiltros.situacao!=='TODOS'||planilhaMestreFiltros.mes!=='TODOS')&&(
@@ -4209,7 +4218,7 @@ export default function App(){
                           <th className="px-2 py-2 text-right bg-amber-50" style={{minWidth:90}} title="Estimativa de faturamento − 20 dias — data-limite pra entrar na esteira de fabricação">Início do Projeto</th>
                           <th className="px-2 py-2 text-center" style={{minWidth:110}}>Andamento</th>
                           <th className="px-2 py-2 text-right" style={{minWidth:80}}>Data Entrega CP</th>
-                          <th className="px-2 py-2 text-right" style={{minWidth:80}}>Data Referência</th>
+                          <th className="px-2 py-2 text-right" style={{minWidth:90}}>Data Prevista</th>
                           <th className="px-2 py-2 text-center" style={{minWidth:80}}>Mês</th>
                           <th className="px-2 py-2 text-center" style={{minWidth:50}}>Semana</th>
                           <th className="px-2 py-2 text-right" style={{minWidth:100}}>Vlr Líquido Total</th>
@@ -4278,7 +4287,13 @@ export default function App(){
                                 )}
                               </td>
                               <td className="px-2 py-1.5 text-right text-slate-500 whitespace-nowrap">{fmtDt(r.dataEntregaCP)}</td>
-                              <td className="px-2 py-1.5 text-right font-semibold text-slate-700 whitespace-nowrap">{fmtDt(r.dataReferencia)}</td>
+                              <td className="px-2 py-1.5 text-right whitespace-nowrap">
+                                <button onClick={()=>abrirReprogramarOOH({br:r.br,cliente:r.cliente,dataPrevista:r.dataEntregaCP,mesPrevisto:s(r.dataEntregaCP).slice(0,7),plano:r.reprogramacao?{status:r.reprogramacao.status||'REPROGRAMADO',nova_data:r.reprogramacao.novaData,justificativa:r.reprogramacao.justificativa}:null})}
+                                  className={`font-semibold hover:underline ${r.reprogramacao?'text-amber-700':'text-slate-700 hover:text-indigo-700'}`}
+                                  title={r.reprogramacao?`Reprogramado — motivo: ${s(r.reprogramacao.justificativa)||'sem motivo registrado'}`:'Clique pra antecipar ou reprogramar'}>
+                                  {fmtDt(r.dataReferencia)}{r.reprogramacao?' ✎':''}
+                                </button>
+                              </td>
                               <td className="px-2 py-1.5 text-center text-slate-600 font-semibold whitespace-nowrap">{r.mes}</td>
                               <td className="px-2 py-1.5 text-center text-slate-400">{r.semana??'—'}</td>
                               <td className="px-2 py-1.5 text-right font-semibold text-slate-700 whitespace-nowrap">{fmtMoeda(r.valorTotal)}</td>
