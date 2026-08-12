@@ -4777,6 +4777,13 @@ export default function App(){
                                 {o.cliente&&<p className="text-[11px] text-slate-500 truncate">{s(o.cliente)}</p>}
                                 {o.descricao&&<p className="text-[10px] text-slate-400 mt-0.5">{s(o.descricao)}</p>}
 
+                                {/* Transitar entre setores direto do quadro — sem precisar voltar no modal
+                                    de Direcionar itens só pra mudar de área. */}
+                                <select value={o.setor} onChange={e=>e.target.value!==o.setor&&moverLoteExistente(o,e.target.value)}
+                                  className="w-full text-[10px] font-black text-indigo-700 bg-indigo-50 border border-indigo-200 rounded-lg px-1.5 py-1 mt-1.5 cursor-pointer focus:outline-none">
+                                  {SETORES.map(st=><option key={st} value={st}>→ {SETOR_LABEL[st]}</option>)}
+                                </select>
+
                                 {/* Início/Término — igual ao quadro físico (INÍCIO:/TERM:) */}
                                 <div className="grid grid-cols-2 gap-1.5 mt-2">
                                   <label className="text-[9px] font-black text-slate-400 uppercase block">
