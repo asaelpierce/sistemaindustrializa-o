@@ -2030,6 +2030,7 @@ export default function App(){
   const [comprasPendentesMP,setComprasPendentesMP]=useState([]);
   const [carregandoMotivoFalta,setCarregandoMotivoFalta]=useState(false);
   const [novoLoteQtd,setNovoLoteQtd]=useState({}); // {[codProduto]: quantidade digitada pro próximo lote}
+  const [novoLoteMPQtd,setNovoLoteMPQtd]=useState({}); // {[`${codProduto}|${codigoMP}`]: quantidade digitada pro próximo lote de MP}
   // Por que uma MP está faltando pra esse item? Cruza: (1) quanto já está enviado
   // pra terceiros/industrialização e não voltou ainda (ctrlTopMPs), (2) quanto
   // outros projetos do mês também estão demandando dessa mesma MP (previsaoMP),
@@ -2218,6 +2219,30 @@ export default function App(){
       addToast(`Lote de ${lote.quantidade||'?'} movido pra ${SETOR_LABEL[novoSetor]}.`);
       fetchOrdensProducao();
     }catch(e){addToast('Erro ao mover lote: '+e.message,'error');}
+  };
+
+  // Direciona um lote de uma MATÉRIA-PRIMA específica da composição de um item —
+  // um nível mais fino que direcionarLoteItem. Ex: dentro do mesmo item, a base
+  // metálica vai pra Caldeiraria e o revestimento de borracha vai pra Vulcanização.
+  const direcionarLoteMP=async(p,item,mp,setor,quantidade)=>{
+    if(setor==='EXPEDICAO'){
+      addToast(`${quantidade} ${mp.um||''} de ${mp.codigoMP} vai direto pra expedição, não precisa de OP de produção.`);
+      return;
+    }
+    if(!setor)return addToast('Selecione um setor.','error');
+    const qtd=Number(quantidade);
+    if(!qtd||qtd<=0)return addToast('Informe uma quantidade válida pro lote.','error');
+    try{
+      const id=`OP-${Date.now()}-${item.codProduto}-${mp.codigoMP}`;
+      const descricaoMP=s(estoqueDb[mp.codigoMP]?.descricao)||mp.codigoMP;
+      const{error}=await supabase.from('ordens_producao').insert([{
+        id,br:p.br,cliente:s(p.cliente),setor,cod_produto:item.codProduto,cod_materia_prima:mp.codigoMP,
+        quantidade:qtd,descricao:`${s(item.descricao).slice(0,50)} — MP: ${descricaoMP}`,status:'FILA',criado_por:s(usuarioLogado?.nome),
+      }]);
+      if(error)throw error;
+      addToast(`${qtd} ${mp.um||''} de "${descricaoMP.slice(0,30)}" direcionado(s) pra ${SETOR_LABEL[setor]}!`);
+      fetchOrdensProducao();
+    }catch(e){addToast('Erro ao direcionar matéria-prima: '+e.message,'error');}
   };
 
 
@@ -7361,21 +7386,57 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
                       const necessario=Number(m.quantidade||0)*Number(item.qtdPedida||0);
                       const saldo=Number(est?.saldo_disponivel||0);
                       const falta=necessario-saldo;
+                      const chaveMP=`${item.codProduto}|${m.codigoMP}`;
+                      const lotesMP=ordensProducao.filter(o=>o.br===itensDirecionarBR.br&&o.cod_produto===item.codProduto&&o.cod_materia_prima===m.codigoMP&&o.status!=='CONCLUIDO');
+                      const qtdAlocadaMP=lotesMP.reduce((acc,l)=>acc+Number(l.quantidade||0),0);
+                      const qtdRestanteMP=Math.max(0,necessario-qtdAlocadaMP);
+                      const qtdNovoLoteMP=novoLoteMPQtd[chaveMP]??qtdRestanteMP;
                       return(
-                        <div key={j} className={`flex items-center justify-between gap-3 px-3 py-1.5 text-xs ${j>0?'border-t border-slate-100':''}`}>
-                          <div className="min-w-0">
-                            <span className="font-bold text-slate-700">{m.codigoMP}</span>
-                            <span className="text-slate-500"> — {s(est?.descricao)||'não catalogado no estoque'}</span>
+                        <div key={j} className={`px-3 py-2 text-xs ${j>0?'border-t border-slate-100':''}`}>
+                          <div className="flex items-center justify-between gap-3">
+                            <div className="min-w-0">
+                              <span className="font-bold text-slate-700">{m.codigoMP}</span>
+                              <span className="text-slate-500"> — {s(est?.descricao)||'não catalogado no estoque'}</span>
+                            </div>
+                            <div className="flex-shrink-0 text-right">
+                              <span className="text-slate-600">{necessario.toLocaleString('pt-BR',{maximumFractionDigits:3})} {m.um}</span>
+                              {falta>0?(
+                                <button onClick={()=>abrirMotivoFalta({codigoMP:m.codigoMP,descricao:s(est?.descricao),um:m.um,necessario,saldo,falta,brOrigem:itensDirecionarBR.br,itemDescricao:item.descricao})}
+                                  className="ml-2 font-bold text-red-600 hover:text-red-700 hover:underline" title="Clique pra ver o motivo da falta">
+                                  falta {falta.toLocaleString('pt-BR',{maximumFractionDigits:3})}
+                                </button>
+                              ):<span className="ml-2 font-bold text-emerald-600">✓ tem saldo</span>}
+                            </div>
                           </div>
-                          <div className="flex-shrink-0 text-right">
-                            <span className="text-slate-600">{necessario.toLocaleString('pt-BR',{maximumFractionDigits:3})} {m.um}</span>
-                            {falta>0?(
-                              <button onClick={()=>abrirMotivoFalta({codigoMP:m.codigoMP,descricao:s(est?.descricao),um:m.um,necessario,saldo,falta,brOrigem:itensDirecionarBR.br,itemDescricao:item.descricao})}
-                                className="ml-2 font-bold text-red-600 hover:text-red-700 hover:underline" title="Clique pra ver o motivo da falta">
-                                falta {falta.toLocaleString('pt-BR',{maximumFractionDigits:3})}
-                              </button>
-                            ):<span className="ml-2 font-bold text-emerald-600">✓ tem saldo</span>}
-                          </div>
+
+                          {lotesMP.length>0&&(
+                            <div className="flex flex-wrap gap-1.5 mt-1.5">
+                              {lotesMP.map((l,li)=>(
+                                <span key={li} className="inline-flex items-center gap-1 text-[9px] font-black bg-purple-50 text-purple-700 border border-purple-200 rounded-full pl-2 pr-1 py-0.5">
+                                  {l.quantidade} {m.um} →
+                                  <select value={l.setor} onChange={e=>moverLoteExistente(l,e.target.value)} className="bg-transparent border-none text-purple-700 font-black text-[9px] focus:outline-none cursor-pointer pr-1">
+                                    {SETORES.map(st=><option key={st} value={st}>{SETOR_LABEL[st]}</option>)}
+                                  </select>
+                                </span>
+                              ))}
+                            </div>
+                          )}
+
+                          {qtdRestanteMP>0?(
+                            <div className="flex items-center gap-1.5 mt-1.5">
+                              <input type="number" min="0" step="any" value={qtdNovoLoteMP}
+                                onChange={e=>setNovoLoteMPQtd(prev=>({...prev,[chaveMP]:e.target.value}))}
+                                className="w-16 text-[11px] border border-slate-200 rounded-lg px-1.5 py-1 focus:outline-none focus:ring-2 focus:ring-purple-200"/>
+                              <span className="text-[9px] text-slate-400 whitespace-nowrap">de {qtdRestanteMP.toLocaleString('pt-BR',{maximumFractionDigits:3})} restante</span>
+                              <Sel defaultValue="" onChange={e=>{const v=e.target.value;if(v){direcionarLoteMP(itensDirecionarBR,item,m,v,qtdNovoLoteMP);setNovoLoteMPQtd(prev=>({...prev,[chaveMP]:undefined}));}e.target.value='';}} className="flex-1 !py-1 !text-[11px]">
+                                <option value="">Direcionar esse insumo pra...</option>
+                                {SETORES.map(st=><option key={st} value={st}>{SETOR_LABEL[st]}</option>)}
+                                <option value="EXPEDICAO">Direto p/ Expedição</option>
+                              </Sel>
+                            </div>
+                          ):lotesMP.length>0&&(
+                            <p className="text-[9px] text-emerald-600 font-bold mt-1">✓ Insumo 100% direcionado.</p>
+                          )}
                         </div>
                       );
                     })}
