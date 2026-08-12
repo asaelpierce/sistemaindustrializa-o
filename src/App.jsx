@@ -1883,7 +1883,7 @@ export default function App(){
     const termo=trazerOutroMesBusca.trim().toLowerCase();
     if(termo.length<2)return[];
     return oohProjetosComProducao
-      .filter(p=>p.mesEfetivo!==oohMesRef&&(p.br.toLowerCase().includes(termo)||s(p.cliente).toLowerCase().includes(termo)))
+      .filter(p=>p.mesEfetivo!==oohMesRef&&p.andamento!=='FATURADO'&&(p.br.toLowerCase().includes(termo)||s(p.cliente).toLowerCase().includes(termo)))
       .slice(0,15);
   },[oohProjetosComProducao,trazerOutroMesBusca,oohMesRef]);
 
@@ -1931,6 +1931,17 @@ export default function App(){
   // saíram de "Atrasados" mas não podem desaparecer da visão, senão o PCP esquece
   // que tem algo bloqueado esperando resolução.
   const oohPendentes=useMemo(()=>oohProjetosComProducao.filter(p=>p.pendente&&!p.atendido),[oohProjetosComProducao]);
+  // Faturados ficam numa aba própria, isolados de tudo — não aparecem em Previsto,
+  // Atrasados, Pendentes, nem na busca do "Trazer de outro mês". Uma vez faturado,
+  // não tem por que voltar a se misturar com o que ainda está em aberto.
+  const oohFaturados=useMemo(()=>oohProjetosComProducao.filter(p=>p.andamento==='FATURADO'),[oohProjetosComProducao]);
+  const [oohAbaFaturados,setOohAbaFaturados]=useState(false);
+  const [oohFaturadosBusca,setOohFaturadosBusca]=useState('');
+  const oohFaturadosFiltrados=useMemo(()=>{
+    const termo=oohFaturadosBusca.trim().toLowerCase();
+    if(!termo)return oohFaturados;
+    return oohFaturados.filter(p=>p.br.toLowerCase().includes(termo)||s(p.cliente).toLowerCase().includes(termo));
+  },[oohFaturados,oohFaturadosBusca]);
 
   // Resumo do mês pros cards do topo — visão executiva antes de entrar no detalhe
   const oohResumoMes=useMemo(()=>{
@@ -4370,7 +4381,7 @@ export default function App(){
                 </div>
 
                 {/* Resumo executivo do mês — a foto antes de entrar no detalhe */}
-                <div className="grid grid-cols-1 sm:grid-cols-3 lg:grid-cols-6 gap-4">
+                <div className="grid grid-cols-1 sm:grid-cols-3 lg:grid-cols-7 gap-4">
                   <ExecKPICard tone="slate" icon={LayoutDashboard} label="Previsto no mês" value={fmtMoeda(oohResumoMes.valorPrevisto)} trendLabel={`${oohResumoMes.totalProjetos} projetos`}/>
                   <ExecKPICard tone="red" icon={AlertTriangle} label="Atrasado (meses anteriores)" value={fmtMoeda(oohResumoMes.valorAtrasado)} trendLabel={`${oohAtrasados.length} projetos parados`}
                     selected={oohSecaoAtrasadosAberta} onClick={oohAtrasados.length>0?()=>setOohSecaoAtrasadosAberta(v=>!v):undefined}/>
@@ -4379,7 +4390,30 @@ export default function App(){
                   <ExecKPICard tone="amber" icon={Clock} label="Reprogramado/Antecipado" value={String(oohResumoMes.reprogramados)} trendLabel="projetos com nova data"/>
                   <ExecKPICard tone="blue" icon={Factory} label="Em produção" value={String(oohResumoMes.emProducao)} trendLabel={`${oohResumoMes.aIniciar} ainda a iniciar`}/>
                   <ExecKPICard tone="red" icon={AlertTriangle} label="Entrar na esteira (20d)" value={String(oohResumoMes.precisamEsteira)} trendLabel="faltam 20 dias ou menos pro CP"/>
+                  <ExecKPICard tone="teal" icon={CheckCircle} label="Faturados" value={String(oohFaturados.length)} trendLabel="numa aba própria, isolados — clique pra ver"
+                    selected={oohAbaFaturados} onClick={()=>setOohAbaFaturados(v=>!v)}/>
                 </div>
+
+                {oohAbaFaturados&&(
+                  <div className="bg-white rounded-2xl border border-teal-200 overflow-hidden">
+                    <div className="px-5 py-3.5 border-b border-teal-100 bg-teal-50/50 flex items-center justify-between flex-wrap gap-2">
+                      <p className="text-sm font-black text-teal-800">Faturados <span className="text-teal-400 font-bold">({oohFaturadosFiltrados.length}{oohFaturadosBusca?` de ${oohFaturados.length}`:''})</span> — não entram em Previsto, Atrasados, Pendentes nem na busca de "Trazer de outro mês"</p>
+                      <input value={oohFaturadosBusca} onChange={e=>setOohFaturadosBusca(e.target.value)} placeholder="Buscar BR ou cliente..." className="text-xs border border-teal-200 rounded-lg px-3 py-1.5 w-56 focus:outline-none focus:ring-2 focus:ring-teal-200"/>
+                    </div>
+                    {oohFaturadosFiltrados.length===0?(
+                      <p className="text-sm text-slate-400 text-center py-10">{oohFaturadosBusca?'Nenhum faturado encontrado com esse termo.':'Nenhum projeto faturado ainda.'}</p>
+                    ):(
+                      <div className="overflow-x-auto custom-scrollbar">
+                        <table className="w-full text-sm">
+                          <OOHTabelaHeader/>
+                          <tbody className="divide-y divide-slate-100">
+                            {oohFaturadosFiltrados.map(p=><OOHProjetoRow key={p.br} p={p} onAndamento={atualizarAndamento} onReprogramar={abrirReprogramarOOH}/>)}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                  </div>
+                )}
 
                 {oohSecaoPendentesAberta&&oohPendentes.length>0&&(
                   <div className="bg-white rounded-2xl border border-violet-200 overflow-hidden">
