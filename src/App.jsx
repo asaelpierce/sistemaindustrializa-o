@@ -949,7 +949,12 @@ export default function App(){
       // "Já entregue" só conta quando os ITENS do próprio pedido (por código de produto,
       // já casados com QTDENTREGUE/notas no Mestra) não têm mais saldo em aberto —
       // muito mais confiável que só checar se existe alguma nota pro BR.
-      const jaFaturado=g.itensTotal>0&&g.itensPendentesTotal===0;
+      // Exceção: quando o BR não tem NENHUM pedido sincronizado (semPedidoSincronizado —
+      // ex: contrato antigo, fora da janela de sync) mas tem nota real emitida, não tem
+      // item nenhum pra checar saldo — a própria nota já é a única prova que existe, e
+      // nesse caso ela vale. Achado real: BR12661/25 tinha nota de R$65.556,61 emitida e
+      // aparecia como "não faturado" porque simplesmente não tinha pedido pra comparar.
+      const jaFaturado=(g.itensTotal>0&&g.itensPendentesTotal===0)||(g.semPedidoSincronizado&&g.notas.length>0);
       const statusOP=jaFaturado?'ENTREGUE':(manual.status_op||'NAO_ENTREGUE');
       const andamento=jaFaturado?'FATURADO':(manual.andamento||'A_INICIAR');
       const percentualFaturado=g.valorTotal>0?g.valorFaturadoQtd/g.valorTotal:0;
@@ -1234,11 +1239,18 @@ export default function App(){
     if(!supabase)return;
     setMestraFatNegLoading(true);setMestraFatNegErro('');
     try{
-      const{data,error}=await supabase
-        .from('faturamento_resumo')
-        .select('br,valor_nota,net_offer_value,data_neg')
-        .eq('tipmov','V');
-      if(error)throw error;
+      const[faturamentoRes,andamentoRes]=await Promise.all([
+        supabase.from('faturamento_resumo').select('br,valor_nota,net_offer_value,data_neg').eq('tipmov','V'),
+        supabase.from('andamento_producao').select('br,andamento'),
+      ]);
+      if(faturamentoRes.error)throw faturamentoRes.error;
+      if(andamentoRes.error)throw andamentoRes.error;
+      const data=faturamentoRes.data;
+      // Não recalcula "jaFaturado" aqui (isso é papel da Mestra/Planilha Mestre, que
+      // olham item a item) — só mostra a marcação MANUAL do PCP, pra responder
+      // exatamente "esse projeto já tá marcado como faturado?" direto nessa lista.
+      const andamentoPorBRNeg={};
+      (andamentoRes.data||[]).forEach(a=>{andamentoPorBRNeg[s(a.br)]=a.andamento;});
 
       const grupos={};
       (data||[]).forEach(row=>{
@@ -1253,7 +1265,7 @@ export default function App(){
         const br=s(row.br);
         if(br&&!br.toUpperCase().includes('SEM PROJETO')){
           grupos[mes].projetosSet.add(br);
-          if(!grupos[mes].porBR[br])grupos[mes].porBR[br]={br,bruto:0,liquido:0,notas:0};
+          if(!grupos[mes].porBR[br])grupos[mes].porBR[br]={br,bruto:0,liquido:0,notas:0,andamento:andamentoPorBRNeg[br]||null};
           grupos[mes].porBR[br].bruto+=Number(row.valor_nota||0);
           grupos[mes].porBR[br].liquido+=Number(row.net_offer_value||0);
           grupos[mes].porBR[br].notas+=1;
@@ -7192,7 +7204,14 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
                 <div key={i} className="flex items-center justify-between gap-3 bg-slate-50 rounded-lg px-3 py-2">
                   <div className="min-w-0">
                     <p className="text-sm font-bold text-indigo-700">{p.br}</p>
-                    <p className="text-[11px] text-slate-400">{p.notas} nota(s)</p>
+                    <div className="flex items-center gap-1.5 mt-0.5">
+                      <span className="text-[11px] text-slate-400">{p.notas} nota(s)</span>
+                      {p.andamento?(
+                        <span className={`text-[9px] font-black px-1.5 py-0.5 rounded-full border ${ANDAMENTO_CFG[p.andamento]?.cls||ANDAMENTO_CFG.A_INICIAR.cls}`}>{ANDAMENTO_LABEL[p.andamento]||p.andamento}</span>
+                      ):(
+                        <span className="text-[9px] font-bold text-slate-300" title="Sem marcação manual de andamento — só existe a nota">sem marcação</span>
+                      )}
+                    </div>
                   </div>
                   <div className="text-right whitespace-nowrap">
                     <p className="text-sm font-bold text-slate-700">{fmtMoeda(p.bruto)}</p>
