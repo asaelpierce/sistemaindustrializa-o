@@ -1404,7 +1404,7 @@ export default function App(){
         fetchPedidosItensCache(),
         supabase.from('faturamento_resumo').select('br,cliente_nome,net_offer_value,valor_nota,tipmov,data_neg,numero_nota,data_faturamento').eq('tipmov','V'),
         supabase.from('nota_venda_itens').select('br,produto_descricao,cod_produto,quantidade,valor_bruto'),
-        supabase.from('ooh_planejamento').select('br,nova_data,data_original,justificativa,status,criado_em'),
+        supabase.from('ooh_planejamento').select('br,mes_referencia,nova_data,data_original,justificativa,status,criado_em'),
         supabase.from('situacao_especial_pedido').select('*')
       ]);
       if(faturamentoRes.error)throw faturamentoRes.error;
@@ -1426,12 +1426,23 @@ export default function App(){
       const brsDesconsiderados=new Set(Object.values(situacaoPorBR).filter(sp=>sp.status==='DESCONSIDERAR').map(sp=>s(sp.br)));
 
       // Reprogramações do PCP: quando o PCP avalia que não entrega na data do sistema,
-      // ele informa uma nova data. Vale a reprogramação mais recente por projeto.
+      // ele informa uma nova data. Chave por BR+MÊS ORIGINAL — igual ao que o OOH usa —
+      // pra uma reprogramação de um pedido/mês não vazar pra outro pedido do mesmo BR
+      // que esteja previsto pra um mês diferente. Guarda também uma versão só-por-BR
+      // como fallback, pra não perder a reprogramação quando não der pra casar por mês
+      // (ex: pedido sem dataPrevista própria).
+      const reprogPorBRMes={};
       const reprogPorBR={};
       (planRes.data||[]).forEach(pl=>{
         const br=s(pl.br);if(!br||!pl.nova_data)return;
-        const atual=reprogPorBR[br];
-        if(!atual||s(pl.criado_em)>s(atual.criadoEm))reprogPorBR[br]={novaData:pl.nova_data,dataOriginal:pl.data_original,justificativa:pl.justificativa,criadoEm:pl.criado_em};
+        const valor={novaData:pl.nova_data,dataOriginal:pl.data_original,justificativa:pl.justificativa,criadoEm:pl.criado_em};
+        if(pl.mes_referencia){
+          const key=`${br}|${pl.mes_referencia}`;
+          const atual=reprogPorBRMes[key];
+          if(!atual||s(pl.criado_em)>s(atual.criadoEm))reprogPorBRMes[key]=valor;
+        }
+        const atualBR=reprogPorBR[br];
+        if(!atualBR||s(pl.criado_em)>s(atualBR.criadoEm))reprogPorBR[br]=valor;
       });
 
       const faturadoPorBR={};
@@ -1513,11 +1524,17 @@ export default function App(){
         const brDividido=(pedidosPorBR[r.br]||1)>1;
         const faturado=faturadoPorBR[r.br]||0;
         const bruto=brutoPorBR[r.br]||0;
-        const reprog=reprogPorBR[r.br]||null;
         // Itens do PEDIDO vêm da chave (br+nunota); itens de NOTA são do BR inteiro
         const codsPedido=Object.keys(itensPedidoPorChave[r.chave]||{});
         const codsFaturado=r.semPedidoSincronizado?Object.keys(itensFaturadosPorBR[r.br]||{}):[];
         const todosOsCods=[...new Set([...codsPedido,...codsFaturado])];
+        // Mês original DESTE pedido (sem reprogramação) — usado só pra casar com a
+        // chave br+mês do planejamento, igual o OOH faz. Evita que a reprogramação de
+        // um mês vaze pra outro pedido do mesmo BR previsto pra mês diferente.
+        const mesOriginalPedido=todosOsCods
+          .map(cod=>itensPedidoPorChave[r.chave]?.[cod]?.dataPrevista)
+          .filter(Boolean).sort()[0]?.slice(0,7)||null;
+        const reprog=(mesOriginalPedido&&reprogPorBRMes[`${r.br}|${mesOriginalPedido}`])||reprogPorBR[r.br]||null;
         const itens=todosOsCods.map(cod=>{
           const pedido=itensPedidoPorChave[r.chave]?.[cod];
           const fat=itensFaturadosPorBR[r.br]?.[cod];
