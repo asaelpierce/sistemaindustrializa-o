@@ -1936,6 +1936,13 @@ export default function App(){
   // Atrasados, Pendentes, nem na busca do "Trazer de outro mês". Uma vez faturado,
   // não tem por que voltar a se misturar com o que ainda está em aberto.
   const oohFaturados=useMemo(()=>oohProjetosComProducao.filter(p=>p.andamento==='FATURADO'),[oohProjetosComProducao]);
+  // O card deve responder "o que faturamos ESSE mês", não "tudo que já foi marcado
+  // Faturado alguma vez" — filtra pela dataFaturamento REAL (do Sankhya), não pelo mês
+  // previsto. Quem não tem nenhuma nota encontrada fica à parte (não dá pra saber de
+  // qual mês é), sempre visível, pra não desaparecer silenciosamente.
+  const [oohFaturadosTodosMeses,setOohFaturadosTodosMeses]=useState(false);
+  const oohFaturadosDoMes=useMemo(()=>oohFaturados.filter(p=>p.dataFaturamento&&s(p.dataFaturamento).slice(0,7)===oohMesRef),[oohFaturados,oohMesRef]);
+  const oohFaturadosSemNota=useMemo(()=>oohFaturados.filter(p=>!p.dataFaturamento),[oohFaturados]);
   const [oohServicos,setOohServicos]=useState([]); // itens "SERVIÇO..." de todos os BRs, coletados no fetchOOH
   const [oohAbaServicos,setOohAbaServicos]=useState(false);
   const [oohServicosBusca,setOohServicosBusca]=useState('');
@@ -1947,10 +1954,11 @@ export default function App(){
   const [oohAbaFaturados,setOohAbaFaturados]=useState(false);
   const [oohFaturadosBusca,setOohFaturadosBusca]=useState('');
   const oohFaturadosFiltrados=useMemo(()=>{
+    const base=oohFaturadosTodosMeses?oohFaturados:[...oohFaturadosDoMes,...oohFaturadosSemNota];
     const termo=oohFaturadosBusca.trim().toLowerCase();
-    if(!termo)return oohFaturados;
-    return oohFaturados.filter(p=>p.br.toLowerCase().includes(termo)||s(p.cliente).toLowerCase().includes(termo));
-  },[oohFaturados,oohFaturadosBusca]);
+    if(!termo)return base;
+    return base.filter(p=>p.br.toLowerCase().includes(termo)||s(p.cliente).toLowerCase().includes(termo));
+  },[oohFaturados,oohFaturadosDoMes,oohFaturadosSemNota,oohFaturadosTodosMeses,oohFaturadosBusca]);
 
   // Resumo do mês pros cards do topo — visão executiva antes de entrar no detalhe
   const oohResumoMes=useMemo(()=>{
@@ -4122,7 +4130,7 @@ export default function App(){
                   <ExecKPICard tone="amber" icon={Clock} label="Reprogramado/Antecipado" value={String(oohResumoMes.reprogramados)} trendLabel="projetos com nova data"/>
                   <ExecKPICard tone="blue" icon={Factory} label="Em produção" value={String(oohResumoMes.emProducao)} trendLabel={`${oohResumoMes.aIniciar} ainda a iniciar`}/>
                   <ExecKPICard tone="red" icon={AlertTriangle} label="Entrar na esteira (20d)" value={String(oohResumoMes.precisamEsteira)} trendLabel="faltam 20 dias ou menos pro CP"/>
-                  <ExecKPICard tone="teal" icon={CheckCircle} label="Faturados" value={String(oohFaturados.length)} trendLabel="numa aba própria, isolados — clique pra ver"
+                  <ExecKPICard tone="teal" icon={CheckCircle} label={`Faturados em ${oohMesRef}`} value={String(oohFaturadosDoMes.length)} trendLabel={`${oohFaturadosSemNota.length} sem nota encontrada (qualquer mês) · clique pra ver`}
                     selected={oohAbaFaturados} onClick={()=>setOohAbaFaturados(v=>!v)}/>
                   <ExecKPICard tone="slate" icon={Construction} label="Serviços" value={String(oohServicos.length)} trendLabel="itens de serviço, à parte — não contam pra atraso"
                     selected={oohAbaServicos} onClick={()=>setOohAbaServicos(v=>!v)}/>
@@ -4172,9 +4180,19 @@ export default function App(){
                 {oohAbaFaturados&&(
                   <div className="bg-white rounded-2xl border border-teal-200 overflow-hidden">
                     <div className="px-5 py-3.5 border-b border-teal-100 bg-teal-50/50 flex items-center justify-between flex-wrap gap-2">
-                      <p className="text-sm font-black text-teal-800">Faturados <span className="text-teal-400 font-bold">({oohFaturadosFiltrados.length}{oohFaturadosBusca?` de ${oohFaturados.length}`:''})</span> — não entram em Previsto, Atrasados, Pendentes nem na busca de "Trazer de outro mês"</p>
-                      <input value={oohFaturadosBusca} onChange={e=>setOohFaturadosBusca(e.target.value)} placeholder="Buscar BR ou cliente..." className="text-xs border border-teal-200 rounded-lg px-3 py-1.5 w-56 focus:outline-none focus:ring-2 focus:ring-teal-200"/>
+                      <p className="text-sm font-black text-teal-800">
+                        {oohFaturadosTodosMeses?'Faturados (todos os meses)':`Faturados em ${oohMesRef}`} <span className="text-teal-400 font-bold">({oohFaturadosFiltrados.length}{oohFaturadosBusca?` de ${oohFaturadosTodosMeses?oohFaturados.length:oohFaturadosDoMes.length+oohFaturadosSemNota.length}`:''})</span> — não entram em Previsto, Atrasados, Pendentes nem na busca de "Trazer de outro mês"
+                      </p>
+                      <div className="flex items-center gap-2">
+                        <button onClick={()=>setOohFaturadosTodosMeses(v=>!v)} className={`text-[11px] font-bold px-3 py-1.5 rounded-lg border ${oohFaturadosTodosMeses?'bg-teal-600 text-white border-teal-600':'bg-white text-teal-700 border-teal-200'}`}>
+                          {oohFaturadosTodosMeses?`✓ Todos os meses`:'Ver todos os meses'}
+                        </button>
+                        <input value={oohFaturadosBusca} onChange={e=>setOohFaturadosBusca(e.target.value)} placeholder="Buscar BR ou cliente..." className="text-xs border border-teal-200 rounded-lg px-3 py-1.5 w-56 focus:outline-none focus:ring-2 focus:ring-teal-200"/>
+                      </div>
                     </div>
+                    {!oohFaturadosTodosMeses&&oohFaturadosSemNota.length>0&&(
+                      <p className="px-5 py-1.5 text-[11px] text-amber-600 bg-amber-50 border-b border-amber-100">⚠ {oohFaturadosSemNota.length} marcado(s) Faturado sem nenhuma nota encontrada — mostrados abaixo mesmo assim, já que não dá pra saber de qual mês são.</p>
+                    )}
                     {oohFaturadosFiltrados.length===0?(
                       <p className="text-sm text-slate-400 text-center py-10">{oohFaturadosBusca?'Nenhum faturado encontrado com esse termo.':'Nenhum projeto faturado ainda.'}</p>
                     ):(
