@@ -1643,8 +1643,6 @@ export default function App(){
   const [oohLoading,setOohLoading]=useState(false);
   const [oohErro,setOohErro]=useState('');
   const [oohVisaoSemanal,setOohVisaoSemanal]=useState(false);
-  const [oohSecaoAtrasadosAberta,setOohSecaoAtrasadosAberta]=useState(true);
-  const [oohSecaoPendentesAberta,setOohSecaoPendentesAberta]=useState(false);
   const [oohSecaoMPAberta,setOohSecaoMPAberta]=useState(false);
   const [oohModalBR,setOohModalBR]=useState(null);
   // Fechamento mensal: o PCP revisa os projetos previstos pro mês, desmarca os
@@ -1935,6 +1933,13 @@ export default function App(){
   // Faturados ficam numa aba própria, isolados de tudo — não aparecem em Previsto,
   // Atrasados, Pendentes, nem na busca do "Trazer de outro mês". Uma vez faturado,
   // não tem por que voltar a se misturar com o que ainda está em aberto.
+  // Efeito camada: um seletor único troca qual visão aparece, em vez de empilhar
+  // tudo (Previsto/Atrasados/Pendentes/Reprogramados/Faturados/Serviços) na tela
+  // ao mesmo tempo — só a camada 1 (números grandes) fica sempre visível.
+  const [oohVisaoAtiva,setOohVisaoAtiva]=useState('PREVISTO');
+  // Todo projeto com um plano (antecipado ou reprogramado), de qualquer mês — pra
+  // revisar de uma vez só as justificativas dadas, sem precisar caçar mês por mês.
+  const oohReprogramados=useMemo(()=>oohProjetosComProducao.filter(p=>p.plano),[oohProjetosComProducao]);
   const oohFaturados=useMemo(()=>oohProjetosComProducao.filter(p=>p.andamento==='FATURADO'),[oohProjetosComProducao]);
   // O card deve responder "o que faturamos ESSE mês", não "tudo que já foi marcado
   // Faturado alguma vez" — filtra pela dataFaturamento REAL (do Sankhya), não pelo mês
@@ -1944,14 +1949,12 @@ export default function App(){
   const oohFaturadosDoMes=useMemo(()=>oohFaturados.filter(p=>p.dataFaturamento&&s(p.dataFaturamento).slice(0,7)===oohMesRef),[oohFaturados,oohMesRef]);
   const oohFaturadosSemNota=useMemo(()=>oohFaturados.filter(p=>!p.dataFaturamento),[oohFaturados]);
   const [oohServicos,setOohServicos]=useState([]); // itens "SERVIÇO..." de todos os BRs, coletados no fetchOOH
-  const [oohAbaServicos,setOohAbaServicos]=useState(false);
   const [oohServicosBusca,setOohServicosBusca]=useState('');
   const oohServicosFiltrados=useMemo(()=>{
     const termo=oohServicosBusca.trim().toLowerCase();
     if(!termo)return oohServicos;
     return oohServicos.filter(sv=>sv.br.toLowerCase().includes(termo)||s(sv.cliente).toLowerCase().includes(termo)||s(sv.descricao).toLowerCase().includes(termo));
   },[oohServicos,oohServicosBusca]);
-  const [oohAbaFaturados,setOohAbaFaturados]=useState(false);
   const [oohFaturadosBusca,setOohFaturadosBusca]=useState('');
   const oohFaturadosFiltrados=useMemo(()=>{
     const base=oohFaturadosTodosMeses?oohFaturados:[...oohFaturadosDoMes,...oohFaturadosSemNota];
@@ -4110,7 +4113,7 @@ export default function App(){
             {/* ── OOH: Planejamento mensal ─────────────────────────────── */}
             {aba==='OOH'&&(
               <div className="space-y-5">
-                <SectionHeader title="Planejamento (OOH)" subtitle="Projetos previstos por mês — reprograme, antecipe ou justifique atrasos"
+                <SectionHeader title="Planejamento (OOH)" subtitle="Espelho da Mestra — reprograme, antecipe ou justifique atrasos direto na Planilha Mestre"
                   actions={<div className="flex gap-2"><Btn variant="dark" size="sm" onClick={sincronizarPedidosEFaturamento} disabled={sincronizandoPedidos}><RefreshCw className={`w-4 h-4 ${sincronizandoPedidos?'animate-spin':''}`}/>Sincronizar Sankhya</Btn><Btn variant="secondary" size="sm" onClick={fetchOOH} disabled={oohLoading}><RefreshCw className={`w-4 h-4 ${oohLoading?'animate-spin':''}`}/>Recarregar</Btn></div>}/>
 
                 {oohErro&&<div className="bg-red-50 border border-red-200 text-red-700 text-sm font-semibold rounded-xl px-4 py-3">{oohErro}</div>}
@@ -4120,56 +4123,122 @@ export default function App(){
                   <Inp type="month" value={oohMesRef} onChange={e=>setOohMesRef(e.target.value)} className="w-44"/>
                 </div>
 
-                {/* Resumo executivo do mês — a foto antes de entrar no detalhe */}
-                <div className="grid grid-cols-1 sm:grid-cols-3 lg:grid-cols-7 gap-4">
-                  <ExecKPICard tone="slate" icon={LayoutDashboard} label="Previsto no mês" value={fmtMoeda(oohResumoMes.valorPrevisto)} trendLabel={`${oohResumoMes.totalProjetos} projetos`}/>
-                  <ExecKPICard tone="red" icon={AlertTriangle} label="Atrasado (meses anteriores)" value={fmtMoeda(oohResumoMes.valorAtrasado)} trendLabel={`${oohAtrasados.length} projetos parados`}
-                    selected={oohSecaoAtrasadosAberta} onClick={oohAtrasados.length>0?()=>setOohSecaoAtrasadosAberta(v=>!v):undefined}/>
-                  <ExecKPICard tone="violet" icon={AlertCircle} label="Pendente" value={fmtMoeda(oohResumoMes.valorPendente)} trendLabel={`${oohResumoMes.totalPendentes} projeto(s) — aguardando resolução, não conta como atraso`}
-                    selected={oohSecaoPendentesAberta} onClick={oohPendentes.length>0?()=>setOohSecaoPendentesAberta(v=>!v):undefined}/>
-                  <ExecKPICard tone="amber" icon={Clock} label="Reprogramado/Antecipado" value={String(oohResumoMes.reprogramados)} trendLabel="projetos com nova data"/>
-                  <ExecKPICard tone="blue" icon={Factory} label="Em produção" value={String(oohResumoMes.emProducao)} trendLabel={`${oohResumoMes.aIniciar} ainda a iniciar`}/>
-                  <ExecKPICard tone="red" icon={AlertTriangle} label="Entrar na esteira (20d)" value={String(oohResumoMes.precisamEsteira)} trendLabel="faltam 20 dias ou menos pro CP"/>
-                  <ExecKPICard tone="teal" icon={CheckCircle} label={`Faturados em ${oohMesRef}`} value={String(oohFaturadosDoMes.length)} trendLabel={`${oohFaturadosSemNota.length} sem nota encontrada (qualquer mês) · clique pra ver`}
-                    selected={oohAbaFaturados} onClick={()=>setOohAbaFaturados(v=>!v)}/>
-                  <ExecKPICard tone="slate" icon={Construction} label="Serviços" value={String(oohServicos.length)} trendLabel="itens de serviço, à parte — não contam pra atraso"
-                    selected={oohAbaServicos} onClick={()=>setOohAbaServicos(v=>!v)}/>
+                {oohFechamentos[oohMesRef]&&(
+                  <div className="bg-teal-50 border border-teal-200 rounded-xl px-4 py-2.5 flex items-center gap-2 flex-wrap">
+                    <CheckCircle className="w-3.5 h-3.5 text-teal-600 flex-shrink-0"/>
+                    <p className="text-xs font-bold text-teal-800">
+                      Fechado por {s(oohFechamentos[oohMesRef].fechadoPor)||'—'} em {fmtDt(oohFechamentos[oohMesRef].fechadoEm)} — {oohFechamentos[oohMesRef].brsSelecionados.length} projeto(s) confirmado(s).
+                    </p>
+                  </div>
+                )}
+
+                {/* ── CAMADA 1: só os 3 números que importam de cara ─────────── */}
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                  <ExecKPICard tone="slate" icon={LayoutDashboard} label="Previsto no mês" value={fmtMoeda(oohResumoMes.valorPrevisto)} trendLabel={`${oohResumoMes.totalProjetos} projeto(s) — inclui antecipados/reprogramados pra ${oohMesRef}`}/>
+                  <ExecKPICard tone="teal" icon={CheckCircle} label={`Faturado em ${oohMesRef}`} value={fmtMoeda(oohFaturadosDoMes.reduce((a,p)=>a+p.valorTotal,0))} trendLabel={`${oohFaturadosDoMes.length} projeto(s) com nota emitida esse mês`}/>
+                  <ExecKPICard tone="red" icon={AlertTriangle} label="Atrasado (meses anteriores)" value={fmtMoeda(oohResumoMes.valorAtrasado)} trendLabel={`${oohAtrasados.length} projeto(s) parado(s)`}/>
                 </div>
 
-                {oohAbaServicos&&(
-                  <div className="bg-white rounded-2xl border border-slate-300 overflow-hidden">
+                {oohResumoMes.precisamEsteira>0&&(
+                  <div className="bg-red-50 border border-red-200 rounded-xl px-4 py-2.5 flex items-center gap-2">
+                    <AlertTriangle className="w-4 h-4 text-red-600 flex-shrink-0"/>
+                    <p className="text-xs font-bold text-red-700">{oohResumoMes.precisamEsteira} projeto(s) com 20 dias ou menos pro CP — precisam entrar na esteira de fabricação.</p>
+                  </div>
+                )}
+
+                {/* ── Seletor único de visão (efeito camada — troca o conteúdo, não empilha) ── */}
+                <div className="flex items-center gap-1.5 overflow-x-auto pb-1 -mx-1 px-1">
+                  {[
+                    {id:'PREVISTO',label:'Previsto',count:oohDoMes.length},
+                    {id:'ATRASADOS',label:'Atrasados',count:oohAtrasados.length},
+                    {id:'PENDENTES',label:'Pendentes',count:oohPendentes.length},
+                    {id:'REPROGRAMADOS',label:'Reprogramados/Antecipados',count:oohReprogramados.length},
+                    {id:'FATURADOS',label:'Faturados',count:oohFaturadosDoMes.length},
+                    {id:'SERVICOS',label:'Serviços',count:oohServicos.length},
+                  ].map(t=>(
+                    <button key={t.id} onClick={()=>setOohVisaoAtiva(t.id)}
+                      className={`flex items-center gap-1.5 text-xs font-bold px-3.5 py-2 rounded-xl border whitespace-nowrap transition-colors flex-shrink-0 ${oohVisaoAtiva===t.id?'bg-slate-900 text-white border-slate-900':'bg-white text-slate-600 border-slate-200 hover:border-slate-300'}`}>
+                      {t.label}<span className={`text-[10px] font-black px-1.5 py-0.5 rounded-full ${oohVisaoAtiva===t.id?'bg-white/20':'bg-slate-100 text-slate-500'}`}>{t.count}</span>
+                    </button>
+                  ))}
+                </div>
+
+                {/* ── CAMADA 2: só a visão escolhida aparece aqui ─────────────── */}
+                {oohVisaoAtiva==='PREVISTO'&&(
+                  <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
                     <div className="px-5 py-3.5 border-b border-slate-100 bg-slate-50 flex items-center justify-between flex-wrap gap-2">
-                      <p className="text-sm font-black text-slate-800">Serviços <span className="text-slate-400 font-bold">({oohServicosFiltrados.length}{oohServicosBusca?` de ${oohServicos.length}`:''})</span> — itens "SERVIÇO..." de todos os BRs; não entram no cálculo de atraso/esteira</p>
-                      <input value={oohServicosBusca} onChange={e=>setOohServicosBusca(e.target.value)} placeholder="Buscar BR, cliente ou descrição..." className="text-xs border border-slate-200 rounded-lg px-3 py-1.5 w-64 focus:outline-none focus:ring-2 focus:ring-slate-200"/>
+                      <p className="text-sm font-black text-slate-800">Previsto para {oohMesRef} <span className="text-slate-400 font-bold">({oohDoMes.length})</span></p>
+                      <div className="flex items-center gap-2">
+                        <Btn variant="secondary" size="sm" onClick={()=>setTrazerOutroMesModal(true)}><Search className="w-4 h-4"/>Trazer de outro mês</Btn>
+                        <div className="flex items-center gap-1 bg-white border border-slate-200 rounded-full p-0.5">
+                          <button onClick={()=>setOohVisaoSemanal(false)} className={`text-[11px] font-bold px-3 py-1 rounded-full transition-colors ${!oohVisaoSemanal?'bg-indigo-600 text-white':'text-slate-500'}`}>Mensal</button>
+                          <button onClick={()=>setOohVisaoSemanal(true)} className={`text-[11px] font-bold px-3 py-1 rounded-full transition-colors ${oohVisaoSemanal?'bg-indigo-600 text-white':'text-slate-500'}`}>Semanal</button>
+                        </div>
+                      </div>
                     </div>
-                    {oohServicosFiltrados.length===0?(
-                      <p className="text-sm text-slate-400 text-center py-10">{oohServicosBusca?'Nenhum serviço encontrado com esse termo.':'Nenhum item de serviço no momento.'}</p>
-                    ):(
-                      <div className="overflow-x-auto custom-scrollbar max-h-[500px]">
+
+                    {oohLoading&&<SkeletonRows linhas={5} colunas={6}/>}
+                    {!oohLoading&&oohDoMes.length===0&&<div className="px-5 py-10 text-center text-slate-400 font-semibold">Nenhum projeto previsto para este mês.</div>}
+
+                    {!oohLoading&&oohDoMes.length>0&&!oohVisaoSemanal&&(
+                      <div className="overflow-x-auto custom-scrollbar">
                         <table className="w-full text-sm">
-                          <thead className="bg-slate-50 border-b border-slate-200 sticky top-0">
-                            <tr className="text-left text-[10px] font-black text-slate-500 uppercase tracking-wider">
-                              <th className="px-3 py-2.5">BR</th>
-                              <th className="px-3 py-2.5">Cliente</th>
-                              <th className="px-3 py-2.5">Descrição do serviço</th>
-                              <th className="px-3 py-2.5">Previsto</th>
-                              <th className="px-3 py-2.5 text-right">Qtd</th>
-                              <th className="px-3 py-2.5 text-right">Valor</th>
-                              <th className="px-3 py-2.5">Status</th>
-                            </tr>
-                          </thead>
+                          <OOHTabelaHeader comSelecao/>
                           <tbody className="divide-y divide-slate-100">
-                            {oohServicosFiltrados.map((sv,i)=>(
-                              <tr key={i} className="hover:bg-slate-50">
-                                <td className="px-3 py-2 font-bold text-indigo-700 whitespace-nowrap">{sv.br}</td>
-                                <td className="px-3 py-2 text-slate-600 truncate max-w-[180px]">{s(sv.cliente)}</td>
-                                <td className="px-3 py-2 text-slate-600 truncate max-w-[260px]" title={s(sv.descricao)}>{s(sv.descricao)}</td>
-                                <td className="px-3 py-2 text-slate-500 whitespace-nowrap">{fmtDt(sv.dataPrevista)}</td>
-                                <td className="px-3 py-2 text-right text-slate-600 whitespace-nowrap">{sv.qtdEntregue}/{sv.quantidade}</td>
-                                <td className="px-3 py-2 text-right font-bold text-slate-700 whitespace-nowrap">{fmtMoeda(sv.valor)}</td>
-                                <td className="px-3 py-2 whitespace-nowrap">{sv.entregue?<span className="text-[10px] font-black text-teal-700 bg-teal-50 border border-teal-200 rounded-full px-2 py-0.5">✓ concluído</span>:<span className="text-[10px] font-black text-amber-700 bg-amber-50 border border-amber-200 rounded-full px-2 py-0.5">pendente</span>}</td>
+                            {oohDoMes.map(p=><OOHProjetoRow key={p.br} p={p} onAndamento={atualizarAndamento} onReprogramar={abrirReprogramarOOH}
+                              selecionavel selecionado={oohBrSelecionado(p.br)} onToggleSelecao={()=>toggleOohSelecao(p.br)}/>)}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+
+                    {!oohLoading&&oohDoMes.length>0&&oohVisaoSemanal&&(
+                      <div className="overflow-x-auto custom-scrollbar">
+                        <table className="w-full text-sm">
+                          <OOHTabelaHeader comSelecao/>
+                          {oohPorSemana.map(g=>(
+                            <tbody key={g.semana} className="divide-y divide-slate-100">
+                              <tr className="bg-slate-100/70">
+                                <td colSpan={OOH_COLUNAS.length+1} className="px-3 py-1.5">
+                                  <span className="text-[11px] font-black text-slate-500 uppercase">Semana {g.semana}</span>
+                                  <span className="text-[11px] font-bold text-slate-500 float-right">{g.projetos.length} projeto{g.projetos.length>1?'s':''} · {fmtMoeda(g.valorTotal)}</span>
+                                </td>
                               </tr>
-                            ))}
+                              {g.projetos.map(p=><OOHProjetoRow key={p.br} p={p} onAndamento={atualizarAndamento} onReprogramar={abrirReprogramarOOH}
+                                selecionavel selecionado={oohBrSelecionado(p.br)} onToggleSelecao={()=>toggleOohSelecao(p.br)}/>)}
+                            </tbody>
+                          ))}
+                        </table>
+                      </div>
+                    )}
+
+                    {!oohLoading&&oohDoMes.length>0&&(
+                      <div className="px-5 py-3.5 border-t border-slate-100 bg-slate-50 flex items-center justify-between flex-wrap gap-2">
+                        <p className="text-xs font-bold text-slate-500">
+                          {oohDoMes.filter(p=>oohBrSelecionado(p.br)).length} de {oohDoMes.length} selecionado(s) pra fechar
+                        </p>
+                        <Btn variant="dark" size="sm" onClick={fecharPlanejamentoOOH} disabled={fechandoOOH}>
+                          <CheckCircle className={`w-4 h-4 ${fechandoOOH?'animate-pulse':''}`}/>{oohFechamentos[oohMesRef]?'Re-fechar planejamento':'Fechar planejamento do mês'}
+                        </Btn>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {oohVisaoAtiva==='ATRASADOS'&&(
+                  <div className="bg-white rounded-2xl border border-red-200 overflow-hidden">
+                    <div className="px-5 py-3.5 border-b border-red-100 bg-red-50/50 flex items-center justify-between">
+                      <p className="text-sm font-black text-red-800">Atrasados <span className="text-red-400 font-bold">({oohAtrasados.length})</span> — projetos de meses anteriores ainda não atendidos</p>
+                      <span className="text-xs font-black text-red-700">{fmtMoeda(oohResumoMes.valorAtrasado)}</span>
+                    </div>
+                    {oohAtrasados.length===0?(
+                      <p className="text-sm text-slate-400 text-center py-10">Nenhum projeto atrasado.</p>
+                    ):(
+                      <div className="overflow-x-auto custom-scrollbar">
+                        <table className="w-full text-sm">
+                          <OOHTabelaHeader/>
+                          <tbody className="divide-y divide-slate-100">
+                            {oohAtrasados.map(p=><OOHProjetoRow key={p.br} p={p} onAndamento={atualizarAndamento} onReprogramar={abrirReprogramarOOH}/>)}
                           </tbody>
                         </table>
                       </div>
@@ -4177,11 +4246,57 @@ export default function App(){
                   </div>
                 )}
 
-                {oohAbaFaturados&&(
+                {oohVisaoAtiva==='PENDENTES'&&(
+                  <div className="bg-white rounded-2xl border border-violet-200 overflow-hidden">
+                    <div className="px-5 py-3.5 border-b border-violet-100 bg-violet-50/50">
+                      <p className="text-sm font-black text-violet-800">Pendentes <span className="text-violet-400 font-bold">({oohPendentes.length})</span> — aguardando resolução, fora da conta de atraso</p>
+                    </div>
+                    {oohPendentes.length===0?(
+                      <p className="text-sm text-slate-400 text-center py-10">Nenhum projeto pendente.</p>
+                    ):(
+                      <div className="overflow-x-auto custom-scrollbar">
+                        <table className="w-full text-sm">
+                          <OOHTabelaHeader/>
+                          <tbody className="divide-y divide-slate-100">
+                            {oohPendentes.map(p=><OOHProjetoRow key={p.br} p={p} onAndamento={atualizarAndamento} onReprogramar={abrirReprogramarOOH}/>)}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {oohVisaoAtiva==='REPROGRAMADOS'&&(
+                  <div className="bg-white rounded-2xl border border-amber-200 overflow-hidden">
+                    <div className="px-5 py-3.5 border-b border-amber-100 bg-amber-50/50">
+                      <p className="text-sm font-black text-amber-800">Reprogramados/Antecipados <span className="text-amber-500 font-bold">({oohReprogramados.length})</span> — de qualquer mês, com a justificativa de cada mudança</p>
+                    </div>
+                    {oohReprogramados.length===0?(
+                      <p className="text-sm text-slate-400 text-center py-10">Nenhum projeto reprogramado.</p>
+                    ):(
+                      <div className="divide-y divide-slate-100">
+                        {oohReprogramados.map(p=>(
+                          <div key={p.br} className="px-5 py-3 flex items-start justify-between gap-4 hover:bg-slate-50">
+                            <div className="min-w-0">
+                              <p className="text-sm font-bold text-indigo-700">{p.br} <span className="text-slate-400 font-normal">· {s(p.cliente)}</span></p>
+                              <p className="text-[11px] text-slate-500 mt-0.5">
+                                <span className={`font-black ${p.plano.status==='ANTECIPADO'?'text-teal-600':'text-amber-600'}`}>{p.plano.status==='ANTECIPADO'?'Antecipado':'Reprogramado'}</span>: {fmtDt(p.plano.data_original)} → {fmtDt(p.plano.nova_data)}
+                              </p>
+                              {p.plano.justificativa&&<p className="text-[11px] text-slate-400 mt-1 italic">"{s(p.plano.justificativa)}"</p>}
+                            </div>
+                            <button onClick={()=>abrirReprogramarOOH(p)} className="text-indigo-600 font-bold text-xs hover:underline whitespace-nowrap flex-shrink-0">Editar</button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {oohVisaoAtiva==='FATURADOS'&&(
                   <div className="bg-white rounded-2xl border border-teal-200 overflow-hidden">
                     <div className="px-5 py-3.5 border-b border-teal-100 bg-teal-50/50 flex items-center justify-between flex-wrap gap-2">
                       <p className="text-sm font-black text-teal-800">
-                        {oohFaturadosTodosMeses?'Faturados (todos os meses)':`Faturados em ${oohMesRef}`} <span className="text-teal-400 font-bold">({oohFaturadosFiltrados.length}{oohFaturadosBusca?` de ${oohFaturadosTodosMeses?oohFaturados.length:oohFaturadosDoMes.length+oohFaturadosSemNota.length}`:''})</span> — não entram em Previsto, Atrasados, Pendentes nem na busca de "Trazer de outro mês"
+                        {oohFaturadosTodosMeses?'Faturados (todos os meses)':`Faturados em ${oohMesRef}`} <span className="text-teal-400 font-bold">({oohFaturadosFiltrados.length}{oohFaturadosBusca?` de ${oohFaturadosTodosMeses?oohFaturados.length:oohFaturadosDoMes.length+oohFaturadosSemNota.length}`:''})</span>
                       </p>
                       <div className="flex items-center gap-2">
                         <button onClick={()=>setOohFaturadosTodosMeses(v=>!v)} className={`text-[11px] font-bold px-3 py-1.5 rounded-lg border ${oohFaturadosTodosMeses?'bg-teal-600 text-white border-teal-600':'bg-white text-teal-700 border-teal-200'}`}>
@@ -4230,114 +4345,46 @@ export default function App(){
                   </div>
                 )}
 
-                {oohSecaoPendentesAberta&&oohPendentes.length>0&&(
-                  <div className="bg-white rounded-2xl border border-violet-200 overflow-hidden">
-                    <div className="px-5 py-3.5 border-b border-violet-100 bg-violet-50/50 flex items-center justify-between">
-                      <p className="text-sm font-black text-violet-800">Pendentes <span className="text-violet-400 font-bold">({oohPendentes.length})</span> — aguardando resolução, fora da conta de atraso</p>
+                {oohVisaoAtiva==='SERVICOS'&&(
+                  <div className="bg-white rounded-2xl border border-slate-300 overflow-hidden">
+                    <div className="px-5 py-3.5 border-b border-slate-100 bg-slate-50 flex items-center justify-between flex-wrap gap-2">
+                      <p className="text-sm font-black text-slate-800">Serviços <span className="text-slate-400 font-bold">({oohServicosFiltrados.length}{oohServicosBusca?` de ${oohServicos.length}`:''})</span> — itens "SERVIÇO..." de todos os BRs; não entram no cálculo de atraso/esteira</p>
+                      <input value={oohServicosBusca} onChange={e=>setOohServicosBusca(e.target.value)} placeholder="Buscar BR, cliente ou descrição..." className="text-xs border border-slate-200 rounded-lg px-3 py-1.5 w-64 focus:outline-none focus:ring-2 focus:ring-slate-200"/>
                     </div>
-                    <div className="overflow-x-auto custom-scrollbar">
-                      <table className="w-full text-sm">
-                        <OOHTabelaHeader/>
-                        <tbody className="divide-y divide-slate-100">
-                          {oohPendentes.map(p=><OOHProjetoRow key={p.br} p={p} onAndamento={atualizarAndamento} onReprogramar={abrirReprogramarOOH}/>)}
-                        </tbody>
-                      </table>
-                    </div>
-                  </div>
-                )}
-
-                {/* Atrasados de meses anteriores — recolhível, mas some por padrão só se vazio */}
-                {oohAtrasados.length>0&&(
-                  <div className="bg-white rounded-2xl border border-red-200 overflow-hidden">
-                    <button onClick={()=>setOohSecaoAtrasadosAberta(v=>!v)} className="w-full flex items-center justify-between px-5 py-3.5 bg-red-50/50 hover:bg-red-50 transition-colors">
-                      <div className="flex items-center gap-2.5">
-                        <ArrowDown className={`w-3.5 h-3.5 text-red-500 transition-transform ${oohSecaoAtrasadosAberta?'':'-rotate-90'}`}/>
-                        <span className="text-sm font-black text-red-700">Projetos de meses anteriores ainda não atendidos</span>
-                        <span className="text-[10px] font-bold text-red-600 bg-red-100 px-2 py-0.5 rounded-full">{oohAtrasados.length}</span>
-                      </div>
-                      <span className="text-xs font-black text-red-700">{fmtMoeda(oohResumoMes.valorAtrasado)}</span>
-                    </button>
-                    {oohSecaoAtrasadosAberta&&(
-                      <div className="overflow-x-auto custom-scrollbar">
+                    {oohServicosFiltrados.length===0?(
+                      <p className="text-sm text-slate-400 text-center py-10">{oohServicosBusca?'Nenhum serviço encontrado com esse termo.':'Nenhum item de serviço no momento.'}</p>
+                    ):(
+                      <div className="overflow-x-auto custom-scrollbar max-h-[500px]">
                         <table className="w-full text-sm">
-                          <OOHTabelaHeader/>
+                          <thead className="bg-slate-50 border-b border-slate-200 sticky top-0">
+                            <tr className="text-left text-[10px] font-black text-slate-500 uppercase tracking-wider">
+                              <th className="px-3 py-2.5">BR</th>
+                              <th className="px-3 py-2.5">Cliente</th>
+                              <th className="px-3 py-2.5">Descrição do serviço</th>
+                              <th className="px-3 py-2.5">Previsto</th>
+                              <th className="px-3 py-2.5 text-right">Qtd</th>
+                              <th className="px-3 py-2.5 text-right">Valor</th>
+                              <th className="px-3 py-2.5">Status</th>
+                            </tr>
+                          </thead>
                           <tbody className="divide-y divide-slate-100">
-                            {oohAtrasados.map(p=><OOHProjetoRow key={p.br} p={p} onAndamento={atualizarAndamento} onReprogramar={abrirReprogramarOOH}/>)}
+                            {oohServicosFiltrados.map((sv,i)=>(
+                              <tr key={i} className="hover:bg-slate-50">
+                                <td className="px-3 py-2 font-bold text-indigo-700 whitespace-nowrap">{sv.br}</td>
+                                <td className="px-3 py-2 text-slate-600 truncate max-w-[180px]">{s(sv.cliente)}</td>
+                                <td className="px-3 py-2 text-slate-600 truncate max-w-[260px]" title={s(sv.descricao)}>{s(sv.descricao)}</td>
+                                <td className="px-3 py-2 text-slate-500 whitespace-nowrap">{fmtDt(sv.dataPrevista)}</td>
+                                <td className="px-3 py-2 text-right text-slate-600 whitespace-nowrap">{sv.qtdEntregue}/{sv.quantidade}</td>
+                                <td className="px-3 py-2 text-right font-bold text-slate-700 whitespace-nowrap">{fmtMoeda(sv.valor)}</td>
+                                <td className="px-3 py-2 whitespace-nowrap">{sv.entregue?<span className="text-[10px] font-black text-teal-700 bg-teal-50 border border-teal-200 rounded-full px-2 py-0.5">✓ concluído</span>:<span className="text-[10px] font-black text-amber-700 bg-amber-50 border border-amber-200 rounded-full px-2 py-0.5">pendente</span>}</td>
+                              </tr>
+                            ))}
                           </tbody>
                         </table>
                       </div>
                     )}
                   </div>
                 )}
-
-                <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
-                  <div className="px-5 py-3.5 border-b border-slate-100 bg-slate-50 flex items-center justify-between flex-wrap gap-2">
-                    <p className="text-sm font-black text-slate-800">Projetos previstos para {oohMesRef} <span className="text-slate-400 font-bold">({oohDoMes.length})</span></p>
-                    <div className="flex items-center gap-2">
-                      <Btn variant="secondary" size="sm" onClick={()=>setTrazerOutroMesModal(true)}><Search className="w-4 h-4"/>Trazer de outro mês</Btn>
-                      <div className="flex items-center gap-1 bg-white border border-slate-200 rounded-full p-0.5">
-                        <button onClick={()=>setOohVisaoSemanal(false)} className={`text-[11px] font-bold px-3 py-1 rounded-full transition-colors ${!oohVisaoSemanal?'bg-indigo-600 text-white':'text-slate-500'}`}>Mensal</button>
-                        <button onClick={()=>setOohVisaoSemanal(true)} className={`text-[11px] font-bold px-3 py-1 rounded-full transition-colors ${oohVisaoSemanal?'bg-indigo-600 text-white':'text-slate-500'}`}>Semanal</button>
-                      </div>
-                    </div>
-                  </div>
-
-                  {oohFechamentos[oohMesRef]&&(
-                    <div className="px-5 py-2.5 bg-teal-50 border-b border-teal-100 flex items-center gap-2 flex-wrap">
-                      <CheckCircle className="w-3.5 h-3.5 text-teal-600 flex-shrink-0"/>
-                      <p className="text-xs font-bold text-teal-800">
-                        Fechado por {s(oohFechamentos[oohMesRef].fechadoPor)||'—'} em {fmtDt(oohFechamentos[oohMesRef].fechadoEm)} — {oohFechamentos[oohMesRef].brsSelecionados.length} projeto(s) confirmado(s).
-                      </p>
-                      <span className="text-[10px] text-teal-600">Pode ajustar a seleção abaixo e fechar de novo se algo mudou.</span>
-                    </div>
-                  )}
-
-                  {oohLoading&&<SkeletonRows linhas={5} colunas={6}/>}
-                  {!oohLoading&&oohDoMes.length===0&&<div className="px-5 py-10 text-center text-slate-400 font-semibold">Nenhum projeto previsto para este mês.</div>}
-
-                  {!oohLoading&&oohDoMes.length>0&&!oohVisaoSemanal&&(
-                    <div className="overflow-x-auto custom-scrollbar">
-                      <table className="w-full text-sm">
-                        <OOHTabelaHeader comSelecao/>
-                        <tbody className="divide-y divide-slate-100">
-                          {oohDoMes.map(p=><OOHProjetoRow key={p.br} p={p} onAndamento={atualizarAndamento} onReprogramar={abrirReprogramarOOH}
-                            selecionavel selecionado={oohBrSelecionado(p.br)} onToggleSelecao={()=>toggleOohSelecao(p.br)}/>)}
-                        </tbody>
-                      </table>
-                    </div>
-                  )}
-
-                  {!oohLoading&&oohDoMes.length>0&&oohVisaoSemanal&&(
-                    <div className="overflow-x-auto custom-scrollbar">
-                      <table className="w-full text-sm">
-                        <OOHTabelaHeader comSelecao/>
-                        {oohPorSemana.map(g=>(
-                          <tbody key={g.semana} className="divide-y divide-slate-100">
-                            <tr className="bg-slate-100/70">
-                              <td colSpan={OOH_COLUNAS.length+1} className="px-3 py-1.5">
-                                <span className="text-[11px] font-black text-slate-500 uppercase">Semana {g.semana}</span>
-                                <span className="text-[11px] font-bold text-slate-500 float-right">{g.projetos.length} projeto{g.projetos.length>1?'s':''} · {fmtMoeda(g.valorTotal)}</span>
-                              </td>
-                            </tr>
-                            {g.projetos.map(p=><OOHProjetoRow key={p.br} p={p} onAndamento={atualizarAndamento} onReprogramar={abrirReprogramarOOH}
-                              selecionavel selecionado={oohBrSelecionado(p.br)} onToggleSelecao={()=>toggleOohSelecao(p.br)}/>)}
-                          </tbody>
-                        ))}
-                      </table>
-                    </div>
-                  )}
-
-                  {!oohLoading&&oohDoMes.length>0&&(
-                    <div className="px-5 py-3.5 border-t border-slate-100 bg-slate-50 flex items-center justify-between flex-wrap gap-2">
-                      <p className="text-xs font-bold text-slate-500">
-                        {oohDoMes.filter(p=>oohBrSelecionado(p.br)).length} de {oohDoMes.length} selecionado(s) pra fechar
-                      </p>
-                      <Btn variant="dark" size="sm" onClick={fecharPlanejamentoOOH} disabled={fechandoOOH}>
-                        <CheckCircle className={`w-4 h-4 ${fechandoOOH?'animate-pulse':''}`}/>{oohFechamentos[oohMesRef]?'Re-fechar planejamento':'Fechar planejamento do mês'}
-                      </Btn>
-                    </div>
-                  )}
-                </div>
 
                 {/* Previsão de Matéria-Prima — recolhível, secundário pro dia a dia */}
                 <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
