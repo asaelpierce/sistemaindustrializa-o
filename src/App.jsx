@@ -779,7 +779,7 @@ export default function App(){
     }catch(e){addToast('Erro ao buscar compras pendentes: '+e.message,'error');}
     finally{setImportacaoLoading(false);}
   },[supabase]);
-  useEffect(()=>{if(supabase&&(aba==='MESTRA'||aba==='PLANILHA_MESTRE')&&Object.keys(importacaoPorBR).length===0)fetchImportacaoPendente();},[supabase,aba]);
+  useEffect(()=>{if(supabase&&(aba==='MESTRA'||aba==='PLANILHA_MESTRE'))fetchImportacaoPendente();},[supabase,aba]);
 
   const [mestraNotasTotais,setMestraNotasTotais]=useState({bruto:0,liquido:0,brs:0});
   const [mestraFiltro,setMestraFiltro]=useState('TODOS'); // TODOS | FATURADO | PARCIAL | PENDENTE
@@ -885,7 +885,7 @@ export default function App(){
     }catch(e){addToast('Erro ao buscar campos manuais: '+e.message,'error');}
     finally{setPlanilhaMestreLoading(false);}
   },[supabase]);
-  useEffect(()=>{if(supabase&&aba==='PLANILHA_MESTRE'&&Object.keys(planilhaMestreCampos).length===0)fetchPlanilhaMestreCampos();},[supabase,aba]);
+  useEffect(()=>{if(supabase&&aba==='PLANILHA_MESTRE')fetchPlanilhaMestreCampos();},[supabase,aba]);
 
   const salvarCampoManualBR=async(br,campo,valor)=>{
     setPlanilhaMestreCampos(prev=>({...prev,[br]:{...prev[br],[campo]:valor}}));
@@ -1009,7 +1009,7 @@ export default function App(){
     }catch(e){setOpsSankhyaErro('Erro ao buscar OPs: '+e.message);}
     finally{setOpsSankhyaLoading(false);}
   },[supabase]);
-  useEffect(()=>{if(supabase&&(aba==='ORDENS_PRODUCAO_SK'||aba==='PRODUCAO'||aba==='OOH')&&opsSankhyaItens.length===0)fetchOpsSankhya();},[supabase,aba]);
+  useEffect(()=>{if(supabase&&(aba==='ORDENS_PRODUCAO_SK'||aba==='PRODUCAO'||aba==='OOH'))fetchOpsSankhya();},[supabase,aba]);
 
   const sincronizarOpsSankhya=async()=>{
     setOpsSankhyaLoading(true);
@@ -1634,7 +1634,7 @@ export default function App(){
     }
   },[supabase]);
 
-  useEffect(()=>{if(supabase&&(aba==='MESTRA'||aba==='PLANILHA_MESTRE'||aba==='PRODUCAO')&&mestraDb.length===0)fetchMestra();},[supabase,aba]);
+  useEffect(()=>{if(supabase&&(aba==='MESTRA'||aba==='PLANILHA_MESTRE'||aba==='PRODUCAO'))fetchMestra();},[supabase,aba]);
 
   // ── OOH: Planejamento mensal (projetos do Portal de Engenharia + reprogramações locais) ──
   const [oohMesRef,setOohMesRef]=useState(new Date().toISOString().slice(0,7)); // YYYY-MM
@@ -1693,15 +1693,28 @@ export default function App(){
     if(!supabase)return;
     setOohLoading(true);setOohErro('');
     try{
-      const[pedidosItensData,planejamentoRes,andamentoRes,situacaoRes]=await Promise.all([
+      const[pedidosItensData,planejamentoRes,andamentoRes,situacaoRes,faturamentoDatasRes]=await Promise.all([
         fetchPedidosItensCache(),
         supabase.from('ooh_planejamento').select('*'),
         supabase.from('andamento_producao').select('*'),
-        supabase.from('situacao_especial_pedido').select('*')
+        supabase.from('situacao_especial_pedido').select('*'),
+        supabase.from('faturamento_resumo').select('br,data_faturamento,numero_nota').eq('tipmov','V'),
       ]);
       if(planejamentoRes.error)throw planejamentoRes.error;
       if(andamentoRes.error)throw andamentoRes.error;
       if(situacaoRes.error)throw situacaoRes.error;
+      if(faturamentoDatasRes.error)throw faturamentoDatasRes.error;
+
+      // Data de faturamento real (não confundir com "previsto"/mesEfetivo) — pega a nota
+      // mais recente quando o BR tem mais de uma. Usada só na aba Faturados, pra dar pro
+      // PCP como conferir de fato quando cada nota saiu, sem precisar ir no Sankhya.
+      const dataFaturamentoPorBR={};
+      (faturamentoDatasRes.data||[]).forEach(f=>{
+        const br=s(f.br);if(!br||!f.data_faturamento)return;
+        if(!dataFaturamentoPorBR[br]||f.data_faturamento>dataFaturamentoPorBR[br].data){
+          dataFaturamentoPorBR[br]={data:f.data_faturamento,numeroNota:f.numero_nota};
+        }
+      });
 
       // Mesma marcação manual do PCP usada no Mestra: DESCONSIDERAR some do cálculo,
       // PENDENTE/CANCELADO saem da lista de atrasados (não é mais compromisso ativo).
@@ -1719,6 +1732,7 @@ export default function App(){
 
       const agrup={};
       const itensPorBR={};
+      const servicosLista=[]; // itens de "SERVIÇO..." coletados à parte, pra aba própria de Serviços
       (pedidosItensData||[]).forEach(p=>{
         const br=s(p.br);if(!br||!p.data_prevista_entrega)return;
         if(situacaoDoPedidoOOH(br,p.nunota)?.status==='DESCONSIDERAR')return;
@@ -1739,6 +1753,8 @@ export default function App(){
         if(!ehServico){
           agrup[br].valorTotalProducao+=valorItem;
           agrup[br].valorEntregueProducao+=valorEntregueItem;
+        }else{
+          servicosLista.push({br,cliente:p.cliente_nome,descricao:p.produto_descricao,quantidade:qtd,qtdEntregue:qtdEnt,valor:valorItem,dataPrevista:p.data_prevista_entrega,entregue:qtd>0&&qtdEnt>=qtd});
         }
         if(p.produto_descricao&&!agrup[br].produtos.includes(p.produto_descricao))agrup[br].produtos.push(p.produto_descricao);
         if(p.data_prevista_entrega<agrup[br].dataPrevista)agrup[br].dataPrevista=p.data_prevista_entrega;
@@ -1780,12 +1796,14 @@ export default function App(){
         const precisaEntrarNaEsteira=!atendido&&!pendente&&dataAlertaEsteira&&hojeOOH>=dataAlertaEsteira;
         return{...r,valorFaturado:r.valorEntregue,percentualFaturado,atendido,pendente,mesPrevisto,plano,
           andamento:andamentoManual,observacaoPendencia:observacaoPorBR[r.br]||null,
+          dataFaturamento:dataFaturamentoPorBR[r.br]?.data||null,numeroNotaFaturamento:dataFaturamentoPorBR[r.br]?.numeroNota||null,
           semanaISO:semanaISODoAno(dataVigenteOOH),
           dataMPPronta,dataAlertaEsteira,precisaEntrarNaEsteira,
           descricaoResumo:r.produtos.slice(0,1).join(', ')||'—',itens:itensPorBR[r.br]||[]};
       });
       setOohProjetos(lista);
       setOohPlanejamento(planejamentoRes.data||[]);
+      setOohServicos(servicosLista.sort((a,b)=>s(b.dataPrevista).localeCompare(s(a.dataPrevista))));
     }catch(e){
       setOohErro('Erro ao buscar planejamento: '+e.message);
     }finally{
@@ -1837,7 +1855,7 @@ export default function App(){
     finally{setFechandoOOH(false);}
   };
 
-  useEffect(()=>{if(supabase&&aba==='OOH'&&oohProjetos.length===0)fetchOOH();},[supabase,aba]);
+  useEffect(()=>{if(supabase&&aba==='OOH')fetchOOH();},[supabase,aba]);
 
   // Cruza o OOH com a produção real do Sankhya: se já existe OP concluída pra esse
   // BR — direto (cadeia formal) OU por vínculo confirmado manualmente na aba OPs
@@ -1918,6 +1936,14 @@ export default function App(){
   // Atrasados, Pendentes, nem na busca do "Trazer de outro mês". Uma vez faturado,
   // não tem por que voltar a se misturar com o que ainda está em aberto.
   const oohFaturados=useMemo(()=>oohProjetosComProducao.filter(p=>p.andamento==='FATURADO'),[oohProjetosComProducao]);
+  const [oohServicos,setOohServicos]=useState([]); // itens "SERVIÇO..." de todos os BRs, coletados no fetchOOH
+  const [oohAbaServicos,setOohAbaServicos]=useState(false);
+  const [oohServicosBusca,setOohServicosBusca]=useState('');
+  const oohServicosFiltrados=useMemo(()=>{
+    const termo=oohServicosBusca.trim().toLowerCase();
+    if(!termo)return oohServicos;
+    return oohServicos.filter(sv=>sv.br.toLowerCase().includes(termo)||s(sv.cliente).toLowerCase().includes(termo)||s(sv.descricao).toLowerCase().includes(termo));
+  },[oohServicos,oohServicosBusca]);
   const [oohAbaFaturados,setOohAbaFaturados]=useState(false);
   const [oohFaturadosBusca,setOohFaturadosBusca]=useState('');
   const oohFaturadosFiltrados=useMemo(()=>{
@@ -2134,7 +2160,7 @@ export default function App(){
       setOrdensProducao(data||[]);
     }catch(e){addToast('Erro ao buscar ordens de produção: '+e.message,'error');}
   },[supabase]);
-  useEffect(()=>{if(supabase&&aba==='PRODUCAO'&&ordensProducao.length===0)fetchOrdensProducao();},[supabase,aba]);
+  useEffect(()=>{if(supabase&&aba==='PRODUCAO')fetchOrdensProducao();},[supabase,aba]);
 
   const criarOrdemProducao=async()=>{
     if(!novaOPForm.br||!novaOPForm.setor)return addToast('Informe o BR e o setor.','error');
@@ -4098,7 +4124,50 @@ export default function App(){
                   <ExecKPICard tone="red" icon={AlertTriangle} label="Entrar na esteira (20d)" value={String(oohResumoMes.precisamEsteira)} trendLabel="faltam 20 dias ou menos pro CP"/>
                   <ExecKPICard tone="teal" icon={CheckCircle} label="Faturados" value={String(oohFaturados.length)} trendLabel="numa aba própria, isolados — clique pra ver"
                     selected={oohAbaFaturados} onClick={()=>setOohAbaFaturados(v=>!v)}/>
+                  <ExecKPICard tone="slate" icon={Construction} label="Serviços" value={String(oohServicos.length)} trendLabel="itens de serviço, à parte — não contam pra atraso"
+                    selected={oohAbaServicos} onClick={()=>setOohAbaServicos(v=>!v)}/>
                 </div>
+
+                {oohAbaServicos&&(
+                  <div className="bg-white rounded-2xl border border-slate-300 overflow-hidden">
+                    <div className="px-5 py-3.5 border-b border-slate-100 bg-slate-50 flex items-center justify-between flex-wrap gap-2">
+                      <p className="text-sm font-black text-slate-800">Serviços <span className="text-slate-400 font-bold">({oohServicosFiltrados.length}{oohServicosBusca?` de ${oohServicos.length}`:''})</span> — itens "SERVIÇO..." de todos os BRs; não entram no cálculo de atraso/esteira</p>
+                      <input value={oohServicosBusca} onChange={e=>setOohServicosBusca(e.target.value)} placeholder="Buscar BR, cliente ou descrição..." className="text-xs border border-slate-200 rounded-lg px-3 py-1.5 w-64 focus:outline-none focus:ring-2 focus:ring-slate-200"/>
+                    </div>
+                    {oohServicosFiltrados.length===0?(
+                      <p className="text-sm text-slate-400 text-center py-10">{oohServicosBusca?'Nenhum serviço encontrado com esse termo.':'Nenhum item de serviço no momento.'}</p>
+                    ):(
+                      <div className="overflow-x-auto custom-scrollbar max-h-[500px]">
+                        <table className="w-full text-sm">
+                          <thead className="bg-slate-50 border-b border-slate-200 sticky top-0">
+                            <tr className="text-left text-[10px] font-black text-slate-500 uppercase tracking-wider">
+                              <th className="px-3 py-2.5">BR</th>
+                              <th className="px-3 py-2.5">Cliente</th>
+                              <th className="px-3 py-2.5">Descrição do serviço</th>
+                              <th className="px-3 py-2.5">Previsto</th>
+                              <th className="px-3 py-2.5 text-right">Qtd</th>
+                              <th className="px-3 py-2.5 text-right">Valor</th>
+                              <th className="px-3 py-2.5">Status</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-slate-100">
+                            {oohServicosFiltrados.map((sv,i)=>(
+                              <tr key={i} className="hover:bg-slate-50">
+                                <td className="px-3 py-2 font-bold text-indigo-700 whitespace-nowrap">{sv.br}</td>
+                                <td className="px-3 py-2 text-slate-600 truncate max-w-[180px]">{s(sv.cliente)}</td>
+                                <td className="px-3 py-2 text-slate-600 truncate max-w-[260px]" title={s(sv.descricao)}>{s(sv.descricao)}</td>
+                                <td className="px-3 py-2 text-slate-500 whitespace-nowrap">{fmtDt(sv.dataPrevista)}</td>
+                                <td className="px-3 py-2 text-right text-slate-600 whitespace-nowrap">{sv.qtdEntregue}/{sv.quantidade}</td>
+                                <td className="px-3 py-2 text-right font-bold text-slate-700 whitespace-nowrap">{fmtMoeda(sv.valor)}</td>
+                                <td className="px-3 py-2 whitespace-nowrap">{sv.entregue?<span className="text-[10px] font-black text-teal-700 bg-teal-50 border border-teal-200 rounded-full px-2 py-0.5">✓ concluído</span>:<span className="text-[10px] font-black text-amber-700 bg-amber-50 border border-amber-200 rounded-full px-2 py-0.5">pendente</span>}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                  </div>
+                )}
 
                 {oohAbaFaturados&&(
                   <div className="bg-white rounded-2xl border border-teal-200 overflow-hidden">
@@ -4111,9 +4180,31 @@ export default function App(){
                     ):(
                       <div className="overflow-x-auto custom-scrollbar">
                         <table className="w-full text-sm">
-                          <OOHTabelaHeader/>
+                          <thead className="bg-slate-50 border-b border-slate-200">
+                            <tr className="text-left text-[10px] font-black text-slate-500 uppercase tracking-wider">
+                              <th className="px-3 py-2.5">BR</th>
+                              <th className="px-3 py-2.5">Cliente</th>
+                              <th className="px-3 py-2.5">Previsto (CP)</th>
+                              <th className="px-3 py-2.5">Data Faturamento</th>
+                              <th className="px-3 py-2.5">Nº Nota</th>
+                              <th className="px-3 py-2.5 text-right">Valor</th>
+                              <th className="px-3 py-2.5">Ação</th>
+                            </tr>
+                          </thead>
                           <tbody className="divide-y divide-slate-100">
-                            {oohFaturadosFiltrados.map(p=><OOHProjetoRow key={p.br} p={p} onAndamento={atualizarAndamento} onReprogramar={abrirReprogramarOOH}/>)}
+                            {oohFaturadosFiltrados.map(p=>(
+                              <tr key={p.br} className="hover:bg-slate-50">
+                                <td className="px-3 py-2 font-bold text-indigo-700 whitespace-nowrap">{p.br}</td>
+                                <td className="px-3 py-2 text-slate-600 truncate max-w-[200px]">{s(p.cliente)}</td>
+                                <td className="px-3 py-2 text-slate-500 whitespace-nowrap">{fmtDt(p.dataPrevista)}</td>
+                                <td className="px-3 py-2 font-bold whitespace-nowrap">
+                                  {p.dataFaturamento?<span className="text-teal-700">{fmtDt(p.dataFaturamento)}</span>:<span className="text-amber-600" title="Marcado como Faturado manualmente, mas não achei nenhuma nota emitida pra esse BR ainda">sem nota encontrada ⚠</span>}
+                                </td>
+                                <td className="px-3 py-2 text-slate-500 whitespace-nowrap">{p.numeroNotaFaturamento||'—'}</td>
+                                <td className="px-3 py-2 text-right font-bold text-slate-700 whitespace-nowrap">{fmtMoeda(p.valorTotal)}</td>
+                                <td className="px-3 py-2 whitespace-nowrap"><button onClick={()=>abrirReprogramarOOH(p)} className="text-indigo-600 font-bold text-xs hover:underline">Reprogramar</button></td>
+                              </tr>
+                            ))}
                           </tbody>
                         </table>
                       </div>
