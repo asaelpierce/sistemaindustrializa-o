@@ -2379,7 +2379,7 @@ export default function App(){
     e.preventDefault();setErroLogin('');setLoginLoading(true);
     if(!supabase){setErroLogin('Aguardando conexão...');setLoginLoading(false);return;}
     try{
-      const{data}=await supabase.from('perfis_usuarios').select('*').eq('email',emailLogin.toLowerCase().trim()).eq('senha',senhaLogin).single();
+      const{data}=await supabase.from('perfis_usuarios').select('*').eq('email',emailLogin.toLowerCase().trim()).eq('senha',senhaLogin.trim()).single();
       if(data){setUsuarioLogado(data);setAba(data.perfil==='EXPEDICAO'?'EXPEDICAO':'DASHBOARD');}
       else setErroLogin('Credenciais inválidas.');
     }catch(e){setErroLogin('Falha de autenticação.');}finally{setLoginLoading(false);}
@@ -5788,9 +5788,9 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
                     <h3 className="font-black text-slate-900 text-sm flex items-center gap-2 mb-5"><UserPlus className="w-4 h-4 text-indigo-600"/>{editUser?'Editar Usuário':'Novo Usuário'}</h3>
                     <form onSubmit={salvarUser} className="space-y-4">
                       <Field label="Nome completo" required><Inp required placeholder="Nome e sobrenome" value={novoUser.nome} onChange={e=>setNovoUser({...novoUser,nome:e.target.value})}/></Field>
-                      <Field label="E-mail" required><Inp required type="email" placeholder="usuario@empresa.com" value={novoUser.email} disabled={editUser} onChange={e=>setNovoUser({...novoUser,email:e.target.value})} className={editUser?'opacity-50':''}/></Field>
-                      <Field label="Senha" required><Inp required placeholder="Senha de acesso" value={novoUser.senha} onChange={e=>setNovoUser({...novoUser,senha:e.target.value})}/></Field>
-                      <Field label="Perfil"><Sel value={novoUser.perfil} onChange={e=>setNovoUser({...novoUser,perfil:e.target.value})}><option value="PCP">PCP — Planejamento e Controle</option><option value="EXPEDICAO">Logística — Expedição</option><option value="ADMIN">Administrador — Acesso Total</option></Sel></Field>
+                      <Field label="E-mail" required><Inp required type="email" placeholder="usuario@empresa.com" value={novoUser.email} disabled={editUser} onChange={e=>setNovoUser({...novoUser,email:e.target.value.toLowerCase().trim()})} className={editUser?'opacity-50':''}/></Field>
+                      <Field label="Senha" required><Inp required placeholder="Senha de acesso" value={novoUser.senha} onChange={e=>setNovoUser({...novoUser,senha:e.target.value.trim()})}/></Field>
+                      <Field label="Perfil"><Sel value={novoUser.perfil} onChange={e=>setNovoUser({...novoUser,perfil:e.target.value})}><option value="PCP">PCP — Planejamento e Controle</option><option value="EXPEDICAO">Logística — Expedição</option><option value="QUALIDADE">Qualidade</option><option value="ADMIN">Administrador — Acesso Total</option></Sel></Field>
                       <div className="flex gap-2 pt-2"><Btn type="submit" variant="primary" className="flex-1">Salvar</Btn>{editUser&&<Btn type="button" variant="secondary" onClick={()=>{setNovoUser({nome:'',email:'',senha:'',perfil:'PCP'});setEditUser(false);}}>Cancelar</Btn>}</div>
                     </form>
                   </div>
