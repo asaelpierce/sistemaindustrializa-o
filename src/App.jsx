@@ -978,10 +978,21 @@ export default function App(){
     setPlanilhaMestreCampos(prev=>({...prev,[br]:{...prev[br],[campo]:valor}}));
     try{
       const atual=planilhaMestreCampos[br]||{};
-      const{error}=await supabase.from('andamento_producao').upsert({
+      const payload={
         br,andamento:atual.andamento||'A_INICIAR',definicao:atual.definicao||null,escopo2:atual.escopo2||null,observacao:atual.observacao||null,status_op:atual.status_op||'NAO_ENTREGUE',
         [campo]:valor,atualizado_em:new Date().toISOString(),
-      },{onConflict:'br'});
+      };
+      // Status OP e Andamento são os dois campos manuais que o PCP já preenche — não
+      // dado automático do Sankhya que pode atrasar. Se o PCP marca "Entregue" no
+      // Status OP, é uma confirmação dele mesmo; Andamento acompanha pra Faturado
+      // automaticamente, sem precisar marcar os dois separados. Achado real: 26 BRs
+      // estavam com Status OP=Entregue mas Andamento ainda em Em Andamento/Concluído/
+      // A Iniciar, nunca sincronizados.
+      if(campo==='status_op'&&valor==='ENTREGUE'){
+        payload.andamento='FATURADO';
+        setPlanilhaMestreCampos(prev=>({...prev,[br]:{...prev[br],andamento:'FATURADO'}}));
+      }
+      const{error}=await supabase.from('andamento_producao').upsert(payload,{onConflict:'br'});
       if(error)throw error;
       return true;
     }catch(e){addToast('Erro ao salvar: '+e.message,'error');throw e;}
