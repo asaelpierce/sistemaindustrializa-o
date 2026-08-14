@@ -1080,7 +1080,7 @@ export default function App(){
         valorTotal:0,valorFaturadoQtd:0,valorAFaturar:0,qtdPecas:0,qtdEntregueTotal:0,valorFaturadoReal:0,pedidosCount:0,
         descricoes:[],datasEntregaCP:[],datasReferencia:[],situacaoEspecial:null,reprogramacao:null,
         itensPendentesTotal:0,itensTotal:0,notas:r.notas||[],semPedidoSincronizado:r.semPedidoSincronizado,itens:[],
-        valorVencidoSemAviso:0,valorReprogramado:0,valorAVencer:0,valorSemPrazo:0,valorServicoEmAberto:0,
+        valorVencidoSemAviso:0,valorReprogramado:0,valorAVencer:0,valorSemPrazo:0,valorServicoEmAberto:0,temServicoPendente:false,
       };
       const g=porBR[br];
       g.pedidosCount+=1;
@@ -1099,6 +1099,7 @@ export default function App(){
       g.valorAVencer+=r.valorAVencer||0;
       g.valorSemPrazo+=r.valorSemPrazo||0;
       g.valorServicoEmAberto+=r.valorServico||0;
+      if(r.temServicoPendente)g.temServicoPendente=true;
       // Junta os itens de TODOS os pedidos deste BR — quem clica no BR na Planilha
       // Mestra precisa ver todo item, de qualquer nunota, não só do primeiro pedido.
       g.itens.push(...(r.itens||[]));
@@ -1143,11 +1144,18 @@ export default function App(){
       // bastante pra marcar sem depender de alguém lembrar de marcar manualmente. Exige
       // os dois batendo junto porque cada um sozinho já mostrou falso positivo/negativo
       // real nos dados (ex: BR14289/26 tinha 72% de valor mas 0% de quantidade).
+      // jaFaturado agora é SÓ sinal de monitoramento (o Sankhya mostra que isso foi
+      // entregue/faturado) — NUNCA mais decide nada sozinho. Quem decide se o BR está
+      // Faturado, Pendente, Em Andamento etc. é sempre o PCP, manualmente, no campo
+      // Andamento. Antes essa conta automática chegava a TRAVAR a edição na tela
+      // (mostrava um selo fixo "não editável" quando jaFaturado batia) — o PCP não
+      // conseguia nem corrigir se o cálculo estivesse errado. Confirmado pelo PCP: a
+      // planilha dele é 100% manual, o sistema só deve monitorar, nunca decidir.
       const pctQtd=g.qtdPecas>0?(g.qtdEntregueTotal/g.qtdPecas)*100:0;
       const pctValor=g.valorTotal>0?(g.valorFaturadoReal/g.valorTotal)*100:0;
       const jaFaturado=(g.itensTotal>0&&g.itensPendentesTotal===0)||(g.semPedidoSincronizado&&g.notas.length>0)||(pctQtd>=95&&pctValor>=95);
-      const statusOP=jaFaturado?'ENTREGUE':(manual.status_op||'NAO_ENTREGUE');
-      const andamento=jaFaturado?'FATURADO':(manual.andamento||'A_INICIAR');
+      const statusOP=manual.status_op||'NAO_ENTREGUE';
+      const andamento=manual.andamento||'A_INICIAR';
       const percentualFaturado=g.valorTotal>0?g.valorFaturadoQtd/g.valorTotal:0;
       const indicador=(dataFaturamento&&dataEntregaCP)?Math.round((new Date(dataFaturamento)-new Date(dataEntregaCP))/86400000):null;
       let descricaoIndicador='Não foi faturado';
@@ -1384,7 +1392,7 @@ export default function App(){
     // excluir outro que nem chegou a 50% de quantidade (o PCP já sabe que fechou
     // por outro motivo, ex: nota emitida faz tempo). A única fonte de verdade
     // possível é a mesma que o PCP usa: a marcação manual dele no próprio portal.
-    const linhasDoMes=planilhaMestreComMesEfetivo.filter(r=>r.mesEfetivo===mesRef&&r.andamento!=='FATURADO');
+    const linhasDoMes=planilhaMestreComMesEfetivo.filter(r=>r.mesEfetivo===mesRef&&r.andamentoEfetivo!=='FATURADO');
     const valorPrevisto=linhasDoMes.reduce((a,r)=>a+r.valorTotal,0);
     const metaSemanal=totalSemanas>0?valorPrevisto/totalSemanas:0;
 
@@ -1426,7 +1434,7 @@ export default function App(){
   const [planejamentoMesRef,setPlanejamentoMesRef]=useState(new Date().toISOString().slice(0,7));
   // "Previsto" exclui só quem está marcado manualmente FATURADO — mesmo critério do
   // gráfico acima, mesma razão: a planilha do PCP (fonte da verdade) é mantida manual.
-  const planejamentoDoMes=useMemo(()=>planilhaMestreComMesEfetivo.filter(r=>r.mesEfetivo===planejamentoMesRef&&r.andamento!=='FATURADO'),[planilhaMestreComMesEfetivo,planejamentoMesRef]);
+  const planejamentoDoMes=useMemo(()=>planilhaMestreComMesEfetivo.filter(r=>r.mesEfetivo===planejamentoMesRef&&r.andamentoEfetivo!=='FATURADO'),[planilhaMestreComMesEfetivo,planejamentoMesRef]);
   // Atrasado de verdade = tem valor VENCIDO SEM AVISO (item físico com prazo já
   // passado, sem reprogramação) somado no BR — nunca conta o valor de serviço, que já
   // vem separado (valorServicoEmAberto) desde a correção item a item.
@@ -1790,6 +1798,14 @@ export default function App(){
         else if(itensDoPedido.some(i=>i.qtdEntregue>0)) statusFaturamento='PARCIAL';
         else statusFaturamento='PENDENTE';
 
+        // Sinalização (não é regra automática de exclusão nenhuma — só aviso pro PCP):
+        // mesmo um BR marcado manualmente como Faturado pode ter um item de SERVIÇO
+        // que ainda não foi entregue/faturado de verdade. Achado real: BR13524/25,
+        // BR14100/26, BR14148/26 e BR14191/26 estavam marcados Faturado com serviço
+        // ainda em 0% entregue — o produto físico saiu, o serviço não.
+        const itensServicoPendentes=itensDoPedido.filter(i=>/^SERVI/i.test(s(i.descricao)||'')&&i.qtdFaltante>0);
+        const temServicoPendente=itensServicoPendentes.length>0;
+
         // Progresso ponderado pelo valor do pedido (base consistente: pedido x pedido)
         const valorPedidoAtendido=itensDoPedido.reduce((acc,i)=>acc+i.valorPedido*(i.qtdPedida>0?Math.min(1,i.qtdEntregue/i.qtdPedida):0),0);
         const percentualAtendido=r.valorTotal>0?valorPedidoAtendido/r.valorTotal:(faturado>0?1:0);
@@ -1862,7 +1878,7 @@ export default function App(){
           qtdItensTotal:itensDoPedido.length,
           situacaoPrazo:situacaoPrazoFinal,
           valorVencidoSemAviso:valorVencidoFinal,valorReprogramado:valorReprogFinal,valorAVencer:valorAVencerFinal,valorSemPrazo:valorSemPrazoFinal,
-          valorServico,valorPendenteEspecial,valorCanceladoEspecial,
+          valorServico,valorPendenteEspecial,valorCanceladoEspecial,temServicoPendente,itensServicoPendentes,
           situacaoEspecial,
           maiorAtraso,dataVigente:dataVigenteBR,dataPrevistaOriginal:dataPrevistaBR,
           reprogramacao:reprog,
@@ -4308,12 +4324,10 @@ export default function App(){
                               <td className="px-2 py-1.5 text-right text-slate-500 whitespace-nowrap">{fmtDt(r.dataReferencia)}</td>
                               <td className={`px-2 py-1.5 text-right font-bold whitespace-nowrap bg-amber-50/40 ${r.dataInicioProjeto&&r.dataInicioProjeto<=new Date().toISOString().slice(0,10)&&!r.jaFaturado?'text-red-600':'text-amber-700'}`}>{fmtDt(r.dataInicioProjeto)}</td>
                               <td className="px-1 py-1 text-center">
-                                {r.jaFaturado?(
-                                  <span className={`text-[11px] font-bold px-2.5 py-1 rounded-full border ${ANDAMENTO_CFG.FATURADO.cls}`} title="Já existe nota emitida no Sankhya — não editável">{ANDAMENTO_CFG.FATURADO.label}</span>
-                                ):(
-                                  <AndamentoSelect value={r.andamentoEfetivo} onChange={v=>salvarCampoManualBR(r.br,'andamento',v)}
-                                    title={`Qtd entregue: ${r.pctQtd.toFixed(0)}% · Valor faturado: ${r.pctValor.toFixed(0)}%${r.jaFaturado&&r.andamento!=='FATURADO'?' — marcado automático (ambos ≥95%)':''}`}/>
-                                )}
+                                <AndamentoSelect value={r.andamentoEfetivo} onChange={v=>salvarCampoManualBR(r.br,'andamento',v)}
+                                  title={`Qtd entregue: ${r.pctQtd.toFixed(0)}% · Valor faturado: ${r.pctValor.toFixed(0)}%`}/>
+                                {r.jaFaturado&&r.andamentoEfetivo!=='FATURADO'&&<span className="ml-1 text-blue-500" title="Sankhya indica que isso já foi entregue/faturado — só um aviso, você decide se marca">🔍</span>}
+                                {r.temServicoPendente&&<span className="ml-1 text-amber-500" title="Marcado como Faturado, mas ainda tem item de SERVIÇO com 0% entregue">⚠</span>}
                               </td>
                               <td className="px-2 py-1.5 text-right text-slate-500 whitespace-nowrap">{fmtDt(r.dataEntregaCP)}</td>
                               <td className="px-2 py-1.5 text-right whitespace-nowrap">
@@ -4479,7 +4493,10 @@ export default function App(){
                                 <td className="px-3 py-2 text-slate-600 truncate max-w-[200px]">{s(r.cliente)}</td>
                                 <td className="px-3 py-2 whitespace-nowrap">{r.escopo2?<span className="text-[10px] font-bold text-slate-600 bg-slate-100 border border-slate-200 rounded-full px-2 py-0.5">{r.escopo2}</span>:<span className="text-[10px] text-slate-300">—</span>}</td>
                                 <td className="px-3 py-2 whitespace-nowrap">{r.statusOP==='ENTREGUE'?<span className="text-[10px] font-black text-teal-700 bg-teal-50 border border-teal-200 rounded-full px-2 py-0.5">✓ Entregue</span>:<span className="text-[10px] font-black text-slate-500 bg-slate-100 border border-slate-200 rounded-full px-2 py-0.5">Não entregue</span>}</td>
-                                <td className="px-3 py-2 whitespace-nowrap"><AndamentoSelect value={r.andamentoEfetivo} onChange={v=>salvarCampoManualBR(r.br,'andamento',v)}/></td>
+                                <td className="px-3 py-2 whitespace-nowrap">
+                                  <AndamentoSelect value={r.andamentoEfetivo} onChange={v=>salvarCampoManualBR(r.br,'andamento',v)}/>
+                                  {r.temServicoPendente&&<span className="ml-1 text-amber-500" title="Marcado como Faturado, mas ainda tem item de SERVIÇO com 0% entregue — o produto físico saiu, o serviço não">⚠</span>}
+                                </td>
                                 <td className="px-3 py-2 whitespace-nowrap">{indCfg&&<span className={`text-[10px] font-black px-1.5 py-0.5 rounded-full border ${indCfg}`}>{r.descricaoIndicador}</span>}</td>
                                 <td className="px-3 py-2 text-right font-semibold text-slate-500 whitespace-nowrap">{fmtMoeda(r.valorTotal)}</td>
                                 <td className="px-3 py-2 text-right font-bold text-slate-700 whitespace-nowrap">{fmtMoeda(r.valorAFaturar)}</td>
