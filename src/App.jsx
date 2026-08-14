@@ -1650,6 +1650,9 @@ export default function App(){
   // ── OOH: Planejamento mensal (projetos do Portal de Engenharia + reprogramações locais) ──
   const [oohMesRef,setOohMesRef]=useState(new Date().toISOString().slice(0,7)); // YYYY-MM
   const [oohProjetos,setOohProjetos]=useState([]);
+  // [{mes,br,cliente,valorBruto,valorLiquido,notas}] — TODO BR com nota emitida no mês,
+  // sem depender de marcação manual (mesma lógica da Mestra PCP).
+  const [oohFaturamentoPorMes,setOohFaturamentoPorMes]=useState([]);
   const [oohPlanejamento,setOohPlanejamento]=useState([]);
   const [oohLoading,setOohLoading]=useState(false);
   const [oohErro,setOohErro]=useState('');
@@ -1996,7 +1999,6 @@ export default function App(){
     return Object.values(porBR).map(b=>({...b,mesesComNota:[...b.mesesComNota].sort(),...(andamentoPorBRParaFaturados[b.br]||{})}));
   },[oohFaturamentoPorMes,andamentoPorBRParaFaturados]);
   const [oohServicos,setOohServicos]=useState([]); // itens "SERVIÇO..." de todos os BRs, coletados no fetchOOH
-  const [oohFaturamentoPorMes,setOohFaturamentoPorMes]=useState([]); // [{mes,br,cliente,valorBruto,valorLiquido,notas}] — TODO BR com nota no mês, sem depender de marcação manual
   const [oohServicosBusca,setOohServicosBusca]=useState('');
   const oohServicosFiltrados=useMemo(()=>{
     const termo=oohServicosBusca.trim().toLowerCase();
@@ -2026,14 +2028,19 @@ export default function App(){
 
   // Resumo do mês pros cards do topo — visão executiva antes de entrar no detalhe
   const oohResumoMes=useMemo(()=>{
+    // valorPrevisto = valor comercial total dos projetos do mês (referência da carteira).
+    // valorAFaturar = só o que REALMENTE falta emitir — desconta o que já foi faturado.
+    // Os dois são úteis, mas confundir um com o outro dava diferença de ~R$1mi em agosto
+    // (R$3,14mi total vs R$2,19mi realmente a faturar), então mostramos os dois separados.
     const valorPrevisto=oohDoMes.reduce((a,p)=>a+p.valorTotal,0);
+    const valorAFaturar=oohDoMes.reduce((a,p)=>a+Math.max(0,p.valorTotal-p.valorFaturado),0);
     const valorAtrasado=oohAtrasados.reduce((a,p)=>a+Math.max(0,p.valorTotal-p.valorFaturado),0);
     const valorPendente=oohPendentes.reduce((a,p)=>a+Math.max(0,p.valorTotal-p.valorFaturado),0);
     const reprogramados=oohDoMes.filter(p=>p.plano).length;
     const emProducao=oohDoMes.filter(p=>p.andamento==='EM_ANDAMENTO'||p.andamento==='CONCLUIDO').length;
     const aIniciar=oohDoMes.filter(p=>p.andamento==='A_INICIAR').length;
     const precisamEsteira=[...oohDoMes,...oohAtrasados].filter(p=>p.precisaEntrarNaEsteira).length;
-    return{valorPrevisto,valorAtrasado,valorPendente,reprogramados,emProducao,aIniciar,precisamEsteira,totalProjetos:oohDoMes.length,totalPendentes:oohPendentes.length};
+    return{valorPrevisto,valorAFaturar,valorAtrasado,valorPendente,reprogramados,emProducao,aIniciar,precisamEsteira,totalProjetos:oohDoMes.length,totalPendentes:oohPendentes.length};
   },[oohDoMes,oohAtrasados,oohPendentes]);
 
 
@@ -3006,7 +3013,7 @@ export default function App(){
                 material:formInspecao.material,fornecedor:formInspecao.fornecedor,
                 nota_fiscal:formInspecao.nota_fiscal,resultado,inspetor:s(usuarioLogado?.nome),
                 descricao_material:formInspecao.descricao_material||'',
-                observacoes:formInspecao.observacoes,data:now
+                observacoes:formInspecao.observacoes,data:new Date().toISOString()
               }})
             });
             await supabase.from('inspecoes').update({notificado_teams:true}).eq('id',id);
@@ -4180,48 +4187,76 @@ export default function App(){
 
                 {oohErro&&<div className="bg-red-50 border border-red-200 text-red-700 text-sm font-semibold rounded-xl px-4 py-3">{oohErro}</div>}
 
-                <div className="flex items-center gap-3">
-                  <label className="text-xs font-black text-slate-500 uppercase">Mês de referência</label>
-                  <Inp type="month" value={oohMesRef} onChange={e=>setOohMesRef(e.target.value)} className="w-44"/>
-                </div>
-
-                {oohFechamentos[oohMesRef]&&(
-                  <div className="bg-teal-50 border border-teal-200 rounded-xl px-4 py-2.5 flex items-center gap-2 flex-wrap">
-                    <CheckCircle className="w-3.5 h-3.5 text-teal-600 flex-shrink-0"/>
-                    <p className="text-xs font-bold text-teal-800">
-                      Fechado por {s(oohFechamentos[oohMesRef].fechadoPor)||'—'} em {fmtDt(oohFechamentos[oohMesRef].fechadoEm)} — {oohFechamentos[oohMesRef].brsSelecionados.length} projeto(s) confirmado(s).
-                    </p>
+                {/* ── CAMADA 1: painel único com o mês + os números que importam ─── */}
+                <div className="bg-slate-900 rounded-2xl overflow-hidden">
+                  <div className="px-6 pt-5 pb-4 flex items-center justify-between flex-wrap gap-3">
+                    <div className="flex items-center gap-3">
+                      <input type="month" value={oohMesRef} onChange={e=>setOohMesRef(e.target.value)}
+                        className="bg-white/10 border border-white/20 text-white text-sm font-black rounded-xl px-3 py-2 focus:outline-none focus:border-white/50 [color-scheme:dark]"/>
+                      {oohFechamentos[oohMesRef]&&(
+                        <span className="inline-flex items-center gap-1.5 text-[11px] font-bold text-teal-300 bg-teal-500/10 border border-teal-400/30 rounded-full px-2.5 py-1" title={`Fechado por ${s(oohFechamentos[oohMesRef].fechadoPor)||'—'} em ${fmtDt(oohFechamentos[oohMesRef].fechadoEm)}`}>
+                          <CheckCircle className="w-3 h-3"/>Fechado
+                        </span>
+                      )}
+                    </div>
+                    {oohResumoMes.precisamEsteira>0&&(
+                      <span className="inline-flex items-center gap-1.5 text-[11px] font-bold text-red-300 bg-red-500/10 border border-red-400/30 rounded-full px-3 py-1.5">
+                        <AlertTriangle className="w-3.5 h-3.5"/>{oohResumoMes.precisamEsteira} projeto(s) precisam entrar na esteira (≤20 dias pro CP)
+                      </span>
+                    )}
                   </div>
-                )}
 
-                {/* ── CAMADA 1: só os 3 números que importam de cara ─────────── */}
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-                  <ExecKPICard tone="slate" icon={LayoutDashboard} label="Previsto no mês" value={fmtMoeda(oohResumoMes.valorPrevisto)} trendLabel={`${oohResumoMes.totalProjetos} projeto(s) — inclui antecipados/reprogramados pra ${oohMesRef}`}/>
-                  <ExecKPICard tone="teal" icon={CheckCircle} label={`Faturado em ${oohMesRef}`} value={fmtMoeda(oohFaturadosDoMes.reduce((a,p)=>a+p.valorLiquido,0))} trendLabel={`${oohFaturadosDoMes.length} projeto(s) com nota emitida esse mês`}/>
-                  <ExecKPICard tone="red" icon={AlertTriangle} label="Atrasado (meses anteriores)" value={fmtMoeda(oohResumoMes.valorAtrasado)} trendLabel={`${oohAtrasados.length} projeto(s) parado(s)`}/>
-                </div>
-
-                {oohResumoMes.precisamEsteira>0&&(
-                  <div className="bg-red-50 border border-red-200 rounded-xl px-4 py-2.5 flex items-center gap-2">
-                    <AlertTriangle className="w-4 h-4 text-red-600 flex-shrink-0"/>
-                    <p className="text-xs font-bold text-red-700">{oohResumoMes.precisamEsteira} projeto(s) com 20 dias ou menos pro CP — precisam entrar na esteira de fabricação.</p>
+                  <div className="px-6 pb-5 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-x-8 gap-y-4">
+                    <div>
+                      <p className="text-[10px] font-black text-white/40 uppercase tracking-wider">A faturar no mês</p>
+                      <p className="text-2xl font-black text-white mt-0.5 tabular-nums">{fmtMoeda(oohResumoMes.valorAFaturar)}</p>
+                      <p className="text-[11px] text-white/40 mt-0.5">{oohResumoMes.totalProjetos} projeto(s) previsto(s)</p>
+                    </div>
+                    <div>
+                      <p className="text-[10px] font-black text-white/40 uppercase tracking-wider">Já faturado no mês</p>
+                      <p className="text-2xl font-black text-teal-300 mt-0.5 tabular-nums">{fmtMoeda(oohFaturadosDoMes.reduce((a,p)=>a+p.valorLiquido,0))}</p>
+                      <p className="text-[11px] text-white/40 mt-0.5">{oohFaturadosDoMes.length} projeto(s) com nota emitida</p>
+                    </div>
+                    <div>
+                      <p className="text-[10px] font-black text-white/40 uppercase tracking-wider">Atrasado (meses anteriores)</p>
+                      <p className="text-2xl font-black text-red-300 mt-0.5 tabular-nums">{fmtMoeda(oohResumoMes.valorAtrasado)}</p>
+                      <p className="text-[11px] text-white/40 mt-0.5">{oohAtrasados.length} projeto(s) parado(s)</p>
+                    </div>
+                    <div>
+                      <p className="text-[10px] font-black text-white/40 uppercase tracking-wider">Carteira total do mês</p>
+                      <p className="text-2xl font-black text-white/70 mt-0.5 tabular-nums">{fmtMoeda(oohResumoMes.valorPrevisto)}</p>
+                      <p className="text-[11px] text-white/40 mt-0.5">inclui o que já foi faturado</p>
+                    </div>
                   </div>
-                )}
+
+                  {oohResumoMes.valorPrevisto>0&&(()=>{
+                    const jaFat=oohResumoMes.valorPrevisto-oohResumoMes.valorAFaturar;
+                    const pct=Math.min(100,Math.max(0,(jaFat/oohResumoMes.valorPrevisto)*100));
+                    return(
+                      <div className="px-6 pb-5">
+                        <div className="h-2 bg-white/10 rounded-full overflow-hidden">
+                          <div className="h-full bg-teal-400 rounded-full transition-all" style={{width:`${pct}%`}}/>
+                        </div>
+                        <p className="text-[10px] text-white/40 mt-1.5">{pct.toFixed(0)}% da carteira do mês já faturada</p>
+                      </div>
+                    );
+                  })()}
+                </div>
 
                 {/* ── Seletor único de visão (efeito camada — troca o conteúdo, não empilha) ── */}
-                <div className="flex items-center gap-1.5 overflow-x-auto pb-1 -mx-1 px-1">
+                <div className="flex items-center gap-1 overflow-x-auto pb-1 bg-slate-100 rounded-xl p-1">
                   {[
                     {id:'PREVISTO',label:'Previsto',count:oohDoMes.length},
                     {id:'ATRASADOS',label:'Atrasados',count:oohAtrasados.length},
                     {id:'PENDENTES',label:'Pendentes',count:oohPendentes.length},
-                    {id:'REPROGRAMADOS',label:'Reprogramados/Antecipados',count:oohReprogramados.length},
-                    {id:'PARCIAL',label:'Faturamento Parcial',count:oohFaturamentoParcial.length},
+                    {id:'REPROGRAMADOS',label:'Reprogramados',count:oohReprogramados.length},
+                    {id:'PARCIAL',label:'Parcial',count:oohFaturamentoParcial.length},
                     {id:'FATURADOS',label:'Faturados',count:oohFaturadosDoMes.length},
                     {id:'SERVICOS',label:'Serviços',count:oohServicos.length},
                   ].map(t=>(
                     <button key={t.id} onClick={()=>setOohVisaoAtiva(t.id)}
-                      className={`flex items-center gap-1.5 text-xs font-bold px-3.5 py-2 rounded-xl border whitespace-nowrap transition-colors flex-shrink-0 ${oohVisaoAtiva===t.id?'bg-slate-900 text-white border-slate-900':'bg-white text-slate-600 border-slate-200 hover:border-slate-300'}`}>
-                      {t.label}<span className={`text-[10px] font-black px-1.5 py-0.5 rounded-full ${oohVisaoAtiva===t.id?'bg-white/20':'bg-slate-100 text-slate-500'}`}>{t.count}</span>
+                      className={`flex items-center gap-1.5 text-xs font-bold px-3.5 py-2 rounded-lg whitespace-nowrap transition-all flex-shrink-0 ${oohVisaoAtiva===t.id?'bg-white text-slate-900 shadow-sm':'text-slate-500 hover:text-slate-700'}`}>
+                      {t.label}<span className={`text-[10px] font-black px-1.5 py-0.5 rounded-full ${oohVisaoAtiva===t.id?'bg-slate-900 text-white':'bg-slate-200 text-slate-500'}`}>{t.count}</span>
                     </button>
                   ))}
                 </div>
