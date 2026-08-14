@@ -559,6 +559,35 @@ function FiltroMulti({label,opcoes,selecionados,onToggle,onLimpar,aberto,onAbrir
 
 // Campo de faturamento parcial manual por item — dá liberdade pro PCP confirmar
 // qualquer quantidade (não precisa ser tudo ou nada), com observação opcional.
+// "O setor produziu X peças do código Y" — confirma a produção real e desconta a
+// matéria-prima consumida (via ficha técnica) do saldo daquele setor.
+function InformarProducaoBotao({o,onInformar}){
+  const [aberto,setAberto]=React.useState(false);
+  const [qtd,setQtd]=React.useState('');
+  const [obs,setObs]=React.useState('');
+  if(!aberto){
+    return(
+      <button onClick={()=>setAberto(true)} className="w-full text-[9px] font-bold text-purple-600 border border-purple-200 bg-purple-50 rounded-lg px-2 py-1 mt-1.5 hover:bg-purple-100">
+        Informar produção realizada
+      </button>
+    );
+  }
+  return(
+    <div className="mt-1.5 bg-purple-50 border border-purple-200 rounded-lg p-2">
+      <div className="flex items-center gap-1.5">
+        <input type="number" min="0" step="any" value={qtd} onChange={e=>setQtd(e.target.value)} autoFocus placeholder="Qtd produzida"
+          className="w-20 text-[11px] border border-purple-200 rounded-lg px-2 py-1 focus:outline-none focus:ring-2 focus:ring-purple-300"/>
+        <input value={obs} onChange={e=>setObs(e.target.value)} placeholder="Observação (opcional)"
+          className="flex-1 min-w-0 text-[11px] border border-purple-200 rounded-lg px-2 py-1 focus:outline-none focus:ring-2 focus:ring-purple-300"/>
+      </div>
+      <div className="flex gap-1.5 mt-1.5">
+        <button onClick={()=>{onInformar(o.br,o.cliente,o.setor,o.cod_produto,o.descricao,qtd,obs);setAberto(false);setQtd('');setObs('');}} className="flex-1 text-[10px] font-bold text-white bg-purple-600 rounded-lg py-1 hover:bg-purple-700">Confirmar</button>
+        <button onClick={()=>setAberto(false)} className="text-[10px] font-bold text-slate-400 px-2 hover:text-slate-600">Cancelar</button>
+      </div>
+    </div>
+  );
+}
+
 function ItemFaturamentoManualForm({item,onSalvar}){
   const [qtd,setQtd]=React.useState(item.qtdManual||'');
   const [obs,setObs]=React.useState(item.observacaoManual||'');
@@ -2599,6 +2628,22 @@ export default function App(){
   const SETORES=['VULCANIZACAO','CALDEIRARIA','REVESTIMENTO','CORTE','PINTURA'];
   const SETOR_LABEL={VULCANIZACAO:'Vulcanização',CALDEIRARIA:'Caldeiraria',REVESTIMENTO:'Revestimento',CORTE:'Corte',PINTURA:'Pintura',EXPEDICAO:'Direto p/ Expedição'};
   const [ordensProducao,setOrdensProducao]=useState([]);
+  const [saldoMPSetor,setSaldoMPSetor]=useState([]); // [{setor,cod_materia_prima,saldo}]
+  const fetchSaldoMPSetor=useCallback(async()=>{
+    if(!supabase)return;
+    try{
+      const{data,error}=await supabase.from('saldo_mp_setor').select('*');
+      if(error)throw error;
+      setSaldoMPSetor(data||[]);
+    }catch(e){addToast('Erro ao buscar saldo de MP por setor: '+e.message,'error');}
+  },[supabase]);
+  useEffect(()=>{if(supabase&&aba==='PRODUCAO')fetchSaldoMPSetor();},[supabase,aba]);
+  // Saldo por setor+MP, indexado — pra consulta rápida no card e no modal.
+  const saldoMPPorSetorMP=useMemo(()=>{
+    const m={};
+    saldoMPSetor.forEach(s=>{m[`${s.setor}|${s.cod_materia_prima}`]=Number(s.saldo||0);});
+    return m;
+  },[saldoMPSetor]);
   const [setorSelecionado,setSetorSelecionado]=useState('TODOS');
   const [novaOPForm,setNovaOPForm]=useState({br:'',cliente:'',setor:'',descricao:'',quantidade:''});
   const [producaoRealMes,setProducaoRealMes]=useState('TODOS');
@@ -2655,6 +2700,19 @@ export default function App(){
   // "MANTA" no nome mas É uma peça de tubulação fabricada, não vai direto pra
   // expedição só por causa da palavra — só item que COMEÇA com "SM-" (adesivo,
   // manta/pastilha pronta, produto químico) vai direto, sem passar por produção.
+  // Mapa br+codProduto → número real da OP no Sankhya. Usado pra completar o número
+  // que falta nas OPs internas (ordens_producao), que hoje só tem um id interno
+  // (OP-{timestamp}...) sem nenhuma ligação com o número real que a fábrica usa.
+  const nroOPRealPorBRCod=useMemo(()=>{
+    const m={};
+    opsSankhyaItens.forEach(it=>{
+      const br=it.br_confirmado||it.br;
+      if(!br||!it.cod_produto_acabado||!it.nro_ordem_producao)return;
+      m[`${br}|${it.cod_produto_acabado}`]=it.nro_ordem_producao;
+    });
+    return m;
+  },[opsSankhyaItens]);
+
   const classificarRoteiroEsperado=descricao=>{
     const d=s(descricao).toUpperCase();
     if(/^SM[- ]/.test(d))return 'Direto p/ Expedição';
@@ -2686,8 +2744,9 @@ export default function App(){
         // direcionar", pra deixar o PCP escolher a área manualmente item a item,
         // já que cada item de um mesmo BR pode ir pra um setor diferente e a
         // classificação automática só cobre 2 padrões (Manta/Mangote e os 5
-        // códigos que vão direto pra expedição).
-        if(it.codProduto){
+        // códigos que vão direto pra expedição). Serviço nunca entra aqui — não
+        // é produzido em setor nenhum, direcionar seria confuso e inútil.
+        if(it.codProduto&&!/^SERVI/i.test(s(it.descricao))){
           if(!g.itensCompletosPorCod[it.codProduto])g.itensCompletosPorCod[it.codProduto]={codProduto:it.codProduto,descricao:it.descricao,unidade:it.unidade,qtdPedida:0};
           g.itensCompletosPorCod[it.codProduto].qtdPedida+=Number(it.qtdPedida||0);
         }
@@ -2736,7 +2795,7 @@ export default function App(){
       (r.itens||[]).forEach(it=>{
         const cls=classificarRoteiroEsperado(it.descricao);
         if(cls){if(!g.itensEsperados[cls])g.itensEsperados[cls]=0;g.itensEsperados[cls]++;}
-        if(it.codProduto){
+        if(it.codProduto&&!/^SERVI/i.test(s(it.descricao))){
           if(!g.itensCompletosPorCod[it.codProduto])g.itensCompletosPorCod[it.codProduto]={codProduto:it.codProduto,descricao:it.descricao,unidade:it.unidade,qtdPedida:0};
           g.itensCompletosPorCod[it.codProduto].qtdPedida+=Number(it.qtdPedida||0);
         }
@@ -2769,6 +2828,35 @@ export default function App(){
     }catch(e){addToast('Erro ao buscar ordens de produção: '+e.message,'error');}
   },[supabase]);
   useEffect(()=>{if(supabase&&aba==='PRODUCAO')fetchOrdensProducao();},[supabase,aba]);
+
+  // O setor informa "produzi X peças do código Y" — isso registra a produção real
+  // (histórico auditável em producao_informada) E desconta a matéria-prima consumida
+  // do saldo QUE ESTAVA NAQUELE SETOR (não do estoque geral do Sankhya, que é outra
+  // fonte, à parte). Consumo calculado pela composição/ficha técnica (produtosDb),
+  // igual já usamos noutros lugares pra mostrar "necessário" — aqui é o mesmo cálculo,
+  // só que de verdade debitando o saldo, não só exibindo.
+  const informarProducaoRealizada=async(br,cliente,setor,codProduto,descricaoProduto,quantidade,observacao)=>{
+    const qtd=Number(quantidade);
+    if(!qtd||qtd<=0)return addToast('Informe uma quantidade produzida válida.','error');
+    const materiais=produtosDb[codProduto]?.materiais;
+    try{
+      const id=`PROD-${Date.now()}-${codProduto}`;
+      const{error}=await supabase.from('producao_informada').insert([{
+        id,br,setor,cod_produto:codProduto,descricao_produto:descricaoProduto,
+        quantidade_produzida:qtd,observacao:observacao||null,informado_por:s(usuarioLogado?.nome),
+      }]);
+      if(error)throw error;
+      // Desconta cada insumo da composição, proporcional à quantidade produzida.
+      if(Array.isArray(materiais)&&materiais.length>0){
+        for(const m of materiais){
+          const consumo=Number(m.quantidade||0)*qtd;
+          if(consumo>0)await ajustarSaldoMPSetor(setor,m.codigoMP,-consumo);
+        }
+      }
+      addToast(`${qtd} peça(s) de "${s(descricaoProduto).slice(0,30)}" registrada(s) em ${SETOR_LABEL[setor]}${Array.isArray(materiais)&&materiais.length>0?` — MP consumida descontada do saldo do setor`:''}.`);
+      fetchSaldoMPSetor();
+    }catch(e){addToast('Erro ao informar produção: '+e.message,'error');}
+  };
 
   const criarOrdemProducao=async()=>{
     if(!novaOPForm.br||!novaOPForm.setor)return addToast('Informe o BR e o setor.','error');
@@ -2816,9 +2904,31 @@ export default function App(){
     try{
       const{error}=await supabase.from('ordens_producao').update({setor:novoSetor,atualizado_por:s(usuarioLogado?.nome),atualizado_em:new Date().toISOString()}).eq('id',lote.id);
       if(error)throw error;
+      // Se o lote é de MATÉRIA-PRIMA (não item acabado), o saldo por setor tem que
+      // acompanhar: sai do setor antigo, entra no novo — senão o saldo mentiria
+      // sobre onde a MP realmente está depois da movimentação.
+      if(lote.cod_materia_prima){
+        await ajustarSaldoMPSetor(lote.setor,lote.cod_materia_prima,-Number(lote.quantidade||0));
+        await ajustarSaldoMPSetor(novoSetor,lote.cod_materia_prima,Number(lote.quantidade||0));
+        fetchSaldoMPSetor();
+      }
       addToast(`Lote de ${lote.quantidade||'?'} movido pra ${SETOR_LABEL[novoSetor]}.`);
       fetchOrdensProducao();
     }catch(e){addToast('Erro ao mover lote: '+e.message,'error');}
+  };
+
+  // Ajusta o saldo de uma MP num setor — soma (delta positivo, entrada por
+  // direcionamento) ou subtrai (delta negativo, saída por consumo em produção
+  // informada, ou saída de um setor ao mover pra outro). Upsert simples: lê o saldo
+  // atual, grava o novo.
+  const ajustarSaldoMPSetor=async(setor,codMP,delta)=>{
+    try{
+      const{data}=await supabase.from('saldo_mp_setor').select('saldo').eq('setor',setor).eq('cod_materia_prima',codMP).maybeSingle();
+      const saldoAtual=Number(data?.saldo||0);
+      const novoSaldo=saldoAtual+delta;
+      const{error}=await supabase.from('saldo_mp_setor').upsert({setor,cod_materia_prima:codMP,saldo:novoSaldo,atualizado_em:new Date().toISOString()},{onConflict:'setor,cod_materia_prima'});
+      if(error)throw error;
+    }catch(e){addToast('Erro ao ajustar saldo de MP no setor: '+e.message,'error');}
   };
 
   // Direciona um lote de uma MATÉRIA-PRIMA específica da composição de um item —
@@ -2840,8 +2950,10 @@ export default function App(){
         quantidade:qtd,descricao:`${s(item.descricao).slice(0,50)} — MP: ${descricaoMP}`,status:'FILA',criado_por:s(usuarioLogado?.nome),
       }]);
       if(error)throw error;
+      await ajustarSaldoMPSetor(setor,mp.codigoMP,qtd);
       addToast(`${qtd} ${mp.um||''} de "${descricaoMP.slice(0,30)}" direcionado(s) pra ${SETOR_LABEL[setor]}!`);
       fetchOrdensProducao();
+      fetchSaldoMPSetor();
     }catch(e){addToast('Erro ao direcionar matéria-prima: '+e.message,'error');}
   };
 
@@ -5693,12 +5805,28 @@ export default function App(){
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-4">
                   {SETORES.filter(st=>setorSelecionado==='TODOS'||setorSelecionado===st).map(setor=>{
                     const opsDoSetor=ordensProducao.filter(o=>o.setor===setor&&o.status!=='CONCLUIDO');
+                    const mpsDoSetor=saldoMPSetor.filter(sm=>sm.setor===setor&&Number(sm.saldo)>0.001);
                     return(
                       <div key={setor} className="bg-slate-50 rounded-2xl border border-slate-200 flex flex-col">
                         <div className="px-4 py-3 border-b border-slate-200 flex items-center justify-between">
                           <p className="text-xs font-black text-slate-700 uppercase tracking-wide">{SETOR_LABEL[setor]}</p>
                           <span className="text-[10px] font-bold text-slate-400 bg-white px-2 py-0.5 rounded-full border border-slate-200">{opsDoSetor.length}</span>
                         </div>
+                        {mpsDoSetor.length>0&&(
+                          <details className="border-b border-slate-200 bg-purple-50/50">
+                            <summary className="px-4 py-2 text-[10px] font-black text-purple-700 cursor-pointer select-none">
+                              📦 {mpsDoSetor.length} matéria(s)-prima em saldo — clique pra ver
+                            </summary>
+                            <div className="px-4 pb-2 space-y-1">
+                              {mpsDoSetor.map(sm=>(
+                                <div key={sm.cod_materia_prima} className="flex items-center justify-between text-[10px]">
+                                  <span className="text-slate-600 truncate max-w-[140px]" title={s(estoqueDb[sm.cod_materia_prima]?.descricao)||sm.cod_materia_prima}>{s(estoqueDb[sm.cod_materia_prima]?.descricao)||sm.cod_materia_prima}</span>
+                                  <span className="font-bold text-purple-700 whitespace-nowrap">{Number(sm.saldo).toLocaleString('pt-BR',{maximumFractionDigits:2})} {estoqueDb[sm.cod_materia_prima]?.unidade||''}</span>
+                                </div>
+                              ))}
+                            </div>
+                          </details>
+                        )}
                         <div className="p-3 space-y-2.5 flex-1 overflow-y-auto max-h-[70vh] custom-scrollbar">
                           {opsDoSetor.length===0&&<p className="text-xs text-slate-400 text-center py-6">Nenhum projeto</p>}
                           {opsDoSetor.map(o=>{
@@ -5712,8 +5840,9 @@ export default function App(){
                                     MP · {s(o.cod_materia_prima)}
                                   </span>
                                 )}
-                                <div className="flex items-center gap-1.5">
+                                <div className="flex items-center gap-1.5 flex-wrap">
                                   <p className="text-xs font-bold text-slate-900">{s(o.br)}</p>
+                                  {nroOPRealPorBRCod[`${o.br}|${o.cod_produto}`]&&<span className="text-[10px] font-black text-slate-500" title="Nº da OP real no Sankhya">OP {nroOPRealPorBRCod[`${o.br}|${o.cod_produto}`]}</span>}
                                   {o.quantidade&&<span className="text-[10px] font-bold text-slate-400">· {o.quantidade} pçs</span>}
                                 </div>
                                 {o.cliente&&<p className="text-[11px] text-slate-500 truncate">{s(o.cliente)}</p>}
@@ -5761,6 +5890,9 @@ export default function App(){
                                   <button onClick={()=>atualizarStatusProducao(o.id,'CONCLUIDO')} className="text-[9px] font-bold bg-emerald-50 text-emerald-700 px-2 py-1 rounded-lg hover:bg-emerald-100">Concluir</button>
                                   <button onClick={()=>{const obs=window.prompt('Descreva o problema:');if(obs)atualizarStatusProducao(o.id,'PROBLEMA',obs);}} className="text-[9px] font-bold bg-red-50 text-red-700 px-2 py-1 rounded-lg hover:bg-red-100">Problema</button>
                                 </div>
+                                {!ehMateriaPrima&&o.cod_produto&&(
+                                  <InformarProducaoBotao o={o} onInformar={informarProducaoRealizada}/>
+                                )}
                               </div>
                             );
                           })}
