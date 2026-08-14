@@ -5703,9 +5703,15 @@ export default function App(){
                           {opsDoSetor.length===0&&<p className="text-xs text-slate-400 text-center py-6">Nenhum projeto</p>}
                           {opsDoSetor.map(o=>{
                             const stBadge={FILA:{l:'Na Fila',c:'bg-slate-200 text-slate-600'},EM_PRODUCAO:{l:'Em Produção',c:'bg-blue-100 text-blue-700'},PROBLEMA:{l:'Problema',c:'bg-red-100 text-red-700'}}[o.status||'FILA'];
+                            const ehMateriaPrima=!!o.cod_materia_prima;
                             return(
-                              <div key={o.id} className={`bg-white rounded-xl border p-3 relative ${o.status==='PROBLEMA'?'border-red-300':o.prioridade?'border-blue-300':'border-slate-200'}`}>
+                              <div key={o.id} className={`bg-white rounded-xl border p-3 relative ${o.status==='PROBLEMA'?'border-red-300':ehMateriaPrima?'border-purple-300':o.prioridade?'border-blue-300':'border-slate-200'}`}>
                                 {o.prioridade&&<span className="absolute top-2 right-2 w-2.5 h-2.5 rounded-sm bg-blue-600" title="Prioridade"/>}
+                                {ehMateriaPrima&&(
+                                  <span className="inline-block text-[9px] font-black text-purple-700 bg-purple-50 border border-purple-200 rounded-full px-2 py-0.5 mb-1.5" title={`Matéria-prima do item ${s(o.cod_produto)} — não é o produto acabado`}>
+                                    MP · {s(o.cod_materia_prima)}
+                                  </span>
+                                )}
                                 <div className="flex items-center gap-1.5">
                                   <p className="text-xs font-bold text-slate-900">{s(o.br)}</p>
                                   {o.quantidade&&<span className="text-[10px] font-bold text-slate-400">· {o.quantidade} pçs</span>}
@@ -5714,9 +5720,9 @@ export default function App(){
                                 {o.descricao&&<p className="text-[10px] text-slate-400 mt-0.5">{s(o.descricao)}</p>}
 
                                 {/* Transitar entre setores direto do quadro — sem precisar voltar no modal
-                                    de Direcionar itens só pra mudar de área. */}
+                                    de Direcionar itens só pra mudar de área. Vale pra item acabado E MP. */}
                                 <select value={o.setor} onChange={e=>e.target.value!==o.setor&&moverLoteExistente(o,e.target.value)}
-                                  className="w-full text-[10px] font-black text-indigo-700 bg-indigo-50 border border-indigo-200 rounded-lg px-1.5 py-1 mt-1.5 cursor-pointer focus:outline-none">
+                                  className={`w-full text-[10px] font-black rounded-lg px-1.5 py-1 mt-1.5 cursor-pointer focus:outline-none border ${ehMateriaPrima?'text-purple-700 bg-purple-50 border-purple-200':'text-indigo-700 bg-indigo-50 border-indigo-200'}`}>
                                   {SETORES.map(st=><option key={st} value={st}>→ {SETOR_LABEL[st]}</option>)}
                                 </select>
 
