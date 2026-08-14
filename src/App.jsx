@@ -550,6 +550,12 @@ function ItemFaturamentoManualForm({item,onSalvar}){
   const [qtd,setQtd]=React.useState(item.qtdManual||'');
   const [obs,setObs]=React.useState(item.observacaoManual||'');
   const [aberto,setAberto]=React.useState(false);
+  // Valor calculado automático: preço unitário do item (valor do pedido ÷ qtd pedida)
+  // vezes a quantidade que o PCP está confirmando — ele só informa o quanto, o sistema
+  // já mostra quanto isso vale em R$, sem precisar calcular na mão.
+  const precoUnitario=item.qtdPedida>0?item.valorPedido/item.qtdPedida:0;
+  const qtdNum=Number(qtd)||0;
+  const valorCalculado=precoUnitario*qtdNum;
   if(!aberto){
     return(
       <button onClick={()=>setAberto(true)} className="text-[11px] font-bold text-indigo-600 hover:underline mt-2">
@@ -558,14 +564,22 @@ function ItemFaturamentoManualForm({item,onSalvar}){
     );
   }
   return(
-    <div className="mt-2.5 flex items-center gap-2 flex-wrap">
-      <input type="number" min="0" max={item.qtdPedida} step="any" value={qtd} onChange={e=>setQtd(e.target.value)}
-        placeholder={`0 a ${item.qtdPedida}`} className="w-24 text-xs border border-slate-200 rounded-lg px-2 py-1.5 focus:outline-none focus:ring-2 focus:ring-indigo-200"/>
-      <span className="text-[11px] text-slate-400">{item.unidade} confirmado(s)</span>
-      <input value={obs} onChange={e=>setObs(e.target.value)} placeholder="Observação (opcional)"
-        className="flex-1 min-w-[140px] text-xs border border-slate-200 rounded-lg px-2 py-1.5 focus:outline-none focus:ring-2 focus:ring-indigo-200"/>
-      <button onClick={()=>{onSalvar(item,qtd,obs);setAberto(false);}} className="text-[11px] font-bold text-white bg-indigo-600 rounded-lg px-3 py-1.5 hover:bg-indigo-700">Salvar</button>
-      <button onClick={()=>setAberto(false)} className="text-[11px] font-bold text-slate-400 hover:text-slate-600">Cancelar</button>
+    <div className="mt-2.5 bg-white border border-indigo-100 rounded-lg p-3">
+      <div className="flex items-center gap-2 flex-wrap">
+        <input type="number" min="0" max={item.qtdPedida} step="any" value={qtd} onChange={e=>setQtd(e.target.value)} autoFocus
+          placeholder={`0 a ${item.qtdPedida}`} className="w-24 text-xs border border-slate-200 rounded-lg px-2 py-1.5 focus:outline-none focus:ring-2 focus:ring-indigo-200"/>
+        <span className="text-[11px] text-slate-400">{item.unidade} de {item.qtdPedida} confirmado(s)</span>
+        <input value={obs} onChange={e=>setObs(e.target.value)} placeholder="Observação (opcional)"
+          className="flex-1 min-w-[140px] text-xs border border-slate-200 rounded-lg px-2 py-1.5 focus:outline-none focus:ring-2 focus:ring-indigo-200"/>
+        <button onClick={()=>{onSalvar(item,qtd,obs);setAberto(false);}} className="text-[11px] font-bold text-white bg-indigo-600 rounded-lg px-3 py-1.5 hover:bg-indigo-700">Salvar</button>
+        <button onClick={()=>setAberto(false)} className="text-[11px] font-bold text-slate-400 hover:text-slate-600">Cancelar</button>
+      </div>
+      {qtdNum>0&&(
+        <p className="text-[11px] font-bold text-indigo-700 mt-2">
+          Valor calculado automático: {valorCalculado.toLocaleString('pt-BR',{style:'currency',currency:'BRL'})}
+          <span className="text-slate-400 font-normal"> ({qtdNum} × {precoUnitario.toLocaleString('pt-BR',{style:'currency',currency:'BRL'})}/{item.unidade||'un'})</span>
+        </p>
+      )}
     </div>
   );
 }
@@ -887,6 +901,7 @@ export default function App(){
     }catch(e){addToast('Erro ao remover: '+e.message,'error');}
   };
   const [mestraDetalheTab,setMestraDetalheTab]=useState('ITENS'); // ITENS | NOTAS
+  const [mestraComposicaoAberta,setMestraComposicaoAberta]=useState(null); // codProduto expandido no modal de itens
   const MESTRA_DATA_CORTE='2026-01'; // trabalhamos a partir de 01/01/2026 (por data de entrega)
   const [mestraIncluirAnteriores,setMestraIncluirAnteriores]=useState(false);
 
@@ -7998,23 +8013,57 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
                 PENDENTE:{label:'Pendente',cls:'bg-slate-100 text-slate-600 border-slate-200'},
                 SEM_PEDIDO:{label:'Sem pedido vinculado',cls:'bg-violet-50 text-violet-700 border-violet-200'},
               }[it.status]||{label:it.status,cls:'bg-slate-100 text-slate-600 border-slate-200'};
+              const materiais=produtosDb[it.codProduto]?.materiais;
+              const composicaoAberta=mestraComposicaoAberta===it.codProduto;
               return(
                 <div key={i} className="bg-slate-50 border border-slate-100 rounded-xl px-4 py-3">
                   <div className="flex items-start justify-between gap-3">
-                    <div className="min-w-0">
-                      <p className="text-sm font-bold text-slate-900 truncate">{s(it.codProduto)} — {s(it.descricao)}</p>
-                      <p className="text-xs text-slate-500 mt-0.5">
-                        Pedido: {fmtD(it.qtdPedida)} {it.unidade} · Sankhya: {fmtD(it.qtdEntregueSankhya)} {it.unidade} · Falta: <span className={`font-bold ${it.qtdFaltante>0?'text-amber-600':'text-emerald-600'}`}>{fmtD(it.qtdFaltante)} {it.unidade}</span>
-                      </p>
-                      {it.qtdManual>0&&(
-                        <p className="text-[11px] font-bold text-indigo-600 mt-1">✓ PCP confirmou {fmtD(it.qtdManual)} {it.unidade} manualmente{it.observacaoManual?` — "${s(it.observacaoManual)}"`:''}</p>
-                      )}
-                    </div>
-                    <span className={`text-[9px] font-black px-2 py-0.5 rounded-full border whitespace-nowrap ${cfg.cls}`}>{cfg.label}</span>
+                    <button onClick={()=>setMestraComposicaoAberta(composicaoAberta?null:it.codProduto)} className="min-w-0 text-left flex items-start gap-1.5 group flex-1">
+                      <ArrowDown className={`w-3 h-3 mt-1 text-slate-400 flex-shrink-0 transition-transform ${composicaoAberta?'':'-rotate-90'}`}/>
+                      <span className="min-w-0">
+                        <p className="text-sm font-bold text-slate-900 group-hover:text-indigo-700 truncate">{s(it.codProduto)} — {s(it.descricao)}</p>
+                        <p className="text-xs text-slate-500 mt-0.5">
+                          Pedido: {fmtD(it.qtdPedida)} {it.unidade} · Sankhya: {fmtD(it.qtdEntregueSankhya)} {it.unidade} · Falta: <span className={`font-bold ${it.qtdFaltante>0?'text-amber-600':'text-emerald-600'}`}>{fmtD(it.qtdFaltante)} {it.unidade}</span>
+                          {Array.isArray(materiais)?` · ${materiais.length} insumo(s)`:''}
+                        </p>
+                        {it.qtdManual>0&&(
+                          <p className="text-[11px] font-bold text-indigo-600 mt-1">✓ PCP confirmou {fmtD(it.qtdManual)} {it.unidade} manualmente{it.observacaoManual?` — "${s(it.observacaoManual)}"`:''}</p>
+                        )}
+                      </span>
+                    </button>
+                    <span className={`text-[9px] font-black px-2 py-0.5 rounded-full border whitespace-nowrap flex-shrink-0 ${cfg.cls}`}>{cfg.label}</span>
                   </div>
+
+                  {/* Composição (matéria-prima) do produto acabado — só aparece quando o
+                      PCP clica pra ver, pra não poluir a lista inteira de uma vez. */}
+                  {composicaoAberta&&(
+                    <div className="mt-2.5 bg-white border border-slate-200 rounded-lg overflow-hidden">
+                      {!Array.isArray(materiais)&&<p className="text-xs text-slate-400 px-3 py-2">Este produto não tem ficha técnica (composição) cadastrada.</p>}
+                      {Array.isArray(materiais)&&materiais.map((m,j)=>{
+                        const est=estoqueDb[m.codigoMP];
+                        const necessario=Number(m.quantidade||0)*Number(it.qtdPedida||0);
+                        const saldo=Number(est?.saldo_disponivel||0);
+                        const falta=necessario-saldo;
+                        return(
+                          <div key={j} className={`flex items-center justify-between gap-3 px-3 py-1.5 text-xs ${j>0?'border-t border-slate-100':''}`}>
+                            <div className="min-w-0">
+                              <span className="font-bold text-slate-700">{m.codigoMP}</span>
+                              <span className="text-slate-500"> — {s(est?.descricao)||'não catalogado no estoque'}</span>
+                            </div>
+                            <div className="flex-shrink-0 text-right">
+                              <span className="text-slate-600">{necessario.toLocaleString('pt-BR',{maximumFractionDigits:3})} {m.um}</span>
+                              {falta>0?<span className="ml-2 font-bold text-red-600">falta {falta.toLocaleString('pt-BR',{maximumFractionDigits:3})}</span>:<span className="ml-2 font-bold text-emerald-600">✓ tem saldo</span>}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+
                   {/* Liberdade pro PCP: registrar quanto DESTE item já foi faturado de
                       verdade, independente do que o Sankhya mostra — cobre o caso comum
-                      de QTDENTREGUE atrasar mesmo com nota real emitida. */}
+                      de QTDENTREGUE atrasar mesmo com nota real emitida. Valor em R$
+                      calculado automático (preço unitário × quantidade confirmada). */}
                   {it.qtdPedida>0&&(
                     <ItemFaturamentoManualForm item={it} onSalvar={salvarFaturamentoManualItem}/>
                   )}
