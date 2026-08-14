@@ -1473,6 +1473,7 @@ export default function App(){
 
   // ── ABA PLANEJAMENTO: espelho da Planilha Mestre, por mês, com calendário ──
   const [planejamentoMesRef,setPlanejamentoMesRef]=useState(new Date().toISOString().slice(0,7));
+  const [planejamentoVisao,setPlanejamentoVisao]=useState('RESUMO'); // RESUMO | PROJETOS
   const [planejamentoFechamentos,setPlanejamentoFechamentos]=useState({}); // {[mes]: {brs:[...],valorTotal,totalProjetos,fechadoPor,fechadoEm}}
   const [fechandoPlanejamento,setFechandoPlanejamento]=useState(false);
 
@@ -1570,6 +1571,37 @@ export default function App(){
     planejamentoFechamentoAtual.snapshot.forEach(x=>{m[x.br]=x.valorPrevisto;});
     return m;
   },[planejamentoFechamentoAtual]);
+
+  // Composição da carteira do mês por escopo (KALIMPACT/REVESTIMENTO/PG1/PG2/SERVIÇO)
+  // — usa o valor FECHADO de cada BR (a meta), pra somar exatamente com o card de topo.
+  const planejamentoPorEscopo=useMemo(()=>{
+    const porEscopo={};
+    planejamentoDoMes.forEach(r=>{
+      const chave=r.escopo2||'Sem escopo';
+      const valor=planejamentoFechamentoAtual?(valorFechadoPorBr[r.br]??r.valorTotal):r.valorTotal;
+      if(!porEscopo[chave])porEscopo[chave]={name:chave,value:0,projetos:0};
+      porEscopo[chave].value+=valor;
+      porEscopo[chave].projetos+=1;
+    });
+    return Object.values(porEscopo).sort((a,b)=>b.value-a.value);
+  },[planejamentoDoMes,planejamentoFechamentoAtual,valorFechadoPorBr]);
+
+  // Distribuição por indicador (Atrasou/Antecipou/Atendeu/Não faturado) — só entre os
+  // que já têm indicador calculável (foram faturados e tinham data de CP).
+  const planejamentoPorIndicador=useMemo(()=>{
+    const cont={Atrasou:0,Antecipou:0,'Atendeu a data do CP':0,'Não foi faturado':0};
+    planejamentoDoMes.forEach(r=>{cont[r.descricaoIndicador]=(cont[r.descricaoIndicador]||0)+1;});
+    return cont;
+  },[planejamentoDoMes]);
+
+  // Top 5 maiores e menores projetos do mês, por valor — pro card "quem pesa mais".
+  const planejamentoTopMaiores=useMemo(()=>{
+    return[...planejamentoDoMes].sort((a,b)=>{
+      const va=planejamentoFechamentoAtual?(valorFechadoPorBr[a.br]??a.valorTotal):a.valorTotal;
+      const vb=planejamentoFechamentoAtual?(valorFechadoPorBr[b.br]??b.valorTotal):b.valorTotal;
+      return vb-va;
+    }).slice(0,5);
+  },[planejamentoDoMes,planejamentoFechamentoAtual,valorFechadoPorBr]);
 
   const planejamentoResumo=useMemo(()=>{
     // "Previsto no mês" é a META — o valor que o PCP fechou com a diretoria. NUNCA
@@ -4527,48 +4559,181 @@ export default function App(){
                 <SectionHeader title="Planejamento" subtitle="O que o PCP fecha aqui vira a decisão oficial do mês — não muda sozinho depois, mesmo se o Sankhya atualizar"
                   actions={<Btn variant="secondary" size="sm" onClick={()=>{fetchMestra();fetchPlanilhaMestreCampos();fetchPlanejamentoFechamentos();}} disabled={mestraLoading}><RefreshCw className={`w-4 h-4 ${mestraLoading?'animate-spin':''}`}/>Recarregar</Btn>}/>
 
-                <div className="bg-slate-900 rounded-2xl overflow-hidden">
-                  <div className="px-6 pt-5 pb-4 flex items-center justify-between flex-wrap gap-3">
-                    <input type="month" value={planejamentoMesRef} onChange={e=>setPlanejamentoMesRef(e.target.value)}
-                      className="bg-white/10 border border-white/20 text-white text-sm font-black rounded-xl px-3 py-2 focus:outline-none focus:border-white/50 [color-scheme:dark]"/>
-                    {planejamentoFechamentoAtual?(
-                      <span className="inline-flex items-center gap-1.5 text-[11px] font-bold text-teal-300 bg-teal-500/10 border border-teal-400/30 rounded-full px-3 py-1.5" title={`Fechado por ${s(planejamentoFechamentoAtual.fechadoPor)||'—'} em ${fmtDt(planejamentoFechamentoAtual.fechadoEm)}`}>
-                        <CheckCircle className="w-3.5 h-3.5"/>Lista FECHADA — {planejamentoFechamentoAtual.totalProjetos} projeto(s) definido(s), dados sempre ao vivo
-                      </span>
-                    ):(
-                      <span className="inline-flex items-center gap-1.5 text-[11px] font-bold text-amber-300 bg-amber-500/10 border border-amber-400/30 rounded-full px-3 py-1.5">
-                        <AlertTriangle className="w-3.5 h-3.5"/>Ainda não fechado — mostrando cálculo dinâmico do Sankhya
-                      </span>
-                    )}
-                  </div>
-                  <div className="px-6 pb-5 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-x-8 gap-y-4">
-                    <div>
-                      <p className="text-[10px] font-black text-white/40 uppercase tracking-wider">Previsto no mês</p>
-                      <p className="text-2xl font-black text-white mt-0.5 tabular-nums">{fmtMoeda(planejamentoResumo.valorPrevisto)}</p>
-                      <p className="text-[11px] text-white/40 mt-0.5">{planejamentoResumo.totalProjetos} projeto(s){planejamentoFechamentoAtual?' — lista fechada, valor sempre atualizado':' — inclui antecipados/reprogramados pra '+planejamentoMesRef}</p>
+                {/* ── HERO: mês + status + os 4 números que fecham com a diretoria ── */}
+                <div className="relative bg-slate-900 rounded-2xl overflow-hidden">
+                  <div className="absolute inset-0 bg-gradient-to-br from-indigo-950/40 via-transparent to-transparent pointer-events-none"/>
+                  <div className="relative px-6 pt-6 pb-5 flex items-center justify-between flex-wrap gap-3 border-b border-white/5">
+                    <div className="flex items-center gap-3">
+                      <input type="month" value={planejamentoMesRef} onChange={e=>setPlanejamentoMesRef(e.target.value)}
+                        className="bg-white/10 border border-white/20 text-white text-sm font-black rounded-xl px-3 py-2 focus:outline-none focus:border-white/50 [color-scheme:dark]"/>
+                      {planejamentoFechamentoAtual?(
+                        <span className="inline-flex items-center gap-1.5 text-[11px] font-black text-teal-300 bg-teal-500/10 border border-teal-400/30 rounded-full px-3 py-1.5">
+                          <CheckCircle className="w-3.5 h-3.5"/>FECHADO
+                        </span>
+                      ):(
+                        <span className="inline-flex items-center gap-1.5 text-[11px] font-black text-amber-300 bg-amber-500/10 border border-amber-400/30 rounded-full px-3 py-1.5">
+                          <AlertTriangle className="w-3.5 h-3.5"/>ABERTO — mostrando cálculo dinâmico
+                        </span>
+                      )}
                     </div>
-                    <div>
-                      <p className="text-[10px] font-black text-white/40 uppercase tracking-wider">A faturar no mês</p>
-                      <p className="text-2xl font-black text-amber-300 mt-0.5 tabular-nums">{fmtMoeda(planejamentoResumo.valorAFaturar)}</p>
-                      <p className="text-[11px] text-white/40 mt-0.5">ainda em aberto, descontado o que já saiu</p>
-                    </div>
-                    <div>
-                      <p className="text-[10px] font-black text-white/40 uppercase tracking-wider">Atrasado (meses anteriores)</p>
-                      <p className="text-2xl font-black text-red-300 mt-0.5 tabular-nums">{fmtMoeda(planejamentoResumo.valorAtrasado)}</p>
-                      <p className="text-[11px] text-white/40 mt-0.5">{planejamentoResumo.totalAtrasados} projeto(s) — nunca inclui serviço</p>
-                    </div>
-                    <div>
-                      <p className="text-[10px] font-black text-white/40 uppercase tracking-wider">Já faturado no mês</p>
-                      <p className="text-2xl font-black text-teal-300 mt-0.5 tabular-nums">{fmtMoeda(planejamentoAcompanhamento.acumuladoAtual)}</p>
-                      <p className="text-[11px] text-white/40 mt-0.5">{planejamentoFaturadosNoMes.length} projeto(s) com nota emitida esse mês</p>
-                    </div>
-                  </div>
-                  <div className="px-6 pb-5">
                     <Btn variant="dark" size="sm" onClick={fecharPlanejamentoDoMes} disabled={fechandoPlanejamento} className="!bg-white/10 hover:!bg-white/20 !text-white">
                       <CheckCircle className={`w-4 h-4 ${fechandoPlanejamento?'animate-pulse':''}`}/>{planejamentoFechamentoAtual?'Re-fechar planejamento':'Fechar planejamento do mês'}
                     </Btn>
                   </div>
+                  <div className="relative px-6 py-6 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-x-8 gap-y-5">
+                    <div>
+                      <p className="text-[10px] font-black text-white/40 uppercase tracking-wider">Previsto no mês</p>
+                      <p className="text-3xl font-black text-white mt-1 tabular-nums">{fmtMoeda(planejamentoResumo.valorPrevisto)}</p>
+                      <p className="text-[11px] text-white/40 mt-1">{planejamentoResumo.totalProjetos} projeto(s){planejamentoFechamentoAtual?' — meta fechada':' — inclui antecipados/reprogramados'}</p>
+                    </div>
+                    <div>
+                      <p className="text-[10px] font-black text-white/40 uppercase tracking-wider">A faturar</p>
+                      <p className="text-3xl font-black text-amber-300 mt-1 tabular-nums">{fmtMoeda(planejamentoResumo.valorAFaturar)}</p>
+                      <p className="text-[11px] text-white/40 mt-1">ainda em aberto, descontado o que já saiu</p>
+                    </div>
+                    <div>
+                      <p className="text-[10px] font-black text-white/40 uppercase tracking-wider">Atrasado</p>
+                      <p className="text-3xl font-black text-red-300 mt-1 tabular-nums">{fmtMoeda(planejamentoResumo.valorAtrasado)}</p>
+                      <p className="text-[11px] text-white/40 mt-1">{planejamentoResumo.totalAtrasados} projeto(s) — nunca inclui serviço</p>
+                    </div>
+                    <div>
+                      <p className="text-[10px] font-black text-white/40 uppercase tracking-wider">Já faturado</p>
+                      <p className="text-3xl font-black text-teal-300 mt-1 tabular-nums">{fmtMoeda(planejamentoAcompanhamento.acumuladoAtual)}</p>
+                      <p className="text-[11px] text-white/40 mt-1">{planejamentoFaturadosNoMes.length} projeto(s) com nota emitida esse mês</p>
+                    </div>
+                  </div>
+                  {/* Barra de progresso: quanto da meta já foi resolvido */}
+                  {planejamentoResumo.valorPrevisto>0&&(()=>{
+                    const pctResolvido=Math.min(100,((planejamentoResumo.valorPrevisto-planejamentoResumo.valorAFaturar)/planejamentoResumo.valorPrevisto)*100);
+                    return(
+                      <div className="relative px-6 pb-6">
+                        <div className="h-1.5 bg-white/10 rounded-full overflow-hidden">
+                          <div className="h-full bg-gradient-to-r from-teal-400 to-teal-300 rounded-full transition-all duration-700" style={{width:`${pctResolvido}%`}}/>
+                        </div>
+                        <p className="text-[10px] text-white/30 mt-1.5">{pctResolvido.toFixed(0)}% da meta do mês já resolvida</p>
+                      </div>
+                    );
+                  })()}
                 </div>
+
+                {/* ── Seletor de visão ── */}
+                <div className="flex items-center gap-1 bg-slate-100 rounded-xl p-1 w-fit">
+                  {[{id:'RESUMO',label:'Resumo'},{id:'PROJETOS',label:'Projetos'}].map(v=>(
+                    <button key={v.id} onClick={()=>setPlanejamentoVisao(v.id)}
+                      className={`text-xs font-bold px-4 py-2 rounded-lg transition-all ${planejamentoVisao===v.id?'bg-white text-slate-900 shadow-sm':'text-slate-500 hover:text-slate-700'}`}>
+                      {v.label}
+                    </button>
+                  ))}
+                </div>
+
+                {planejamentoVisao==='RESUMO'&&(
+                  <div className="grid grid-cols-1 lg:grid-cols-5 gap-5">
+                    {/* Composição por escopo */}
+                    <div className="lg:col-span-2 bg-white rounded-2xl border border-slate-200 p-6">
+                      <p className="text-sm font-black text-slate-800">Composição da carteira</p>
+                      <p className="text-[11px] text-slate-400 mt-0.5">Por categoria de material</p>
+                      <div className="mt-2" style={{height:220}}>
+                        <PieChart containerWidth={280} containerHeight={220}>
+                          <Pie data={planejamentoPorEscopo} dataKey="value" nameKey="name" innerRadius={55} outerRadius={90}>
+                            {planejamentoPorEscopo.map((e,i)=><Cell key={i} fill={['#6366f1','#0d9488','#f59e0b','#ec4899','#64748b'][i%5]}/>)}
+                          </Pie>
+                          <Legend/>
+                        </PieChart>
+                      </div>
+                      <div className="space-y-1.5 mt-2">
+                        {planejamentoPorEscopo.map((e,i)=>(
+                          <div key={e.name} className="flex items-center justify-between text-xs">
+                            <span className="flex items-center gap-1.5 text-slate-600 font-semibold"><span className="w-2 h-2 rounded-full" style={{background:['#6366f1','#0d9488','#f59e0b','#ec4899','#64748b'][i%5]}}/>{e.name}</span>
+                            <span className="font-bold text-slate-700">{fmtMoeda(e.value)} <span className="text-slate-400 font-normal">({e.projetos})</span></span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* Radar de saúde: indicador de prazo */}
+                    <div className="lg:col-span-3 bg-white rounded-2xl border border-slate-200 p-6">
+                      <p className="text-sm font-black text-slate-800">Saúde do prazo</p>
+                      <p className="text-[11px] text-slate-400 mt-0.5">Como os projetos do mês estão indo, de um relance</p>
+                      <div className="space-y-3 mt-5">
+                        {[
+                          {label:'Antecipou',key:'Antecipou',color:'bg-emerald-500',text:'text-emerald-700'},
+                          {label:'Atendeu a data do CP',key:'Atendeu a data do CP',color:'bg-blue-500',text:'text-blue-700'},
+                          {label:'Atrasou',key:'Atrasou',color:'bg-red-500',text:'text-red-700'},
+                          {label:'Não foi faturado',key:'Não foi faturado',color:'bg-slate-300',text:'text-slate-500'},
+                        ].map(row=>{
+                          const total=planejamentoDoMes.length||1;
+                          const qtd=planejamentoPorIndicador[row.key]||0;
+                          const pct=(qtd/total)*100;
+                          return(
+                            <div key={row.key}>
+                              <div className="flex items-center justify-between text-xs mb-1">
+                                <span className={`font-bold ${row.text}`}>{row.label}</span>
+                                <span className="font-bold text-slate-500">{qtd} <span className="text-slate-400 font-normal">({pct.toFixed(0)}%)</span></span>
+                              </div>
+                              <div className="h-2.5 bg-slate-100 rounded-full overflow-hidden">
+                                <div className={`h-full ${row.color} rounded-full transition-all duration-700`} style={{width:`${pct}%`}}/>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+
+                    {/* Onde deveríamos estar x onde estamos */}
+                    <div className="lg:col-span-5 bg-white rounded-2xl border border-slate-200 p-6">
+                      <div className="flex items-center justify-between mb-1 flex-wrap gap-3">
+                        <div>
+                          <p className="text-sm font-black text-slate-800">Onde deveríamos estar x onde estamos — {planejamentoMesRef}</p>
+                          <p className="text-[11px] text-slate-400 mt-0.5">Previsto do mês ({fmtMoeda(planejamentoAcompanhamento.valorPrevisto)}) dividido linearmente pelas {planejamentoAcompanhamento.totalSemanas} semanas. Realizado = valor líquido acumulado das notas emitidas nesse mês.</p>
+                        </div>
+                        <div className="flex items-center gap-4 text-[11px] font-bold text-slate-500">
+                          <span className="flex items-center gap-1.5"><span className="w-3 h-[3px] rounded-full bg-red-600"/>Previsto</span>
+                          <span className="flex items-center gap-1.5"><span className="w-3 h-[3px] rounded-full bg-blue-600"/>Realizado</span>
+                        </div>
+                      </div>
+                      <div style={{height:280}}>
+                        <ResponsiveContainer width="100%" height="100%">
+                          <LineChart data={planejamentoAcompanhamento.pontos} margin={{top:15,right:15,left:0,bottom:0}}>
+                            <CartesianGrid strokeDasharray="3 3" vertical={false}/>
+                            <XAxis dataKey="name" tick={{fontSize:11,fontWeight:'700',fill:'#64748b'}}/>
+                            <YAxis tickFormatter={v=>`${(v/1000).toFixed(0)}k`} tick={{fontSize:11,fontWeight:'700',fill:'#64748b'}} width={50}/>
+                            <Tooltip formatter={v=>v!==null?fmtMoeda(v):'—'}/>
+                            <Line type="monotone" dataKey="Previsto" stroke="#dc2626" strokeWidth={3} dot={false} name="Previsto" connectNulls/>
+                            <Line type="monotone" dataKey="Realizado" stroke="#2563eb" strokeWidth={3.5} dot={{r:4}} name="Realizado" connectNulls/>
+                          </LineChart>
+                        </ResponsiveContainer>
+                      </div>
+                    </div>
+
+                    {/* Top 5 maiores projetos do mês */}
+                    <div className="lg:col-span-5 bg-white rounded-2xl border border-slate-200 overflow-hidden">
+                      <div className="px-6 py-4 border-b border-slate-100">
+                        <p className="text-sm font-black text-slate-800">Maiores projetos do mês</p>
+                        <p className="text-[11px] text-slate-400 mt-0.5">Os 5 que mais pesam na meta</p>
+                      </div>
+                      <div className="divide-y divide-slate-100">
+                        {planejamentoTopMaiores.map((r,i)=>{
+                          const valor=planejamentoFechamentoAtual?(valorFechadoPorBr[r.br]??r.valorTotal):r.valorTotal;
+                          const pctDaMeta=planejamentoResumo.valorPrevisto>0?(valor/planejamentoResumo.valorPrevisto)*100:0;
+                          return(
+                            <button key={r.br} onClick={()=>setMestraNotasSel(r)} className="w-full px-6 py-3 flex items-center gap-4 hover:bg-slate-50 text-left">
+                              <span className="text-lg font-black text-slate-200 w-6">{i+1}</span>
+                              <div className="flex-1 min-w-0">
+                                <p className="text-sm font-bold text-indigo-700">{r.br} <span className="text-slate-400 font-normal">· {s(r.cliente)}</span></p>
+                                <div className="h-1.5 bg-slate-100 rounded-full overflow-hidden mt-1.5 max-w-xs">
+                                  <div className="h-full bg-indigo-500 rounded-full" style={{width:`${Math.min(100,pctDaMeta*4)}%`}}/>
+                                </div>
+                              </div>
+                              <p className="text-sm font-black text-slate-700 whitespace-nowrap">{fmtMoeda(valor)}</p>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {planejamentoVisao==='PROJETOS'&&(<>
 
                 {planejamentoForaDoFechado.length>0&&(
                   <div className="bg-white rounded-2xl border-2 border-dashed border-amber-300 overflow-hidden">
@@ -4714,6 +4879,7 @@ export default function App(){
                     </div>
                   )}
                 </div>
+                </>)}
               </div>
             )}
 
