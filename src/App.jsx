@@ -1756,7 +1756,13 @@ export default function App(){
 
       const andamentoPorBR={};
       const observacaoPorBR={};
-      (andamentoRes.data||[]).forEach(a=>{andamentoPorBR[s(a.br)]=a.andamento;observacaoPorBR[s(a.br)]=a.observacao;});
+      const escopo2PorBR={};
+      const importacaoPorBRooh={};
+      (andamentoRes.data||[]).forEach(a=>{
+        andamentoPorBR[s(a.br)]=a.andamento;observacaoPorBR[s(a.br)]=a.observacao;
+        if(a.escopo2)escopo2PorBR[s(a.br)]=a.escopo2;
+        if(a.aguardando_importacao)importacaoPorBRooh[s(a.br)]={observacao:a.importacao_observacao,previsao:a.importacao_previsao};
+      });
 
       const agrup={};
       const itensPorBR={};
@@ -1821,7 +1827,10 @@ export default function App(){
         // continuar cobrando prazo dele não ajuda em nada.
         const dataMPPronta=somarDias(dataVigenteOOH,-5);
         const dataAlertaEsteira=somarDias(dataVigenteOOH,-20);
-        const precisaEntrarNaEsteira=!atendido&&!pendente&&dataAlertaEsteira&&hojeOOH>=dataAlertaEsteira;
+        const aguardandoImportacao=!!importacaoPorBRooh[r.br];
+        // Aguardando importação não entra na esteira nem em atrasados — o material nem
+        // chegou no país, cobrar prazo de produção disso não faz sentido.
+        const precisaEntrarNaEsteira=!atendido&&!pendente&&!aguardandoImportacao&&dataAlertaEsteira&&hojeOOH>=dataAlertaEsteira;
         // valorFaturado tem que refletir o que REALMENTE saiu. Só r.valorEntregue (base
         // em qtd_entregue) subestima quando o Sankhya não atualiza a entrega mesmo já
         // tendo nota emitida — foi o que fez "A faturar" ficar igual à "Carteira total"
@@ -1831,6 +1840,7 @@ export default function App(){
         const valorFaturadoEfetivo=Math.min(r.valorTotal,Math.max(r.valorEntregue||0,faturadoNota));
         return{...r,valorFaturado:valorFaturadoEfetivo,percentualFaturado,atendido,pendente,mesPrevisto,plano,
           andamento:andamentoManual,observacaoPendencia:observacaoPorBR[r.br]||null,
+          escopo2:escopo2PorBR[r.br]||null,aguardandoImportacao,importacaoInfo:importacaoPorBRooh[r.br]||null,
           dataFaturamento:dataFaturamentoPorBR[r.br]?.data||null,numeroNotaFaturamento:dataFaturamentoPorBR[r.br]?.numeroNota||null,
           semanaISO:semanaISODoAno(dataVigenteOOH),
           dataMPPronta,dataAlertaEsteira,precisaEntrarNaEsteira,
@@ -1984,6 +1994,14 @@ export default function App(){
   // misturado num "não faturado" genérico.
   const [oohFaturamentoParcialAberto,setOohFaturamentoParcialAberto]=useState(null); // br do card expandido
   const oohFaturamentoParcial=useMemo(()=>oohProjetosComProducao.filter(p=>!p.atendido&&p.percentualFaturado>0&&p.percentualFaturado<0.999),[oohProjetosComProducao]);
+  // Aguardando material importado: não é atraso de produção, o material nem chegou.
+  // Fica em aba própria, com o valor represado somado, pra dar visibilidade do quanto
+  // está travado por importação.
+  const oohAguardandoImportacao=useMemo(()=>oohProjetosComProducao.filter(p=>p.aguardandoImportacao&&!p.atendido),[oohProjetosComProducao]);
+  const oohValorImportacao=useMemo(()=>oohAguardandoImportacao.reduce((a,p)=>a+Math.max(0,p.valorTotal-p.valorFaturado),0),[oohAguardandoImportacao]);
+  // Set de BRs com faturamento parcial — usado pra sinalizar na lista de Faturados
+  // que aquele projeto teve nota mas ainda não fechou 100%.
+  const oohBrsParciais=useMemo(()=>new Set(oohFaturamentoParcial.map(p=>p.br)),[oohFaturamentoParcial]);
   const oohFaturados=useMemo(()=>oohProjetosComProducao.filter(p=>p.andamento==='FATURADO'),[oohProjetosComProducao]);
   // "Faturados em {mês}" = TODO BR com nota emitida naquele mês (data_neg), igual a
   // lógica da Mestra PCP — não depende de ninguém ter marcado Andamento=Faturado.
@@ -1992,7 +2010,7 @@ export default function App(){
   const [oohFaturadosTodosMeses,setOohFaturadosTodosMeses]=useState(false);
   const andamentoPorBRParaFaturados=useMemo(()=>{
     const m={};
-    oohProjetosComProducao.forEach(p=>{m[p.br]={andamento:p.andamento,valorTotal:p.valorTotal,dataPrevista:p.dataPrevista};});
+    oohProjetosComProducao.forEach(p=>{m[p.br]={andamento:p.andamento,valorTotal:p.valorTotal,dataPrevista:p.dataPrevista,dataFaturamento:p.dataFaturamento,numeroNotaFaturamento:p.numeroNotaFaturamento,escopo2:p.escopo2};});
     return m;
   },[oohProjetosComProducao]);
   const oohFaturadosDoMes=useMemo(()=>
@@ -4260,6 +4278,7 @@ export default function App(){
                     {id:'PENDENTES',label:'Pendentes',count:oohPendentes.length},
                     {id:'REPROGRAMADOS',label:'Reprogramados',count:oohReprogramados.length},
                     {id:'PARCIAL',label:'Parcial',count:oohFaturamentoParcial.length},
+                    {id:'IMPORTACAO',label:'Importação',count:oohAguardandoImportacao.length},
                     {id:'FATURADOS',label:'Faturados',count:oohFaturadosDoMes.length},
                     {id:'SERVICOS',label:'Serviços',count:oohServicos.length},
                   ].map(t=>(
@@ -4451,6 +4470,56 @@ export default function App(){
                   </div>
                 )}
 
+                {oohVisaoAtiva==='IMPORTACAO'&&(
+                  <div className="bg-white rounded-2xl border border-sky-200 overflow-hidden">
+                    <div className="px-5 py-3.5 border-b border-sky-100 bg-sky-50/50 flex items-center justify-between flex-wrap gap-2">
+                      <div>
+                        <p className="text-sm font-black text-sky-800">Aguardando Importação <span className="text-sky-400 font-bold">({oohAguardandoImportacao.length})</span></p>
+                        <p className="text-[11px] text-slate-400 mt-0.5">Material ainda não chegou no país — não conta como atraso de produção nem entra na esteira.</p>
+                      </div>
+                      <div className="text-right">
+                        <p className="text-[10px] font-black text-sky-500 uppercase">Valor represado</p>
+                        <p className="text-lg font-black text-sky-700">{fmtMoeda(oohValorImportacao)}</p>
+                      </div>
+                    </div>
+                    {oohAguardandoImportacao.length===0?(
+                      <div className="px-5 py-10 text-center">
+                        <p className="text-sm text-slate-400">Nenhum projeto marcado como aguardando importação.</p>
+                        <p className="text-[11px] text-slate-400 mt-1">Marque na Planilha Mestre pra aparecer aqui.</p>
+                      </div>
+                    ):(
+                      <div className="overflow-x-auto custom-scrollbar">
+                        <table className="w-full text-sm">
+                          <thead className="bg-slate-50 border-b border-slate-200">
+                            <tr className="text-left text-[10px] font-black text-slate-500 uppercase tracking-wider">
+                              <th className="px-3 py-2.5">BR</th>
+                              <th className="px-3 py-2.5">Cliente</th>
+                              <th className="px-3 py-2.5">Escopo</th>
+                              <th className="px-3 py-2.5">Previsto (CP)</th>
+                              <th className="px-3 py-2.5">Previsão chegada</th>
+                              <th className="px-3 py-2.5">Observação</th>
+                              <th className="px-3 py-2.5 text-right">Valor represado</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-slate-100">
+                            {oohAguardandoImportacao.map(p=>(
+                              <tr key={p.br} className="hover:bg-slate-50">
+                                <td className="px-3 py-2 font-bold text-indigo-700 whitespace-nowrap">{p.br}</td>
+                                <td className="px-3 py-2 text-slate-600 truncate max-w-[180px]">{s(p.cliente)}</td>
+                                <td className="px-3 py-2 whitespace-nowrap">{p.escopo2?<span className="text-[10px] font-bold text-slate-600 bg-slate-100 border border-slate-200 rounded-full px-2 py-0.5">{p.escopo2}</span>:<span className="text-[10px] text-slate-300">—</span>}</td>
+                                <td className="px-3 py-2 text-slate-500 whitespace-nowrap">{fmtDt(p.dataPrevista)}</td>
+                                <td className="px-3 py-2 font-bold text-sky-700 whitespace-nowrap">{p.importacaoInfo?.previsao?fmtDt(p.importacaoInfo.previsao):<span className="text-slate-300 font-normal">sem previsão</span>}</td>
+                                <td className="px-3 py-2 text-slate-500 truncate max-w-[220px]" title={s(p.importacaoInfo?.observacao)}>{s(p.importacaoInfo?.observacao)||'—'}</td>
+                                <td className="px-3 py-2 text-right font-bold text-slate-700 whitespace-nowrap">{fmtMoeda(Math.max(0,p.valorTotal-p.valorFaturado))}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                  </div>
+                )}
+
                 {oohVisaoAtiva==='FATURADOS'&&(
                   <div className="bg-white rounded-2xl border border-teal-200 overflow-hidden">
                     <div className="px-5 py-3.5 border-b border-teal-100 bg-teal-50/50 flex items-center justify-between flex-wrap gap-2">
@@ -4474,7 +4543,8 @@ export default function App(){
                             <tr className="text-left text-[10px] font-black text-slate-500 uppercase tracking-wider">
                               <th className="px-3 py-2.5">BR</th>
                               <th className="px-3 py-2.5">Cliente</th>
-                              {oohFaturadosTodosMeses&&<th className="px-3 py-2.5">Mês(es) com nota</th>}
+                              <th className="px-3 py-2.5">Escopo</th>
+                              {oohFaturadosTodosMeses?<th className="px-3 py-2.5">Mês(es) com nota</th>:<th className="px-3 py-2.5">Data Faturamento</th>}
                               <th className="px-3 py-2.5">Andamento</th>
                               <th className="px-3 py-2.5 text-right">Nº Notas</th>
                               <th className="px-3 py-2.5 text-right">Valor Bruto</th>
@@ -4485,9 +4555,15 @@ export default function App(){
                           <tbody className="divide-y divide-slate-100">
                             {oohFaturadosFiltrados.map((p,i)=>(
                               <tr key={p.br+i} className="hover:bg-slate-50">
-                                <td className="px-3 py-2 font-bold text-indigo-700 whitespace-nowrap">{p.br}</td>
+                                <td className="px-3 py-2 font-bold text-indigo-700 whitespace-nowrap">
+                                  {p.br}
+                                  {oohBrsParciais.has(p.br)&&<span className="ml-1.5 text-[9px] font-black text-orange-700 bg-orange-50 border border-orange-200 rounded-full px-1.5 py-0.5" title="Teve nota emitida, mas o projeto ainda não fechou 100% — veja a aba Parcial">parcial</span>}
+                                </td>
                                 <td className="px-3 py-2 text-slate-600 truncate max-w-[200px]">{s(p.cliente)}</td>
-                                {oohFaturadosTodosMeses&&<td className="px-3 py-2 text-slate-500 whitespace-nowrap">{(p.mesesComNota||[]).join(', ')}</td>}
+                                <td className="px-3 py-2 whitespace-nowrap">{p.escopo2?<span className="text-[10px] font-bold text-slate-600 bg-slate-100 border border-slate-200 rounded-full px-2 py-0.5">{p.escopo2}</span>:<span className="text-[10px] text-slate-300">—</span>}</td>
+                                {oohFaturadosTodosMeses
+                                  ?<td className="px-3 py-2 text-slate-500 whitespace-nowrap">{(p.mesesComNota||[]).join(', ')}</td>
+                                  :<td className="px-3 py-2 font-bold text-teal-700 whitespace-nowrap">{p.dataFaturamento?fmtDt(p.dataFaturamento):<span className="text-slate-300 font-normal">—</span>}{p.numeroNotaFaturamento&&<span className="ml-1 text-[10px] font-normal text-slate-400">nota {p.numeroNotaFaturamento}</span>}</td>}
                                 <td className="px-3 py-2 whitespace-nowrap">{p.andamento?<span className={`text-[10px] font-black px-1.5 py-0.5 rounded-full border ${ANDAMENTO_CFG[p.andamento]?.cls||ANDAMENTO_CFG.A_INICIAR.cls}`}>{ANDAMENTO_LABEL[p.andamento]||p.andamento}</span>:<span className="text-[10px] text-slate-300">sem pedido</span>}</td>
                                 <td className="px-3 py-2 text-right text-slate-500 whitespace-nowrap">{p.notas}</td>
                                 <td className="px-3 py-2 text-right font-semibold text-slate-500 whitespace-nowrap">{fmtMoeda(p.valorBruto)}</td>
