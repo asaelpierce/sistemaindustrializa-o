@@ -1707,7 +1707,7 @@ export default function App(){
         supabase.from('ooh_planejamento').select('*'),
         supabase.from('andamento_producao').select('*'),
         supabase.from('situacao_especial_pedido').select('*'),
-        supabase.from('faturamento_resumo').select('br,data_faturamento,numero_nota').eq('tipmov','V'),
+        supabase.from('faturamento_resumo').select('br,cliente_nome,data_neg,data_faturamento,numero_nota,valor_nota,net_offer_value').eq('tipmov','V'),
       ]);
       if(planejamentoRes.error)throw planejamentoRes.error;
       if(andamentoRes.error)throw andamentoRes.error;
@@ -1718,11 +1718,25 @@ export default function App(){
       // mais recente quando o BR tem mais de uma. Usada só na aba Faturados, pra dar pro
       // PCP como conferir de fato quando cada nota saiu, sem precisar ir no Sankhya.
       const dataFaturamentoPorBR={};
+      // "Faturados em {mês}" tem que ser TODO BR com nota emitida naquele mês — igual a
+      // lógica da Mestra PCP (Faturamento Emitido), que não depende de ninguém marcar
+      // Andamento=Faturado manualmente. Antes esse card exigia as DUAS coisas (marcado
+      // manual E nota no mês), o que escondia projetos genuinamente faturados no mês
+      // que ninguém tinha marcado ainda. Agrupa por BR+mês (data_neg, mesma referência
+      // que a Mestra usa), sem filtrar por andamento_producao em nenhum momento.
+      const faturamentoPorBRMes={};
       (faturamentoDatasRes.data||[]).forEach(f=>{
-        const br=s(f.br);if(!br||!f.data_faturamento)return;
-        if(!dataFaturamentoPorBR[br]||f.data_faturamento>dataFaturamentoPorBR[br].data){
+        const br=s(f.br);if(!br)return;
+        if(f.data_faturamento&&(!dataFaturamentoPorBR[br]||f.data_faturamento>dataFaturamentoPorBR[br].data)){
           dataFaturamentoPorBR[br]={data:f.data_faturamento,numeroNota:f.numero_nota};
         }
+        const mesNeg=s(f.data_neg).slice(0,7);
+        if(!mesNeg)return;
+        const chave=`${mesNeg}|${br}`;
+        if(!faturamentoPorBRMes[chave])faturamentoPorBRMes[chave]={mes:mesNeg,br,cliente:f.cliente_nome,valorBruto:0,valorLiquido:0,notas:0};
+        faturamentoPorBRMes[chave].valorBruto+=Number(f.valor_nota||0);
+        faturamentoPorBRMes[chave].valorLiquido+=Number(f.net_offer_value||0);
+        faturamentoPorBRMes[chave].notas+=1;
       });
 
       // Mesma marcação manual do PCP usada no Mestra: DESCONSIDERAR some do cálculo,
@@ -1813,6 +1827,7 @@ export default function App(){
       setOohProjetos(lista);
       setOohPlanejamento(planejamentoRes.data||[]);
       setOohServicos(servicosLista.sort((a,b)=>s(b.dataPrevista).localeCompare(s(a.dataPrevista))));
+      setOohFaturamentoPorMes(Object.values(faturamentoPorBRMes));
     }catch(e){
       setOohErro('Erro ao buscar planejamento: '+e.message);
     }finally{
@@ -1958,14 +1973,30 @@ export default function App(){
   const [oohFaturamentoParcialAberto,setOohFaturamentoParcialAberto]=useState(null); // br do card expandido
   const oohFaturamentoParcial=useMemo(()=>oohProjetosComProducao.filter(p=>!p.atendido&&p.percentualFaturado>0&&p.percentualFaturado<0.999),[oohProjetosComProducao]);
   const oohFaturados=useMemo(()=>oohProjetosComProducao.filter(p=>p.andamento==='FATURADO'),[oohProjetosComProducao]);
-  // O card deve responder "o que faturamos ESSE mês", não "tudo que já foi marcado
-  // Faturado alguma vez" — filtra pela dataFaturamento REAL (do Sankhya), não pelo mês
-  // previsto. Quem não tem nenhuma nota encontrada fica à parte (não dá pra saber de
-  // qual mês é), sempre visível, pra não desaparecer silenciosamente.
+  // "Faturados em {mês}" = TODO BR com nota emitida naquele mês (data_neg), igual a
+  // lógica da Mestra PCP — não depende de ninguém ter marcado Andamento=Faturado.
+  // Antes exigia as duas coisas juntas, o que escondia projeto genuinamente faturado
+  // no mês que ainda não tinha sido marcado manualmente.
   const [oohFaturadosTodosMeses,setOohFaturadosTodosMeses]=useState(false);
-  const oohFaturadosDoMes=useMemo(()=>oohFaturados.filter(p=>p.dataFaturamento&&s(p.dataFaturamento).slice(0,7)===oohMesRef),[oohFaturados,oohMesRef]);
-  const oohFaturadosSemNota=useMemo(()=>oohFaturados.filter(p=>!p.dataFaturamento),[oohFaturados]);
+  const andamentoPorBRParaFaturados=useMemo(()=>{
+    const m={};
+    oohProjetosComProducao.forEach(p=>{m[p.br]={andamento:p.andamento,valorTotal:p.valorTotal,dataPrevista:p.dataPrevista};});
+    return m;
+  },[oohProjetosComProducao]);
+  const oohFaturadosDoMes=useMemo(()=>
+    oohFaturamentoPorMes.filter(f=>f.mes===oohMesRef).map(f=>({...f,...(andamentoPorBRParaFaturados[f.br]||{})}))
+  ,[oohFaturamentoPorMes,oohMesRef,andamentoPorBRParaFaturados]);
+  // Visão "todos os meses": agrega por BR, somando todas as notas de qualquer mês.
+  const oohFaturadosTodosOsMeses=useMemo(()=>{
+    const porBR={};
+    oohFaturamentoPorMes.forEach(f=>{
+      if(!porBR[f.br])porBR[f.br]={br:f.br,cliente:f.cliente,valorBruto:0,valorLiquido:0,notas:0,mesesComNota:new Set()};
+      porBR[f.br].valorBruto+=f.valorBruto;porBR[f.br].valorLiquido+=f.valorLiquido;porBR[f.br].notas+=f.notas;porBR[f.br].mesesComNota.add(f.mes);
+    });
+    return Object.values(porBR).map(b=>({...b,mesesComNota:[...b.mesesComNota].sort(),...(andamentoPorBRParaFaturados[b.br]||{})}));
+  },[oohFaturamentoPorMes,andamentoPorBRParaFaturados]);
   const [oohServicos,setOohServicos]=useState([]); // itens "SERVIÇO..." de todos os BRs, coletados no fetchOOH
+  const [oohFaturamentoPorMes,setOohFaturamentoPorMes]=useState([]); // [{mes,br,cliente,valorBruto,valorLiquido,notas}] — TODO BR com nota no mês, sem depender de marcação manual
   const [oohServicosBusca,setOohServicosBusca]=useState('');
   const oohServicosFiltrados=useMemo(()=>{
     const termo=oohServicosBusca.trim().toLowerCase();
@@ -1987,11 +2018,11 @@ export default function App(){
   },[oohServicos]);
   const [oohFaturadosBusca,setOohFaturadosBusca]=useState('');
   const oohFaturadosFiltrados=useMemo(()=>{
-    const base=oohFaturadosTodosMeses?oohFaturados:[...oohFaturadosDoMes,...oohFaturadosSemNota];
+    const base=oohFaturadosTodosMeses?oohFaturadosTodosOsMeses:oohFaturadosDoMes;
     const termo=oohFaturadosBusca.trim().toLowerCase();
     if(!termo)return base;
     return base.filter(p=>p.br.toLowerCase().includes(termo)||s(p.cliente).toLowerCase().includes(termo));
-  },[oohFaturados,oohFaturadosDoMes,oohFaturadosSemNota,oohFaturadosTodosMeses,oohFaturadosBusca]);
+  },[oohFaturadosTodosOsMeses,oohFaturadosDoMes,oohFaturadosTodosMeses,oohFaturadosBusca]);
 
   // Resumo do mês pros cards do topo — visão executiva antes de entrar no detalhe
   const oohResumoMes=useMemo(()=>{
@@ -4166,7 +4197,7 @@ export default function App(){
                 {/* ── CAMADA 1: só os 3 números que importam de cara ─────────── */}
                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
                   <ExecKPICard tone="slate" icon={LayoutDashboard} label="Previsto no mês" value={fmtMoeda(oohResumoMes.valorPrevisto)} trendLabel={`${oohResumoMes.totalProjetos} projeto(s) — inclui antecipados/reprogramados pra ${oohMesRef}`}/>
-                  <ExecKPICard tone="teal" icon={CheckCircle} label={`Faturado em ${oohMesRef}`} value={fmtMoeda(oohFaturadosDoMes.reduce((a,p)=>a+p.valorTotal,0))} trendLabel={`${oohFaturadosDoMes.length} projeto(s) com nota emitida esse mês`}/>
+                  <ExecKPICard tone="teal" icon={CheckCircle} label={`Faturado em ${oohMesRef}`} value={fmtMoeda(oohFaturadosDoMes.reduce((a,p)=>a+p.valorLiquido,0))} trendLabel={`${oohFaturadosDoMes.length} projeto(s) com nota emitida esse mês`}/>
                   <ExecKPICard tone="red" icon={AlertTriangle} label="Atrasado (meses anteriores)" value={fmtMoeda(oohResumoMes.valorAtrasado)} trendLabel={`${oohAtrasados.length} projeto(s) parado(s)`}/>
                 </div>
 
@@ -4380,7 +4411,7 @@ export default function App(){
                   <div className="bg-white rounded-2xl border border-teal-200 overflow-hidden">
                     <div className="px-5 py-3.5 border-b border-teal-100 bg-teal-50/50 flex items-center justify-between flex-wrap gap-2">
                       <p className="text-sm font-black text-teal-800">
-                        {oohFaturadosTodosMeses?'Faturados (todos os meses)':`Faturados em ${oohMesRef}`} <span className="text-teal-400 font-bold">({oohFaturadosFiltrados.length}{oohFaturadosBusca?` de ${oohFaturadosTodosMeses?oohFaturados.length:oohFaturadosDoMes.length+oohFaturadosSemNota.length}`:''})</span>
+                        {oohFaturadosTodosMeses?'Faturados (todos os meses)':`Faturados em ${oohMesRef}`} <span className="text-teal-400 font-bold">({oohFaturadosFiltrados.length})</span>
                       </p>
                       <div className="flex items-center gap-2">
                         <button onClick={()=>setOohFaturadosTodosMeses(v=>!v)} className={`text-[11px] font-bold px-3 py-1.5 rounded-lg border ${oohFaturadosTodosMeses?'bg-teal-600 text-white border-teal-600':'bg-white text-teal-700 border-teal-200'}`}>
@@ -4389,11 +4420,9 @@ export default function App(){
                         <input value={oohFaturadosBusca} onChange={e=>setOohFaturadosBusca(e.target.value)} placeholder="Buscar BR ou cliente..." className="text-xs border border-teal-200 rounded-lg px-3 py-1.5 w-56 focus:outline-none focus:ring-2 focus:ring-teal-200"/>
                       </div>
                     </div>
-                    {!oohFaturadosTodosMeses&&oohFaturadosSemNota.length>0&&(
-                      <p className="px-5 py-1.5 text-[11px] text-amber-600 bg-amber-50 border-b border-amber-100">⚠ {oohFaturadosSemNota.length} marcado(s) Faturado sem nenhuma nota encontrada — mostrados abaixo mesmo assim, já que não dá pra saber de qual mês são.</p>
-                    )}
+                    <p className="px-5 py-1.5 text-[11px] text-slate-400 bg-slate-50 border-b border-slate-100">Todo BR com nota fiscal emitida {oohFaturadosTodosMeses?'em qualquer mês':`em ${oohMesRef}`} — igual a lógica da Mestra PCP, independente de qualquer marcação manual de Andamento.</p>
                     {oohFaturadosFiltrados.length===0?(
-                      <p className="text-sm text-slate-400 text-center py-10">{oohFaturadosBusca?'Nenhum faturado encontrado com esse termo.':'Nenhum projeto faturado ainda.'}</p>
+                      <p className="text-sm text-slate-400 text-center py-10">{oohFaturadosBusca?'Nenhum faturado encontrado com esse termo.':'Nenhuma nota emitida nesse período.'}</p>
                     ):(
                       <div className="overflow-x-auto custom-scrollbar">
                         <table className="w-full text-sm">
@@ -4401,25 +4430,27 @@ export default function App(){
                             <tr className="text-left text-[10px] font-black text-slate-500 uppercase tracking-wider">
                               <th className="px-3 py-2.5">BR</th>
                               <th className="px-3 py-2.5">Cliente</th>
-                              <th className="px-3 py-2.5">Previsto (CP)</th>
-                              <th className="px-3 py-2.5">Data Faturamento</th>
-                              <th className="px-3 py-2.5">Nº Nota</th>
-                              <th className="px-3 py-2.5 text-right">Valor</th>
+                              {oohFaturadosTodosMeses&&<th className="px-3 py-2.5">Mês(es) com nota</th>}
+                              <th className="px-3 py-2.5">Andamento</th>
+                              <th className="px-3 py-2.5 text-right">Nº Notas</th>
+                              <th className="px-3 py-2.5 text-right">Valor Bruto</th>
+                              <th className="px-3 py-2.5 text-right">Valor Líquido</th>
                               <th className="px-3 py-2.5">Ação</th>
                             </tr>
                           </thead>
                           <tbody className="divide-y divide-slate-100">
-                            {oohFaturadosFiltrados.map(p=>(
-                              <tr key={p.br} className="hover:bg-slate-50">
+                            {oohFaturadosFiltrados.map((p,i)=>(
+                              <tr key={p.br+i} className="hover:bg-slate-50">
                                 <td className="px-3 py-2 font-bold text-indigo-700 whitespace-nowrap">{p.br}</td>
                                 <td className="px-3 py-2 text-slate-600 truncate max-w-[200px]">{s(p.cliente)}</td>
-                                <td className="px-3 py-2 text-slate-500 whitespace-nowrap">{fmtDt(p.dataPrevista)}</td>
-                                <td className="px-3 py-2 font-bold whitespace-nowrap">
-                                  {p.dataFaturamento?<span className="text-teal-700">{fmtDt(p.dataFaturamento)}</span>:<span className="text-amber-600" title="Marcado como Faturado manualmente, mas não achei nenhuma nota emitida pra esse BR ainda">sem nota encontrada ⚠</span>}
+                                {oohFaturadosTodosMeses&&<td className="px-3 py-2 text-slate-500 whitespace-nowrap">{(p.mesesComNota||[]).join(', ')}</td>}
+                                <td className="px-3 py-2 whitespace-nowrap">{p.andamento?<span className={`text-[10px] font-black px-1.5 py-0.5 rounded-full border ${ANDAMENTO_CFG[p.andamento]?.cls||ANDAMENTO_CFG.A_INICIAR.cls}`}>{ANDAMENTO_LABEL[p.andamento]||p.andamento}</span>:<span className="text-[10px] text-slate-300">sem pedido</span>}</td>
+                                <td className="px-3 py-2 text-right text-slate-500 whitespace-nowrap">{p.notas}</td>
+                                <td className="px-3 py-2 text-right font-semibold text-slate-500 whitespace-nowrap">{fmtMoeda(p.valorBruto)}</td>
+                                <td className="px-3 py-2 text-right font-bold text-teal-700 whitespace-nowrap">{fmtMoeda(p.valorLiquido)}</td>
+                                <td className="px-3 py-2 whitespace-nowrap">
+                                  <button onClick={()=>{const proj=oohProjetosComProducao.find(pr=>pr.br===p.br);if(proj)abrirReprogramarOOH(proj);else addToast('Sem pedido sincronizado pra esse BR — nada pra reprogramar.','error');}} className="text-indigo-600 font-bold text-xs hover:underline">Reprogramar</button>
                                 </td>
-                                <td className="px-3 py-2 text-slate-500 whitespace-nowrap">{p.numeroNotaFaturamento||'—'}</td>
-                                <td className="px-3 py-2 text-right font-bold text-slate-700 whitespace-nowrap">{fmtMoeda(p.valorTotal)}</td>
-                                <td className="px-3 py-2 whitespace-nowrap"><button onClick={()=>abrirReprogramarOOH(p)} className="text-indigo-600 font-bold text-xs hover:underline">Reprogramar</button></td>
                               </tr>
                             ))}
                           </tbody>
