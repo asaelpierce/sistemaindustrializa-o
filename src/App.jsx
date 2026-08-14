@@ -978,21 +978,13 @@ export default function App(){
     setPlanilhaMestreCampos(prev=>({...prev,[br]:{...prev[br],[campo]:valor}}));
     try{
       const atual=planilhaMestreCampos[br]||{};
-      const payload={
+      // Status OP e Andamento são campos INDEPENDENTES — Status OP=Entregue significa
+      // que o material saiu pra produção ou pro almoxarifado, não que foi FATURADO.
+      // Não existe relação automática entre os dois, cada um é preenchido por conta.
+      const{error}=await supabase.from('andamento_producao').upsert({
         br,andamento:atual.andamento||'A_INICIAR',definicao:atual.definicao||null,escopo2:atual.escopo2||null,observacao:atual.observacao||null,status_op:atual.status_op||'NAO_ENTREGUE',
         [campo]:valor,atualizado_em:new Date().toISOString(),
-      };
-      // Status OP e Andamento são os dois campos manuais que o PCP já preenche — não
-      // dado automático do Sankhya que pode atrasar. Se o PCP marca "Entregue" no
-      // Status OP, é uma confirmação dele mesmo; Andamento acompanha pra Faturado
-      // automaticamente, sem precisar marcar os dois separados. Achado real: 26 BRs
-      // estavam com Status OP=Entregue mas Andamento ainda em Em Andamento/Concluído/
-      // A Iniciar, nunca sincronizados.
-      if(campo==='status_op'&&valor==='ENTREGUE'){
-        payload.andamento='FATURADO';
-        setPlanilhaMestreCampos(prev=>({...prev,[br]:{...prev[br],andamento:'FATURADO'}}));
-      }
-      const{error}=await supabase.from('andamento_producao').upsert(payload,{onConflict:'br'});
+      },{onConflict:'br'});
       if(error)throw error;
       return true;
     }catch(e){addToast('Erro ao salvar: '+e.message,'error');throw e;}
@@ -1458,24 +1450,26 @@ export default function App(){
   },[supabase]);
   useEffect(()=>{if(supabase&&aba==='PLANEJAMENTO')fetchPlanejamentoFechamentos();},[supabase,aba]);
 
-  // PLANEJAMENTO FECHADO É A FONTE DA VERDADE — não o cálculo dinâmico do Sankhya.
-  // O PCP monta o planejamento uma vez por mês (junta os projetos, decide o que entra)
-  // e FECHA — isso vira um retrato congelado, é o que vai pra diretoria. Depois disso,
-  // não importa se o Sankhya atualizar valor/data/quantidade: o planejamento fechado
-  // continua exatamente como foi decidido. Só volta a ser dinâmico ENQUANTO o mês
-  // ainda não foi fechado nenhuma vez (aí ainda não existe "a decisão", então mostra
-  // a base dinâmica normal pra ele montar o fechamento inicial em cima dela).
+  // PLANEJAMENTO FECHADO fixa só a LISTA DE PROJETOS do mês (quais BRs fazem parte) —
+  // é a decisão que o PCP acorda com a diretoria. O VALOR e o STATUS (se já faturou
+  // ou não, andamento, etc.) de cada projeto continuam vivos, puxando sempre do
+  // Sankhya/Planilha Mestre. Fechar não é "parar no tempo" — é só decidir quem entra
+  // na conta do mês; o dado de cada um segue atualizando normalmente.
   const planejamentoFechamentoAtual=planejamentoFechamentos[planejamentoMesRef]||null;
   const planejamentoDinamicoDoMes=useMemo(()=>planilhaMestreComMesEfetivo.filter(r=>r.mesEfetivo===planejamentoMesRef),[planilhaMestreComMesEfetivo,planejamentoMesRef]);
   const planejamentoDoMes=useMemo(()=>{
     if(!planejamentoFechamentoAtual)return planejamentoDinamicoDoMes;
-    // Usa os dados ATUAIS do BR (cliente, andamento etc. sempre atualizados — só o
-    // VALOR do snapshot é congelado), mas restrito à lista de BRs que foi fechada.
+    // Restringe à lista de BRs que foi fechada, mas usa o dado ATUAL de cada um —
+    // valor, andamento, status de faturamento, tudo sempre vivo.
     const porBrAtual={};
     planilhaMestreComMesEfetivo.forEach(r=>{porBrAtual[r.br]=r;});
-    return planejamentoFechamentoAtual.snapshot.map(s=>{
-      const atual=porBrAtual[s.br];
-      return atual?{...atual,valorTotalFechado:s.valorPrevisto}:{br:s.br,cliente:s.cliente,valorTotal:s.valorPrevisto,valorTotalFechado:s.valorPrevisto,valorAFaturar:0,andamentoEfetivo:'A_INICIAR',foraDoSankhya:true};
+    return planejamentoFechamentoAtual.brs.map(br=>{
+      const atual=porBrAtual[br];
+      if(atual)return atual;
+      // BR fechado que não aparece mais na base viva (ex: mudou de mês no Sankhya
+      // por algum motivo) — mostra como "não encontrado", pra não inventar dado.
+      const snap=planejamentoFechamentoAtual.snapshot.find(x=>x.br===br);
+      return{br,cliente:snap?.cliente||'—',valorTotal:0,valorAFaturar:0,andamentoEfetivo:'A_INICIAR',naoEncontradoMaisNoMes:true};
     });
   },[planejamentoFechamentoAtual,planejamentoDinamicoDoMes,planilhaMestreComMesEfetivo]);
 
@@ -1492,10 +1486,10 @@ export default function App(){
     const jaFechado=!!planejamentoFechamentoAtual;
     const brsParaFechar=jaFechado?planejamentoDoMes:planejamentoDinamicoDoMes;
     if(brsParaFechar.length===0)return addToast('Nenhum projeto pra fechar.','error');
-    if(!window.confirm(`${jaFechado?'Re-fechar':'Fechar'} o planejamento de ${planejamentoMesRef} com ${brsParaFechar.length} projeto(s)?\n\nIsso vira a decisão oficial — não muda mais sozinho, mesmo se o Sankhya atualizar depois.`))return;
+    if(!window.confirm(`${jaFechado?'Re-fechar':'Fechar'} o planejamento de ${planejamentoMesRef} com ${brsParaFechar.length} projeto(s)?\n\nIsso define QUAIS projetos fazem parte do mês — valor e status continuam sempre atualizados ao vivo.`))return;
     setFechandoPlanejamento(true);
     try{
-      const snapshot=brsParaFechar.map(r=>({br:r.br,cliente:r.cliente,valorPrevisto:r.valorTotalFechado??r.valorTotal}));
+      const snapshot=brsParaFechar.map(r=>({br:r.br,cliente:r.cliente,valorPrevisto:r.valorTotal}));
       const valorTotal=snapshot.reduce((a,s)=>a+s.valorPrevisto,0);
       const{error}=await supabase.from('ooh_fechamentos_mensais').upsert([{
         mes_referencia:planejamentoMesRef,brs_selecionados:snapshot,total_previstos:planejamentoDinamicoDoMes.length,
@@ -1503,7 +1497,7 @@ export default function App(){
         fechado_por:s(usuarioLogado?.nome),fechado_em:new Date().toISOString(),atualizado_em:new Date().toISOString(),
       }]);
       if(error)throw error;
-      addToast(`Planejamento de ${planejamentoMesRef} fechado: ${snapshot.length} projeto(s), ${fmtMoeda(valorTotal)}.`);
+      addToast(`Planejamento de ${planejamentoMesRef} fechado: ${snapshot.length} projeto(s).`);
       fetchPlanejamentoFechamentos();
     }catch(e){addToast('Erro ao fechar: '+e.message,'error');}
     finally{setFechandoPlanejamento(false);}
@@ -1532,7 +1526,7 @@ export default function App(){
   const planejamentoFaturadosNoMes=useMemo(()=>planilhaMestreComMesEfetivo.filter(r=>(r.notas||[]).some(n=>s(n.dataFaturamento).slice(0,7)===planejamentoMesRef)),[planilhaMestreComMesEfetivo,planejamentoMesRef]);
   const planejamentoAcompanhamento=useMemo(()=>calcularAcompanhamentoSemanal(planejamentoMesRef),[calcularAcompanhamentoSemanal,planejamentoMesRef]);
   const planejamentoResumo=useMemo(()=>{
-    const valorPrevisto=planejamentoDoMes.reduce((a,r)=>a+(r.valorTotalFechado??r.valorTotal),0);
+    const valorPrevisto=planejamentoDoMes.reduce((a,r)=>a+r.valorTotal,0);
     const valorAFaturar=planejamentoDoMes.reduce((a,r)=>a+(r.valorAFaturar||0),0);
     const valorAtrasado=planejamentoAtrasados.reduce((a,r)=>a+r.valorVencidoSemAviso,0);
     return{valorPrevisto,valorAFaturar,valorAtrasado,totalProjetos:planejamentoDoMes.length,totalAtrasados:planejamentoAtrasados.length};
@@ -4480,7 +4474,7 @@ export default function App(){
                       className="bg-white/10 border border-white/20 text-white text-sm font-black rounded-xl px-3 py-2 focus:outline-none focus:border-white/50 [color-scheme:dark]"/>
                     {planejamentoFechamentoAtual?(
                       <span className="inline-flex items-center gap-1.5 text-[11px] font-bold text-teal-300 bg-teal-500/10 border border-teal-400/30 rounded-full px-3 py-1.5" title={`Fechado por ${s(planejamentoFechamentoAtual.fechadoPor)||'—'} em ${fmtDt(planejamentoFechamentoAtual.fechadoEm)}`}>
-                        <CheckCircle className="w-3.5 h-3.5"/>Planejamento FECHADO — {planejamentoFechamentoAtual.totalProjetos} projeto(s), congelado
+                        <CheckCircle className="w-3.5 h-3.5"/>Lista FECHADA — {planejamentoFechamentoAtual.totalProjetos} projeto(s) definido(s), dados sempre ao vivo
                       </span>
                     ):(
                       <span className="inline-flex items-center gap-1.5 text-[11px] font-bold text-amber-300 bg-amber-500/10 border border-amber-400/30 rounded-full px-3 py-1.5">
@@ -4492,7 +4486,7 @@ export default function App(){
                     <div>
                       <p className="text-[10px] font-black text-white/40 uppercase tracking-wider">Previsto no mês</p>
                       <p className="text-2xl font-black text-white mt-0.5 tabular-nums">{fmtMoeda(planejamentoResumo.valorPrevisto)}</p>
-                      <p className="text-[11px] text-white/40 mt-0.5">{planejamentoResumo.totalProjetos} projeto(s){planejamentoFechamentoAtual?' — valor congelado no fechamento':' — inclui antecipados/reprogramados pra '+planejamentoMesRef}</p>
+                      <p className="text-[11px] text-white/40 mt-0.5">{planejamentoResumo.totalProjetos} projeto(s){planejamentoFechamentoAtual?' — lista fechada, valor sempre atualizado':' — inclui antecipados/reprogramados pra '+planejamentoMesRef}</p>
                     </div>
                     <div>
                       <p className="text-[10px] font-black text-white/40 uppercase tracking-wider">A faturar no mês</p>
