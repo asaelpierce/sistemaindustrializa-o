@@ -993,6 +993,66 @@ export default function App(){
 
   const MESES_PT=['JANEIRO','FEVEREIRO','MARÇO','ABRIL','MAIO','JUNHO','JULHO','AGOSTO','SETEMBRO','OUTUBRO','NOVEMBRO','DEZEMBRO'];
 
+  const [opsSankhyaItens,setOpsSankhyaItens]=useState([]);
+
+  const opsSankhyaAgrupadas=useMemo(()=>{
+    const porNuapo={};
+    opsSankhyaItens.forEach(it=>{
+      if(!porNuapo[it.nuapo])porNuapo[it.nuapo]={
+        nuapo:it.nuapo,br:it.br,situacao:it.situacao_op,processo:it.processo_produtivo,
+        produtoAcabado:it.produto_acabado_descricao,dataApontamento:it.data_apontamento,
+        nroOrdemProducao:it.nro_ordem_producao,itens:[],
+        // Vínculo por inferência (produto+data), usado só quando a cadeia formal do
+        // Sankhya não linkou a OP a nenhum BR (produção "solta", pra estoque).
+        // Nunca é automático: vinculoStatus só vira 'confirmado' depois de alguém
+        // revisar os candidatos na tela e confirmar manualmente.
+        vinculoStatus:it.vinculo_status||'sem_sugestao',
+        sugestoesVinculo:it.sugestoes_vinculo||[],
+        brConfirmado:it.br_confirmado,
+        nunotaConfirmado:it.nunota_confirmado,
+      };
+      porNuapo[it.nuapo].itens.push(it);
+    });
+    // brEfetivo = o que deve ser usado em qualquer cruzamento (Produção por setor etc.):
+    // o BR direto do Sankhya quando existe, senão o BR confirmado manualmente. Nunca usa
+    // sugestão pendente — essa só serve pra mostrar o aviso de revisão.
+    return Object.values(porNuapo).map(o=>({...o,brEfetivo:o.br||(o.vinculoStatus==='confirmado'?o.brConfirmado:null)}))
+      .sort((a,b)=>(b.dataApontamento||'').localeCompare(a.dataApontamento||''));
+  },[opsSankhyaItens]);
+
+  // Dedução automática do ESCOPO2 (KALIMPACT/REVESTIMENTO/PG1/PG2/SERVIÇO), quando
+  // ninguém preencheu manualmente. Regra descoberta cruzando o processo produtivo real
+  // do Sankhya com os 87 BRs que a planilha do PCP já classificou — bateu 100%:
+  //   FABRICAÇÃO DE PEÇAS VULCANIZADAS (PINTADAS/BICROMATIZADAS) → KALIMPACT
+  //   CALDEIRARIA E REVESTIMENTO                                → REVESTIMENTO
+  //   REVENDA - PG1                                             → PG1
+  //   REVESTIMENTO PG2                                          → PG2
+  //   CONTRATO ARCELOR (PRODUTO)                                → SERVIÇO
+  // Só entra em jogo se não tiver escopo2 manual — nunca sobrescreve o PCP.
+  const deduzirEscopo2PorProcesso=processo=>{
+    const p=s(processo).toUpperCase();
+    if(!p)return null;
+    if(p.includes('VULCANIZADA'))return 'KALIMPACT';
+    if(p.includes('CALDEIRARIA')||p.includes('REVESTIMENTO PG2'))return p.includes('PG2')?'PG2':'REVESTIMENTO';
+    if(p.includes('PG1'))return 'PG1';
+    if(p.includes('CONTRATO ARCELOR'))return 'SERVIÇO';
+    return null;
+  };
+  // Fallback pela descrição do item quando não há OP no Sankhya ainda (projeto "A
+  // Iniciar") — "BANDEJA" e a família WPHSKRX conferida é sempre KALIMPACT nos dados.
+  const deduzirEscopo2PorDescricao=descricao=>{
+    const d=s(descricao).toUpperCase();
+    if(/BANDEJA|KALIMPACT|KALOCER/.test(d))return 'KALIMPACT';
+    if(/^SERVI/.test(d))return 'SERVIÇO';
+    return null;
+  };
+  // Processo produtivo mais recente por BR (brEfetivo, igual o resto do app já faz).
+  const processoPorBR=useMemo(()=>{
+    const m={};
+    opsSankhyaAgrupadas.forEach(o=>{if(o.brEfetivo&&o.processo&&!m[o.brEfetivo])m[o.brEfetivo]=o.processo;});
+    return m;
+  },[opsSankhyaAgrupadas]);
+
   const planilhaMestreLinhas=useMemo(()=>{
     const porBR={};
     mestraDb.forEach(r=>{
@@ -1074,11 +1134,16 @@ export default function App(){
       // É a data-limite pra entrar na esteira de fabricação — usada pra ordenar a tabela
       // por urgência (quem já devia ter começado aparece primeiro).
       const dataInicioProjeto=dataReferencia?subtrairDiasISO(dataReferencia,20):null;
+      // ESCOPO2: usa o que o PCP preencheu manualmente; se não tiver, deduz pelo
+      // processo produtivo real do Sankhya (mais confiável, regra validada contra 87
+      // BRs conhecidos) e, na falta disso (projeto ainda sem OP), pela descrição do
+      // item. Nunca sobrescreve o que já foi preenchido manualmente.
+      const escopo2Auto=deduzirEscopo2PorProcesso(processoPorBR[g.br])||deduzirEscopo2PorDescricao(g.descricoes[0]);
       return{
         ...g,dataEntregaCP,dataReferencia,dataInicioProjeto,mes,mesChave,semana,statusOP,andamento:manual.andamento,andamentoEfetivo:andamento,jaFaturado,pctQtd,pctValor,percentualFaturado,dataFaturamento,indicador,descricaoIndicador,reprogramacao:g.reprogramacao,
         status:g.situacaoEspecial?.status||null,
         descricaoResumo:g.descricoes.slice(0,1).join(', ')||'—',
-        definicao:manual.definicao||'',escopo2:manual.escopo2||'',observacao:manual.observacao||'',
+        definicao:manual.definicao||'',escopo2:manual.escopo2||escopo2Auto||'',escopo2Deduzido:!manual.escopo2&&!!escopo2Auto,observacao:manual.observacao||'',
       };
     }).sort((a,b)=>(a.dataInicioProjeto||'9999').localeCompare(b.dataInicioProjeto||'9999'));
   },[mestraDb,planilhaMestreCampos]);
@@ -1105,7 +1170,6 @@ export default function App(){
   // consumidos e o setor (Processo Produtivo). Objetivo: saber qual OP é de
   // qual projeto, e poder ver os itens dela direto no portal.
   // ════════════════════════════════════════════════════════════════════════
-  const [opsSankhyaItens,setOpsSankhyaItens]=useState([]);
   const [opsSankhyaLoading,setOpsSankhyaLoading]=useState(false);
   const [opsSankhyaErro,setOpsSankhyaErro]=useState('');
   const [opsSankhyaBusca,setOpsSankhyaBusca]=useState('');
@@ -1178,30 +1242,6 @@ export default function App(){
 
   // Agrupa os itens (um por MP consumida) em OPs — uma linha por NUAPO, com a
   // lista de itens dentro. Isso é o que "saber qual OP de cada projeto" pede.
-  const opsSankhyaAgrupadas=useMemo(()=>{
-    const porNuapo={};
-    opsSankhyaItens.forEach(it=>{
-      if(!porNuapo[it.nuapo])porNuapo[it.nuapo]={
-        nuapo:it.nuapo,br:it.br,situacao:it.situacao_op,processo:it.processo_produtivo,
-        produtoAcabado:it.produto_acabado_descricao,dataApontamento:it.data_apontamento,
-        nroOrdemProducao:it.nro_ordem_producao,itens:[],
-        // Vínculo por inferência (produto+data), usado só quando a cadeia formal do
-        // Sankhya não linkou a OP a nenhum BR (produção "solta", pra estoque).
-        // Nunca é automático: vinculoStatus só vira 'confirmado' depois de alguém
-        // revisar os candidatos na tela e confirmar manualmente.
-        vinculoStatus:it.vinculo_status||'sem_sugestao',
-        sugestoesVinculo:it.sugestoes_vinculo||[],
-        brConfirmado:it.br_confirmado,
-        nunotaConfirmado:it.nunota_confirmado,
-      };
-      porNuapo[it.nuapo].itens.push(it);
-    });
-    // brEfetivo = o que deve ser usado em qualquer cruzamento (Produção por setor etc.):
-    // o BR direto do Sankhya quando existe, senão o BR confirmado manualmente. Nunca usa
-    // sugestão pendente — essa só serve pra mostrar o aviso de revisão.
-    return Object.values(porNuapo).map(o=>({...o,brEfetivo:o.br||(o.vinculoStatus==='confirmado'?o.brConfirmado:null)}))
-      .sort((a,b)=>(b.dataApontamento||'').localeCompare(a.dataApontamento||''));
-  },[opsSankhyaItens]);
 
   const opsSankhyaOpcoesProcesso=useMemo(()=>[...new Set(opsSankhyaAgrupadas.map(o=>o.processo).filter(Boolean))].sort(),[opsSankhyaAgrupadas]);
 
@@ -1634,7 +1674,13 @@ export default function App(){
           const qtdPedida=pedido?.qtdPedida||0;
           // QTDENTREGUE do Sankhya é a fonte oficial de "quanto deste item já saiu".
           // A quantidade das NFs entra como conferência/fallback quando o item não veio do pedido.
-          const qtdEntregueSankhya=pedido?pedido.qtdEntregue:(fat?.qtdFaturada||0);
+          // "O sistema tem que ter essa inteligência de sozinho perceber que faturou no
+          // Sankhya" — antes só usava nota_venda_itens (fat) quando NÃO tinha pedido.
+          // Mas mesmo COM pedido, QTDENTREGUE às vezes atrasa/nunca atualiza apesar de
+          // já ter nota real emitida pra aquele item específico — cruza os dois e usa
+          // sempre o maior, pra refletir o faturamento assim que ele aparecer na nota,
+          // sem esperar o Sankhya atualizar a entrega.
+          const qtdEntregueSankhya=Math.max(pedido?.qtdEntregue||0,fat?.qtdFaturada||0);
           // Piso do PCP: se ele confirmou manualmente uma quantidade maior do que o
           // Sankhya reporta, vale a dele — nunca o contrário (não deixa reduzir).
           const chaveManual=`${r.br}|${r.nunota||'SEM'}|${cod}`;
@@ -2294,6 +2340,7 @@ export default function App(){
     if(/KALFIX|KALPOXY|CHOCKYBAR|KALOCER|ABRESIST/.test(d))return 'Direto p/ Expedição';
     return null;
   };
+
 
   // Visão real por projeto: base é o ESCOPO DO MÊS INTEIRO (todo BR previsto pra
   // entrega naquele mês, vindo do Mestra) — não só quem já tem OP no Sankhya.
