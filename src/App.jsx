@@ -1375,8 +1375,11 @@ export default function App(){
     const totalSemanas=Math.ceil(diasNoMes/7);
 
     // PREVISTO = carteira com mês EFETIVO igual ao selecionado (já considera
-    // reprogramação/antecipação) — o compromisso real do mês, não só o cru do Sankhya.
-    const linhasDoMes=planilhaMestreComMesEfetivo.filter(r=>r.mesEfetivo===mesRef);
+    // reprogramação/antecipação), SEM os já faturados — mesma base usada no painel de
+    // KPIs (planejamentoResumo/planejamentoDoMes). Antes o gráfico incluía todo mundo
+    // (faturado ou não) enquanto o painel já excluía — dois números de "Previsto"
+    // diferentes pro mesmo mês, o que não batia e confundia quem olhava os dois juntos.
+    const linhasDoMes=planilhaMestreComMesEfetivo.filter(r=>r.mesEfetivo===mesRef&&!r.jaFaturado);
     const valorPrevisto=linhasDoMes.reduce((a,r)=>a+r.valorTotal,0);
     const metaSemanal=totalSemanas>0?valorPrevisto/totalSemanas:0;
 
