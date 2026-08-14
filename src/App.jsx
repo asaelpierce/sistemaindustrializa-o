@@ -1466,7 +1466,7 @@ export default function App(){
     }
   },[supabase]);
 
-  useEffect(()=>{if(supabase&&aba==='MESTRA'&&mestraFatPorMesNeg.length===0)fetchMestraFaturamentoPorNegociacao();},[supabase,aba]);
+  useEffect(()=>{if(supabase&&aba==='PLANILHA_MESTRE'&&mestraFatPorMesNeg.length===0)fetchMestraFaturamentoPorNegociacao();},[supabase,aba]);
 
   const mestraFatNegChartData=useMemo(()=>
     mestraFatPorMesNeg.slice(-14).map(g=>({
