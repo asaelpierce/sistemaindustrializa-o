@@ -544,6 +544,32 @@ function FiltroMulti({label,opcoes,selecionados,onToggle,onLimpar,aberto,onAbrir
   );
 }
 
+// Campo de faturamento parcial manual por item — dá liberdade pro PCP confirmar
+// qualquer quantidade (não precisa ser tudo ou nada), com observação opcional.
+function ItemFaturamentoManualForm({item,onSalvar}){
+  const [qtd,setQtd]=React.useState(item.qtdManual||'');
+  const [obs,setObs]=React.useState(item.observacaoManual||'');
+  const [aberto,setAberto]=React.useState(false);
+  if(!aberto){
+    return(
+      <button onClick={()=>setAberto(true)} className="text-[11px] font-bold text-indigo-600 hover:underline mt-2">
+        {item.qtdManual>0?'Editar confirmação manual':'Confirmar faturamento parcial deste item'}
+      </button>
+    );
+  }
+  return(
+    <div className="mt-2.5 flex items-center gap-2 flex-wrap">
+      <input type="number" min="0" max={item.qtdPedida} step="any" value={qtd} onChange={e=>setQtd(e.target.value)}
+        placeholder={`0 a ${item.qtdPedida}`} className="w-24 text-xs border border-slate-200 rounded-lg px-2 py-1.5 focus:outline-none focus:ring-2 focus:ring-indigo-200"/>
+      <span className="text-[11px] text-slate-400">{item.unidade} confirmado(s)</span>
+      <input value={obs} onChange={e=>setObs(e.target.value)} placeholder="Observação (opcional)"
+        className="flex-1 min-w-[140px] text-xs border border-slate-200 rounded-lg px-2 py-1.5 focus:outline-none focus:ring-2 focus:ring-indigo-200"/>
+      <button onClick={()=>{onSalvar(item,qtd,obs);setAberto(false);}} className="text-[11px] font-bold text-white bg-indigo-600 rounded-lg px-3 py-1.5 hover:bg-indigo-700">Salvar</button>
+      <button onClick={()=>setAberto(false)} className="text-[11px] font-bold text-slate-400 hover:text-slate-600">Cancelar</button>
+    </div>
+  );
+}
+
 function Sel({className="",children,...props}){
   return<select className={`w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-2.5 text-sm font-medium text-slate-900 outline-none focus:border-indigo-400 focus:bg-white transition-colors cursor-pointer ${className}`} {...props}>{children}</select>;
 }
@@ -944,6 +970,25 @@ export default function App(){
       if(error)throw error;
       return true;
     }catch(e){addToast('Erro ao salvar: '+e.message,'error');throw e;}
+  };
+
+  // Dá liberdade pro PCP registrar faturamento parcial item a item — ex: pedido com 4
+  // itens de 10 unidades, ele pode confirmar 1 de um, 5 de outro, sem esperar o
+  // Sankhya atualizar QTDENTREGUE (que atrasa/nunca atualiza mesmo com nota real).
+  const salvarFaturamentoManualItem=async(item,quantidade,observacao)=>{
+    const qtd=Number(quantidade);
+    if(isNaN(qtd)||qtd<0)return addToast('Quantidade inválida.','error');
+    if(qtd>item.qtdPedida)return addToast(`Não pode passar da quantidade pedida (${item.qtdPedida}).`,'error');
+    try{
+      const{error}=await supabase.from('faturamento_manual_itens').upsert({
+        id:item.chaveManual,br:mestraNotasSel.br,nunota:item.nunota,cod_produto:item.codProduto,
+        descricao:item.descricao,quantidade_faturada:qtd,observacao:observacao||null,
+        criado_por:s(usuarioLogado?.nome),atualizado_em:new Date().toISOString(),
+      });
+      if(error)throw error;
+      addToast(`${item.descricao.slice(0,30)}: ${qtd} ${item.unidade} confirmado(s).`);
+      fetchMestra();
+    }catch(e){addToast('Erro ao salvar faturamento parcial: '+e.message,'error');}
   };
 
   const MESES_PT=['JANEIRO','FEVEREIRO','MARÇO','ABRIL','MAIO','JUNHO','JULHO','AGOSTO','SETEMBRO','OUTUBRO','NOVEMBRO','DEZEMBRO'];
@@ -1441,17 +1486,24 @@ export default function App(){
     if(!supabase)return;
     setMestraLoading(true);setMestraErro('');
     try{
-      const[pedidosItensData,faturamentoRes,notaItensRes,planRes,situacaoRes]=await Promise.all([
+      const[pedidosItensData,faturamentoRes,notaItensRes,planRes,situacaoRes,fatManualRes]=await Promise.all([
         fetchPedidosItensCache(),
         supabase.from('faturamento_resumo').select('br,cliente_nome,net_offer_value,valor_nota,tipmov,data_neg,numero_nota,data_faturamento').eq('tipmov','V'),
         supabase.from('nota_venda_itens').select('br,produto_descricao,cod_produto,quantidade,valor_bruto'),
         supabase.from('ooh_planejamento').select('br,mes_referencia,nova_data,data_original,justificativa,status,criado_em'),
-        supabase.from('situacao_especial_pedido').select('*')
+        supabase.from('situacao_especial_pedido').select('*'),
+        supabase.from('faturamento_manual_itens').select('*'),
       ]);
       if(faturamentoRes.error)throw faturamentoRes.error;
       if(notaItensRes.error)throw notaItensRes.error;
       if(planRes.error)throw planRes.error;
       if(situacaoRes.error)throw situacaoRes.error;
+      if(fatManualRes.error)throw fatManualRes.error;
+
+      // Faturamento parcial marcado manualmente pelo PCP, por item — piso mínimo (nunca
+      // reduz o que o Sankhya já reporta, só complementa quando ele atrasa).
+      const fatManualPorChave={};
+      (fatManualRes.data||[]).forEach(m=>{fatManualPorChave[m.id]=m;});
 
       // Marcação manual do PCP por pedido: PENDENTE (parado por decisão comercial/cliente),
       // CANCELADO, ou DESCONSIDERAR (erro de dado no Sankhya — some do cálculo inteiro).
@@ -1582,7 +1634,12 @@ export default function App(){
           const qtdPedida=pedido?.qtdPedida||0;
           // QTDENTREGUE do Sankhya é a fonte oficial de "quanto deste item já saiu".
           // A quantidade das NFs entra como conferência/fallback quando o item não veio do pedido.
-          const qtdEntregue=pedido?pedido.qtdEntregue:(fat?.qtdFaturada||0);
+          const qtdEntregueSankhya=pedido?pedido.qtdEntregue:(fat?.qtdFaturada||0);
+          // Piso do PCP: se ele confirmou manualmente uma quantidade maior do que o
+          // Sankhya reporta, vale a dele — nunca o contrário (não deixa reduzir).
+          const chaveManual=`${r.br}|${r.nunota||'SEM'}|${cod}`;
+          const manual=fatManualPorChave[chaveManual]||null;
+          const qtdEntregue=Math.max(qtdEntregueSankhya,manual?.quantidade_faturada||0);
           const qtdFaltante=Math.max(0,qtdPedida-qtdEntregue);
           const dataPrevista=pedido?.dataPrevista||null;
           // Data que vale hoje: se o PCP reprogramou, é a nova data; senão, a do sistema.
@@ -1600,7 +1657,9 @@ export default function App(){
             codProduto:pedido?.codProduto||fat?.codProduto||cod,
             descricao:pedido?.descricao||fat?.descricao||'—',
             unidade:pedido?.unidade||'',
-            qtdPedida,qtdEntregue,qtdFaltante,
+            qtdPedida,qtdEntregue,qtdFaltante,qtdEntregueSankhya,
+            qtdManual:manual?.quantidade_faturada||0,observacaoManual:manual?.observacao||'',
+            chaveManual,nunota:r.nunota||null,
             qtdNasNotas:fat?.qtdFaturada||0,
             valorPedido,
             valorEmAberto:valorPedido*fracaoAberta,
@@ -7898,14 +7957,20 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
                     <div className="min-w-0">
                       <p className="text-sm font-bold text-slate-900 truncate">{s(it.codProduto)} — {s(it.descricao)}</p>
                       <p className="text-xs text-slate-500 mt-0.5">
-                        Pedido: {fmtD(it.qtdPedida)} {it.unidade} · Entregue: {fmtD(it.qtdEntregue)} {it.unidade} · Falta: <span className={`font-bold ${it.qtdFaltante>0?'text-amber-600':'text-emerald-600'}`}>{fmtD(it.qtdFaltante)} {it.unidade}</span>
+                        Pedido: {fmtD(it.qtdPedida)} {it.unidade} · Sankhya: {fmtD(it.qtdEntregueSankhya)} {it.unidade} · Falta: <span className={`font-bold ${it.qtdFaltante>0?'text-amber-600':'text-emerald-600'}`}>{fmtD(it.qtdFaltante)} {it.unidade}</span>
                       </p>
-                      {it.qtdPedida>0&&it.qtdNasNotas>0&&Math.abs(it.qtdNasNotas-it.qtdEntregue)>0.01&&(
-                        <p className="text-[10px] text-slate-400 mt-0.5">Nas notas fiscais: {fmtD(it.qtdNasNotas)} {it.unidade}</p>
+                      {it.qtdManual>0&&(
+                        <p className="text-[11px] font-bold text-indigo-600 mt-1">✓ PCP confirmou {fmtD(it.qtdManual)} {it.unidade} manualmente{it.observacaoManual?` — "${s(it.observacaoManual)}"`:''}</p>
                       )}
                     </div>
                     <span className={`text-[9px] font-black px-2 py-0.5 rounded-full border whitespace-nowrap ${cfg.cls}`}>{cfg.label}</span>
                   </div>
+                  {/* Liberdade pro PCP: registrar quanto DESTE item já foi faturado de
+                      verdade, independente do que o Sankhya mostra — cobre o caso comum
+                      de QTDENTREGUE atrasar mesmo com nota real emitida. */}
+                  {it.qtdPedida>0&&(
+                    <ItemFaturamentoManualForm item={it} onSalvar={salvarFaturamentoManualItem}/>
+                  )}
                 </div>
               );
             })}
