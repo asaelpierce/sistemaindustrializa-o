@@ -1525,12 +1525,27 @@ export default function App(){
   const planejamentoAtrasados=useMemo(()=>planilhaMestreComMesEfetivo.filter(r=>r.mesEfetivo&&r.mesEfetivo<planejamentoMesRef&&!r.jaFaturado&&(r.valorVencidoSemAviso>0)),[planilhaMestreComMesEfetivo,planejamentoMesRef]);
   const planejamentoFaturadosNoMes=useMemo(()=>planilhaMestreComMesEfetivo.filter(r=>(r.notas||[]).some(n=>s(n.dataFaturamento).slice(0,7)===planejamentoMesRef)),[planilhaMestreComMesEfetivo,planejamentoMesRef]);
   const planejamentoAcompanhamento=useMemo(()=>calcularAcompanhamentoSemanal(planejamentoMesRef),[calcularAcompanhamentoSemanal,planejamentoMesRef]);
+  // Valor de cada BR NO MOMENTO DO FECHAMENTO — é o alvo/meta, nunca muda depois.
+  const valorFechadoPorBr=useMemo(()=>{
+    if(!planejamentoFechamentoAtual)return{};
+    const m={};
+    planejamentoFechamentoAtual.snapshot.forEach(x=>{m[x.br]=x.valorPrevisto;});
+    return m;
+  },[planejamentoFechamentoAtual]);
+
   const planejamentoResumo=useMemo(()=>{
-    const valorPrevisto=planejamentoDoMes.reduce((a,r)=>a+r.valorTotal,0);
-    const valorAFaturar=planejamentoDoMes.reduce((a,r)=>a+(r.valorAFaturar||0),0);
+    // "Previsto no mês" é a META — o valor que o PCP fechou com a diretoria. NUNCA
+    // recalcula sozinho depois, mesmo que o Sankhya atualize o valor de algum pedido.
+    // O que muda ao vivo é só o STATUS de cada projeto (se já foi faturado ou não).
+    const valorPrevisto=planejamentoFechamentoAtual?planejamentoFechamentoAtual.valorTotal:planejamentoDoMes.reduce((a,r)=>a+r.valorTotal,0);
+    const valorAFaturar=planejamentoDoMes.reduce((a,r)=>{
+      if(r.andamentoEfetivo==='FATURADO')return a; // já resolvido, sai da meta em aberto
+      const alvo=planejamentoFechamentoAtual?(valorFechadoPorBr[r.br]??r.valorTotal):r.valorTotal;
+      return a+alvo;
+    },0);
     const valorAtrasado=planejamentoAtrasados.reduce((a,r)=>a+r.valorVencidoSemAviso,0);
     return{valorPrevisto,valorAFaturar,valorAtrasado,totalProjetos:planejamentoDoMes.length,totalAtrasados:planejamentoAtrasados.length};
-  },[planejamentoDoMes,planejamentoAtrasados]);
+  },[planejamentoDoMes,planejamentoAtrasados,planejamentoFechamentoAtual,valorFechadoPorBr]);
 
 
   const [mestraSecaoNegociacaoAberta,setMestraSecaoNegociacaoAberta]=useState(false);
@@ -4512,16 +4527,20 @@ export default function App(){
                 </div>
 
                 {planejamentoForaDoFechado.length>0&&(
-                  <div className="bg-white rounded-2xl border border-amber-200 overflow-hidden">
-                    <div className="px-5 py-3.5 border-b border-amber-100 bg-amber-50/50">
-                      <p className="text-sm font-black text-amber-800">Fora do planejamento fechado <span className="text-amber-500 font-bold">({planejamentoForaDoFechado.length})</span> — entrou depois do fechamento (pedido novo ou reprogramado pra este mês). Não conta no Previsto até você incluir.</p>
+                  <div className="bg-white rounded-2xl border-2 border-dashed border-amber-300 overflow-hidden">
+                    <div className="px-5 py-3.5 border-b border-amber-100 bg-amber-50">
+                      <div className="flex items-center gap-2">
+                        <span className="text-[10px] font-black text-white bg-amber-600 rounded-full px-2 py-0.5 uppercase">Separado</span>
+                        <p className="text-sm font-black text-amber-800">Fora do planejamento fechado <span className="text-amber-500 font-bold">({planejamentoForaDoFechado.length})</span></p>
+                      </div>
+                      <p className="text-[11px] text-amber-700 mt-1">Entrou depois do fechamento (pedido novo ou reprogramado pra este mês). <strong>Não conta no Previsto</strong> até você decidir incluir.</p>
                     </div>
                     <div className="divide-y divide-slate-100">
                       {planejamentoForaDoFechado.map(r=>(
                         <div key={r.br} className="px-5 py-2.5 flex items-center justify-between gap-3">
                           <div className="min-w-0">
                             <p className="text-sm font-bold text-indigo-700">{r.br} <span className="text-slate-400 font-normal">· {s(r.cliente)}</span></p>
-                            <p className="text-[11px] text-slate-500">{fmtMoeda(r.valorTotal)}</p>
+                            <p className="text-[11px] text-slate-500">{r.escopo2?`${r.escopo2} · `:''}{fmtMoeda(r.valorTotal)}</p>
                           </div>
                           <Btn variant="secondary" size="sm" onClick={()=>incluirNoFechamento(r.br)}>+ Incluir no fechamento</Btn>
                         </div>
@@ -4576,8 +4595,16 @@ export default function App(){
                 )}
 
                 <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
-                  <div className="px-5 py-3.5 border-b border-slate-100 bg-slate-50">
-                    <p className="text-sm font-black text-slate-800">Previsto para {planejamentoMesRef} <span className="text-slate-400 font-bold">({planejamentoDoMes.length})</span></p>
+                  <div className="px-5 py-3.5 border-b border-slate-100 bg-slate-50 flex items-center justify-between flex-wrap gap-2">
+                    <p className="text-sm font-black text-slate-800">
+                      OOH — {MESES_PT[Number(planejamentoMesRef.slice(5,7))-1][0]+MESES_PT[Number(planejamentoMesRef.slice(5,7))-1].slice(1).toLowerCase()}/{planejamentoMesRef.slice(0,4)}
+                      <span className="text-slate-400 font-bold"> ({planejamentoDoMes.length})</span>
+                    </p>
+                    {planejamentoFechamentoAtual?(
+                      <span className="text-[10px] font-black text-teal-700 bg-teal-50 border border-teal-200 rounded-full px-2 py-0.5">✓ Fechado</span>
+                    ):(
+                      <span className="text-[10px] font-black text-amber-700 bg-amber-50 border border-amber-200 rounded-full px-2 py-0.5">Ainda não fechado</span>
+                    )}
                   </div>
                   {planejamentoDoMes.length===0?(
                     <div className="px-5 py-10 text-center text-slate-400 font-semibold">Nenhum projeto previsto para este mês.</div>
@@ -4589,8 +4616,9 @@ export default function App(){
                             <th className="px-3 py-2.5">BR</th>
                             <th className="px-3 py-2.5">Cliente</th>
                             <th className="px-3 py-2.5">Escopo</th>
-                            <th className="px-3 py-2.5">Status OP</th>
+                            <th className="px-3 py-2.5">Entregue?</th>
                             <th className="px-3 py-2.5">Andamento</th>
+                            <th className="px-3 py-2.5">Data Faturamento</th>
                             <th className="px-3 py-2.5">Indicador</th>
                             <th className="px-3 py-2.5 text-right">Valor</th>
                             <th className="px-3 py-2.5 text-right">A Faturar</th>
@@ -4604,19 +4632,29 @@ export default function App(){
                               'Atendeu a data do CP':'text-blue-700 bg-blue-50 border-blue-200',
                               'Não foi faturado':'text-slate-600 bg-slate-100 border-slate-200',
                             }[r.descricaoIndicador];
+                            // Se já foi FATURADO ou CONCLUÍDO, foi entregue — não interessa o
+                            // que o campo Status OP (outro controle manual, independente) diz.
+                            // Não escreve isso de volta no banco, só na exibição: são fatos
+                            // logicamente conectados (não dá pra faturar o que nunca saiu).
+                            const entregueInferido=r.statusOP==='ENTREGUE'||r.andamentoEfetivo==='FATURADO'||r.andamentoEfetivo==='CONCLUIDO';
+                            const valorLinha=planejamentoFechamentoAtual?(valorFechadoPorBr[r.br]??r.valorTotal):r.valorTotal;
+                            const aFaturarLinha=r.andamentoEfetivo==='FATURADO'?0:valorLinha;
                             return(
                               <tr key={r.br} className="hover:bg-slate-50">
                                 <td className="px-3 py-2 whitespace-nowrap"><button onClick={()=>setMestraNotasSel(r)} className="font-bold text-indigo-700 hover:underline">{r.br}</button></td>
                                 <td className="px-3 py-2 text-slate-600 truncate max-w-[200px]">{s(r.cliente)}</td>
                                 <td className="px-3 py-2 whitespace-nowrap">{r.escopo2?<span className="text-[10px] font-bold text-slate-600 bg-slate-100 border border-slate-200 rounded-full px-2 py-0.5">{r.escopo2}</span>:<span className="text-[10px] text-slate-300">—</span>}</td>
-                                <td className="px-3 py-2 whitespace-nowrap">{r.statusOP==='ENTREGUE'?<span className="text-[10px] font-black text-teal-700 bg-teal-50 border border-teal-200 rounded-full px-2 py-0.5">✓ Entregue</span>:<span className="text-[10px] font-black text-slate-500 bg-slate-100 border border-slate-200 rounded-full px-2 py-0.5">Não entregue</span>}</td>
+                                <td className="px-3 py-2 whitespace-nowrap">{entregueInferido?<span className="text-[10px] font-black text-teal-700 bg-teal-50 border border-teal-200 rounded-full px-2 py-0.5">✓ Entregue</span>:<span className="text-[10px] font-black text-slate-500 bg-slate-100 border border-slate-200 rounded-full px-2 py-0.5">Não entregue</span>}</td>
                                 <td className="px-3 py-2 whitespace-nowrap">
                                   <AndamentoSelect value={r.andamentoEfetivo} onChange={v=>salvarCampoManualBR(r.br,'andamento',v)}/>
                                   {r.temServicoPendente&&<span className="ml-1 text-amber-500" title="Marcado como Faturado, mas ainda tem item de SERVIÇO com 0% entregue — o produto físico saiu, o serviço não">⚠</span>}
                                 </td>
-                                <td className="px-3 py-2 whitespace-nowrap">{indCfg&&<span className={`text-[10px] font-black px-1.5 py-0.5 rounded-full border ${indCfg}`}>{r.descricaoIndicador}</span>}</td>
-                                <td className="px-3 py-2 text-right font-semibold text-slate-500 whitespace-nowrap">{fmtMoeda(r.valorTotal)}</td>
-                                <td className="px-3 py-2 text-right font-bold text-slate-700 whitespace-nowrap">{fmtMoeda(r.valorAFaturar)}</td>
+                                <td className="px-3 py-2 text-slate-500 whitespace-nowrap">{r.dataFaturamento?fmtDt(r.dataFaturamento):<span className="text-slate-300">—</span>}</td>
+                                <td className="px-3 py-2 whitespace-nowrap">
+                                  {indCfg&&<span className={`text-[10px] font-black px-1.5 py-0.5 rounded-full border ${indCfg}`}>{r.descricaoIndicador}{r.indicador!==null&&r.indicador!==0?` (${Math.abs(r.indicador)}d)`:''}</span>}
+                                </td>
+                                <td className="px-3 py-2 text-right font-semibold text-slate-500 whitespace-nowrap">{fmtMoeda(valorLinha)}</td>
+                                <td className="px-3 py-2 text-right font-bold text-slate-700 whitespace-nowrap">{fmtMoeda(aFaturarLinha)}</td>
                               </tr>
                             );
                           })}
