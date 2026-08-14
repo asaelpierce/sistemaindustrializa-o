@@ -1514,7 +1514,11 @@ export default function App(){
   // Sankhya/Planilha Mestre. Fechar não é "parar no tempo" — é só decidir quem entra
   // na conta do mês; o dado de cada um segue atualizando normalmente.
   const planejamentoFechamentoAtual=planejamentoFechamentos[planejamentoMesRef]||null;
-  const planejamentoDinamicoDoMes=useMemo(()=>planilhaMestreComMesEfetivo.filter(r=>r.mesEfetivo===planejamentoMesRef),[planilhaMestreComMesEfetivo,planejamentoMesRef]);
+  // Candidatos pra montar o planejamento do mês — NUNCA inclui quem já está
+  // Faturado (calculado automático, nota real do Sankhya). Se já faturou, não
+  // precisa entrar de novo no planejamento nem na esteira de produção — já
+  // está resolvido, independente de qual mês ele originalmente pertencia.
+  const planejamentoDinamicoDoMes=useMemo(()=>planilhaMestreComMesEfetivo.filter(r=>r.mesEfetivo===planejamentoMesRef&&r.andamentoEfetivo!=='FATURADO'),[planilhaMestreComMesEfetivo,planejamentoMesRef]);
   const planejamentoDoMes=useMemo(()=>{
     if(!planejamentoFechamentoAtual)return planejamentoDinamicoDoMes;
     // Restringe à lista de BRs que foi fechada, mas usa o dado ATUAL de cada um —
