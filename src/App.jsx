@@ -1375,11 +1375,16 @@ export default function App(){
     const totalSemanas=Math.ceil(diasNoMes/7);
 
     // PREVISTO = carteira com mês EFETIVO igual ao selecionado (já considera
-    // reprogramação/antecipação), SEM os já faturados — mesma base usada no painel de
-    // KPIs (planejamentoResumo/planejamentoDoMes). Antes o gráfico incluía todo mundo
-    // (faturado ou não) enquanto o painel já excluía — dois números de "Previsto"
-    // diferentes pro mesmo mês, o que não batia e confundia quem olhava os dois juntos.
-    const linhasDoMes=planilhaMestreComMesEfetivo.filter(r=>r.mesEfetivo===mesRef&&!r.jaFaturado);
+    // reprogramação/antecipação), excluindo só quem está marcado manualmente como
+    // FATURADO. Confirmado direto com o PCP: a planilha dele (Orders On Hand) é
+    // mantida NA MÃO — ele tira o BR da lista quando sabe que já fechou, não existe
+    // fórmula automática por trás. Por isso a exclusão automática por quantidade/
+    // valor entregue (jaFaturado) NUNCA vai bater exatamente com a planilha — ela
+    // pode incluir um BR 100% entregue (o PCP ainda não teve tempo de tirar) e
+    // excluir outro que nem chegou a 50% de quantidade (o PCP já sabe que fechou
+    // por outro motivo, ex: nota emitida faz tempo). A única fonte de verdade
+    // possível é a mesma que o PCP usa: a marcação manual dele no próprio portal.
+    const linhasDoMes=planilhaMestreComMesEfetivo.filter(r=>r.mesEfetivo===mesRef&&r.andamento!=='FATURADO');
     const valorPrevisto=linhasDoMes.reduce((a,r)=>a+r.valorTotal,0);
     const metaSemanal=totalSemanas>0?valorPrevisto/totalSemanas:0;
 
@@ -1419,7 +1424,9 @@ export default function App(){
 
   // ── ABA PLANEJAMENTO: espelho da Planilha Mestre, por mês, com calendário ──
   const [planejamentoMesRef,setPlanejamentoMesRef]=useState(new Date().toISOString().slice(0,7));
-  const planejamentoDoMes=useMemo(()=>planilhaMestreComMesEfetivo.filter(r=>r.mesEfetivo===planejamentoMesRef&&!r.jaFaturado),[planilhaMestreComMesEfetivo,planejamentoMesRef]);
+  // "Previsto" exclui só quem está marcado manualmente FATURADO — mesmo critério do
+  // gráfico acima, mesma razão: a planilha do PCP (fonte da verdade) é mantida manual.
+  const planejamentoDoMes=useMemo(()=>planilhaMestreComMesEfetivo.filter(r=>r.mesEfetivo===planejamentoMesRef&&r.andamento!=='FATURADO'),[planilhaMestreComMesEfetivo,planejamentoMesRef]);
   // Atrasado de verdade = tem valor VENCIDO SEM AVISO (item físico com prazo já
   // passado, sem reprogramação) somado no BR — nunca conta o valor de serviço, que já
   // vem separado (valorServicoEmAberto) desde a correção item a item.
@@ -4451,6 +4458,7 @@ export default function App(){
                             <th className="px-3 py-2.5">BR</th>
                             <th className="px-3 py-2.5">Cliente</th>
                             <th className="px-3 py-2.5">Escopo</th>
+                            <th className="px-3 py-2.5">Status OP</th>
                             <th className="px-3 py-2.5">Andamento</th>
                             <th className="px-3 py-2.5">Indicador</th>
                             <th className="px-3 py-2.5 text-right">Valor</th>
@@ -4470,6 +4478,7 @@ export default function App(){
                                 <td className="px-3 py-2 whitespace-nowrap"><button onClick={()=>setMestraNotasSel(r)} className="font-bold text-indigo-700 hover:underline">{r.br}</button></td>
                                 <td className="px-3 py-2 text-slate-600 truncate max-w-[200px]">{s(r.cliente)}</td>
                                 <td className="px-3 py-2 whitespace-nowrap">{r.escopo2?<span className="text-[10px] font-bold text-slate-600 bg-slate-100 border border-slate-200 rounded-full px-2 py-0.5">{r.escopo2}</span>:<span className="text-[10px] text-slate-300">—</span>}</td>
+                                <td className="px-3 py-2 whitespace-nowrap">{r.statusOP==='ENTREGUE'?<span className="text-[10px] font-black text-teal-700 bg-teal-50 border border-teal-200 rounded-full px-2 py-0.5">✓ Entregue</span>:<span className="text-[10px] font-black text-slate-500 bg-slate-100 border border-slate-200 rounded-full px-2 py-0.5">Não entregue</span>}</td>
                                 <td className="px-3 py-2 whitespace-nowrap"><AndamentoSelect value={r.andamentoEfetivo} onChange={v=>salvarCampoManualBR(r.br,'andamento',v)}/></td>
                                 <td className="px-3 py-2 whitespace-nowrap">{indCfg&&<span className={`text-[10px] font-black px-1.5 py-0.5 rounded-full border ${indCfg}`}>{r.descricaoIndicador}</span>}</td>
                                 <td className="px-3 py-2 text-right font-semibold text-slate-500 whitespace-nowrap">{fmtMoeda(r.valorTotal)}</td>
