@@ -1080,6 +1080,7 @@ export default function App(){
         valorTotal:0,valorFaturadoQtd:0,valorAFaturar:0,qtdPecas:0,qtdEntregueTotal:0,valorFaturadoReal:0,pedidosCount:0,
         descricoes:[],datasEntregaCP:[],datasReferencia:[],situacaoEspecial:null,reprogramacao:null,
         itensPendentesTotal:0,itensTotal:0,notas:r.notas||[],semPedidoSincronizado:r.semPedidoSincronizado,itens:[],
+        valorVencidoSemAviso:0,valorReprogramado:0,valorAVencer:0,valorSemPrazo:0,valorServicoEmAberto:0,
       };
       const g=porBR[br];
       g.pedidosCount+=1;
@@ -1091,6 +1092,13 @@ export default function App(){
       g.valorTotal+=r.valorTotal;
       g.valorFaturadoQtd+=r.valorPedidoAtendido;
       g.valorAFaturar+=r.valorAFaturar;
+      // Valor em aberto já separado por item (serviço nunca conta como atraso — ver
+      // correção que separa item a item, não pelo pedido inteiro).
+      g.valorVencidoSemAviso+=r.valorVencidoSemAviso||0;
+      g.valorReprogramado+=r.valorReprogramado||0;
+      g.valorAVencer+=r.valorAVencer||0;
+      g.valorSemPrazo+=r.valorSemPrazo||0;
+      g.valorServicoEmAberto+=r.valorServico||0;
       // Junta os itens de TODOS os pedidos deste BR — quem clica no BR na Planilha
       // Mestra precisa ver todo item, de qualquer nunota, não só do primeiro pedido.
       g.itens.push(...(r.itens||[]));
@@ -1351,24 +1359,31 @@ export default function App(){
   // linear semana a semana; o realizado é o valor líquido das notas emitidas nesse
   // mês, acumulado. "Semana do mês" aqui é por bloco de 7 dias corridos (dias 1-7 =
   // semana 1, 8-14 = semana 2...), não semana ISO — mais simples e sem virada de ano.
-  const mestraAcompanhamentoMensal=useMemo(()=>{
-    const hojeIso=new Date().toISOString().slice(0,10);
-    const mesRef=hojeIso.slice(0,7);
+  // mesEfetivo = mesChave original, a menos que exista reprogramação — aí vale o mês
+  // da nova_data. É o que faz "projeto que ele antecipou de setembro pra agosto
+  // aparecer certinho em agosto" — sem isso, o planejamento nunca refletia decisão de
+  // reprogramar/antecipar, só a data crua do Sankhya.
+  const planilhaMestreComMesEfetivo=useMemo(()=>
+    planilhaMestreLinhas.map(r=>({...r,mesEfetivo:r.reprogramacao?.novaData?s(r.reprogramacao.novaData).slice(0,7):r.mesChave}))
+  ,[planilhaMestreLinhas]);
+
+  // Gráfico "Previsto ÷ semanas x Realizado", parametrizado por mês — usado tanto no
+  // resumo da Planilha Mestre (mês atual) quanto na aba Planejamento (mês escolhido).
+  const calcularAcompanhamentoSemanal=useCallback(mesRef=>{
     const[anoNum,mesNum]=mesRef.split('-').map(Number);
     const diasNoMes=new Date(anoNum,mesNum,0).getDate();
     const totalSemanas=Math.ceil(diasNoMes/7);
 
-    // PREVISTO = carteira com entrega prevista pra este mês (o compromisso do mês).
-    const linhasDoMes=planilhaMestreLinhas.filter(r=>r.mesChave===mesRef);
+    // PREVISTO = carteira com mês EFETIVO igual ao selecionado (já considera
+    // reprogramação/antecipação) — o compromisso real do mês, não só o cru do Sankhya.
+    const linhasDoMes=planilhaMestreComMesEfetivo.filter(r=>r.mesEfetivo===mesRef);
     const valorPrevisto=linhasDoMes.reduce((a,r)=>a+r.valorTotal,0);
     const metaSemanal=totalSemanas>0?valorPrevisto/totalSemanas:0;
 
     // REALIZADO = TUDO que foi faturado neste mês, de QUALQUER projeto — inclusive os
-    // previstos pra outros meses (faturado adiantado ou atrasado). Antes só somava
-    // notas de projetos cujo mês previsto era o mês atual, o que descartava boa parte:
-    // em agosto/2026 dava R$257.992 (11 notas) em vez de R$474.792 (16 notas).
+    // previstos pra outros meses (faturado adiantado ou atrasado).
     const valorPorSemana=Array(totalSemanas+1).fill(0);
-    planilhaMestreLinhas.forEach(r=>{
+    planilhaMestreComMesEfetivo.forEach(r=>{
       (r.notas||[]).forEach(n=>{
         if(!n.dataFaturamento)return;
         const dt=s(n.dataFaturamento);
@@ -1379,8 +1394,10 @@ export default function App(){
       });
     });
 
+    const hojeIso=new Date().toISOString().slice(0,10);
+    const mesFuturo=mesRef>hojeIso.slice(0,7);
     const diaHoje=Number(hojeIso.slice(8,10));
-    const semanaAtualDoMes=Math.ceil(diaHoje/7);
+    const semanaAtualDoMes=mesRef===hojeIso.slice(0,7)?Math.ceil(diaHoje/7):totalSemanas;
 
     let acumulado=0;
     const pontos=[];
@@ -1389,11 +1406,29 @@ export default function App(){
       pontos.push({
         semana:sw,name:`Semana ${sw}`,
         Previsto:Math.round(metaSemanal*sw),
-        Realizado:sw>semanaAtualDoMes?null:Math.round(acumulado),
+        Realizado:(mesFuturo||sw>semanaAtualDoMes)?null:Math.round(acumulado),
       });
     }
     return{pontos,valorPrevisto,metaSemanal,totalSemanas,mesRef,semanaAtualDoMes,acumuladoAtual:Math.round(acumulado),totalProjetos:linhasDoMes.length};
-  },[planilhaMestreLinhas]);
+  },[planilhaMestreComMesEfetivo]);
+
+  const mestraAcompanhamentoMensal=useMemo(()=>calcularAcompanhamentoSemanal(new Date().toISOString().slice(0,7)),[calcularAcompanhamentoSemanal]);
+
+  // ── ABA PLANEJAMENTO: espelho da Planilha Mestre, por mês, com calendário ──
+  const [planejamentoMesRef,setPlanejamentoMesRef]=useState(new Date().toISOString().slice(0,7));
+  const planejamentoDoMes=useMemo(()=>planilhaMestreComMesEfetivo.filter(r=>r.mesEfetivo===planejamentoMesRef&&!r.jaFaturado),[planilhaMestreComMesEfetivo,planejamentoMesRef]);
+  // Atrasado de verdade = tem valor VENCIDO SEM AVISO (item físico com prazo já
+  // passado, sem reprogramação) somado no BR — nunca conta o valor de serviço, que já
+  // vem separado (valorServicoEmAberto) desde a correção item a item.
+  const planejamentoAtrasados=useMemo(()=>planilhaMestreComMesEfetivo.filter(r=>r.mesEfetivo&&r.mesEfetivo<planejamentoMesRef&&!r.jaFaturado&&(r.valorVencidoSemAviso>0)),[planilhaMestreComMesEfetivo,planejamentoMesRef]);
+  const planejamentoFaturadosNoMes=useMemo(()=>planilhaMestreComMesEfetivo.filter(r=>(r.notas||[]).some(n=>s(n.dataFaturamento).slice(0,7)===planejamentoMesRef)),[planilhaMestreComMesEfetivo,planejamentoMesRef]);
+  const planejamentoAcompanhamento=useMemo(()=>calcularAcompanhamentoSemanal(planejamentoMesRef),[calcularAcompanhamentoSemanal,planejamentoMesRef]);
+  const planejamentoResumo=useMemo(()=>{
+    const valorPrevisto=planejamentoDoMes.reduce((a,r)=>a+r.valorTotal,0);
+    const valorAFaturar=planejamentoDoMes.reduce((a,r)=>a+r.valorAFaturar,0);
+    const valorAtrasado=planejamentoAtrasados.reduce((a,r)=>a+r.valorVencidoSemAviso,0);
+    return{valorPrevisto,valorAFaturar,valorAtrasado,totalProjetos:planejamentoDoMes.length,totalAtrasados:planejamentoAtrasados.length};
+  },[planejamentoDoMes,planejamentoAtrasados]);
 
 
   const [mestraSecaoNegociacaoAberta,setMestraSecaoNegociacaoAberta]=useState(false);
@@ -3577,7 +3612,7 @@ export default function App(){
 
   const navItems=[
     ...(isAdmin?[{id:'DASHBOARD',label:'Painel Executivo',icon:LayoutDashboard,group:'Visão Geral'}]:[]),
-    ...((isAdmin||isPCP)?[{id:'PLANILHA_MESTRE',label:'Planilha Mestre',icon:FileSpreadsheet,group:'Visão Geral'},{id:'ORDENS_PRODUCAO_SK',label:'OPs (Sankhya)',icon:Factory,group:'Visão Geral'}]:[]),
+    ...((isAdmin||isPCP)?[{id:'PLANILHA_MESTRE',label:'Planilha Mestre',icon:FileSpreadsheet,group:'Visão Geral'},{id:'PLANEJAMENTO',label:'Planejamento',icon:Calendar,group:'Visão Geral'},{id:'ORDENS_PRODUCAO_SK',label:'OPs (Sankhya)',icon:Factory,group:'Visão Geral'}]:[]),
     // Planejamento (OOH) removido do menu a pedido do PCP: a lógica dele não batia com
     // a planilha real, e o planejamento passa a ser feito 100% pela Planilha Mestre.
     // O código da aba continua no arquivo (não foi apagado) — quando a nova versão for
@@ -4319,6 +4354,134 @@ export default function App(){
             )}
 
             {/* ── OPs (Sankhya) — Ordens de Produção reais, com itens de MP ── */}
+            {/* ── PLANEJAMENTO — espelho da Planilha Mestre, com calendário por mês ── */}
+            {aba==='PLANEJAMENTO'&&(isAdmin||isPCP)&&(
+              <div className="space-y-5">
+                <SectionHeader title="Planejamento" subtitle="Espelho da Planilha Mestre — o que for reprogramado/antecipado lá já aparece aqui, no mês certo"
+                  actions={<Btn variant="secondary" size="sm" onClick={()=>{fetchMestra();fetchPlanilhaMestreCampos();}} disabled={mestraLoading}><RefreshCw className={`w-4 h-4 ${mestraLoading?'animate-spin':''}`}/>Recarregar</Btn>}/>
+
+                <div className="bg-slate-900 rounded-2xl overflow-hidden">
+                  <div className="px-6 pt-5 pb-4">
+                    <input type="month" value={planejamentoMesRef} onChange={e=>setPlanejamentoMesRef(e.target.value)}
+                      className="bg-white/10 border border-white/20 text-white text-sm font-black rounded-xl px-3 py-2 focus:outline-none focus:border-white/50 [color-scheme:dark]"/>
+                  </div>
+                  <div className="px-6 pb-5 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-x-8 gap-y-4">
+                    <div>
+                      <p className="text-[10px] font-black text-white/40 uppercase tracking-wider">Previsto no mês</p>
+                      <p className="text-2xl font-black text-white mt-0.5 tabular-nums">{fmtMoeda(planejamentoResumo.valorPrevisto)}</p>
+                      <p className="text-[11px] text-white/40 mt-0.5">{planejamentoResumo.totalProjetos} projeto(s) — inclui antecipados/reprogramados pra {planejamentoMesRef}</p>
+                    </div>
+                    <div>
+                      <p className="text-[10px] font-black text-white/40 uppercase tracking-wider">A faturar no mês</p>
+                      <p className="text-2xl font-black text-amber-300 mt-0.5 tabular-nums">{fmtMoeda(planejamentoResumo.valorAFaturar)}</p>
+                      <p className="text-[11px] text-white/40 mt-0.5">ainda em aberto, descontado o que já saiu</p>
+                    </div>
+                    <div>
+                      <p className="text-[10px] font-black text-white/40 uppercase tracking-wider">Atrasado (meses anteriores)</p>
+                      <p className="text-2xl font-black text-red-300 mt-0.5 tabular-nums">{fmtMoeda(planejamentoResumo.valorAtrasado)}</p>
+                      <p className="text-[11px] text-white/40 mt-0.5">{planejamentoResumo.totalAtrasados} projeto(s) — nunca inclui serviço</p>
+                    </div>
+                    <div>
+                      <p className="text-[10px] font-black text-white/40 uppercase tracking-wider">Já faturado no mês</p>
+                      <p className="text-2xl font-black text-teal-300 mt-0.5 tabular-nums">{fmtMoeda(planejamentoAcompanhamento.acumuladoAtual)}</p>
+                      <p className="text-[11px] text-white/40 mt-0.5">{planejamentoFaturadosNoMes.length} projeto(s) com nota emitida esse mês</p>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Onde deveríamos estar x onde estamos — previsto do mês ÷ semanas do mês */}
+                <div className="bg-white rounded-2xl border border-slate-200 p-6">
+                  <div className="flex items-center justify-between mb-1 flex-wrap gap-3">
+                    <div>
+                      <p className="text-sm font-black text-slate-800">Onde deveríamos estar x onde estamos — {planejamentoMesRef}</p>
+                      <p className="text-[11px] text-slate-400 mt-0.5">Previsto do mês ({fmtMoeda(planejamentoAcompanhamento.valorPrevisto)}) dividido linearmente pelas {planejamentoAcompanhamento.totalSemanas} semanas. Realizado = valor líquido acumulado das notas emitidas nesse mês.</p>
+                    </div>
+                    <div className="flex items-center gap-4 text-[11px] font-bold text-slate-500">
+                      <span className="flex items-center gap-1.5"><span className="w-3 h-[3px] rounded-full bg-red-600"/>Previsto</span>
+                      <span className="flex items-center gap-1.5"><span className="w-3 h-[3px] rounded-full bg-blue-600"/>Realizado</span>
+                    </div>
+                  </div>
+                  <div style={{height:300}}>
+                    <ResponsiveContainer width="100%" height="100%">
+                      <LineChart data={planejamentoAcompanhamento.pontos} margin={{top:15,right:15,left:0,bottom:0}}>
+                        <CartesianGrid strokeDasharray="3 3" vertical={false}/>
+                        <XAxis dataKey="name" tick={{fontSize:11,fontWeight:'700',fill:'#64748b'}}/>
+                        <YAxis tickFormatter={v=>`${(v/1000).toFixed(0)}k`} tick={{fontSize:11,fontWeight:'700',fill:'#64748b'}} width={50}/>
+                        <Tooltip formatter={v=>v!==null?fmtMoeda(v):'—'}/>
+                        <Line type="monotone" dataKey="Previsto" stroke="#dc2626" strokeWidth={3} dot={false} name="Previsto" connectNulls/>
+                        <Line type="monotone" dataKey="Realizado" stroke="#2563eb" strokeWidth={3.5} dot={{r:4}} name="Realizado" connectNulls/>
+                      </LineChart>
+                    </ResponsiveContainer>
+                  </div>
+                </div>
+
+                {planejamentoAtrasados.length>0&&(
+                  <div className="bg-white rounded-2xl border border-red-200 overflow-hidden">
+                    <div className="px-5 py-3.5 border-b border-red-100 bg-red-50/50">
+                      <p className="text-sm font-black text-red-800">Atrasados de meses anteriores <span className="text-red-400 font-bold">({planejamentoAtrasados.length})</span> — vencido sem aviso, item físico (serviço nunca conta aqui)</p>
+                    </div>
+                    <div className="divide-y divide-slate-100">
+                      {planejamentoAtrasados.map(r=>(
+                        <button key={r.br} onClick={()=>setMestraNotasSel(r)} className="w-full px-5 py-2.5 flex items-center justify-between gap-3 hover:bg-slate-50 text-left">
+                          <div className="min-w-0">
+                            <p className="text-sm font-bold text-indigo-700">{r.br} <span className="text-slate-400 font-normal">· {s(r.cliente)}</span></p>
+                            <p className="text-[11px] text-slate-500">Previsto pra {r.mesEfetivo} · {r.maiorAtraso}d de atraso</p>
+                          </div>
+                          <p className="text-sm font-bold text-red-600 whitespace-nowrap">{fmtMoeda(r.valorVencidoSemAviso)}</p>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
+                  <div className="px-5 py-3.5 border-b border-slate-100 bg-slate-50">
+                    <p className="text-sm font-black text-slate-800">Previsto para {planejamentoMesRef} <span className="text-slate-400 font-bold">({planejamentoDoMes.length})</span></p>
+                  </div>
+                  {planejamentoDoMes.length===0?(
+                    <div className="px-5 py-10 text-center text-slate-400 font-semibold">Nenhum projeto previsto para este mês.</div>
+                  ):(
+                    <div className="overflow-x-auto custom-scrollbar">
+                      <table className="w-full text-sm">
+                        <thead className="bg-slate-50 border-b border-slate-200">
+                          <tr className="text-left text-[10px] font-black text-slate-500 uppercase tracking-wider">
+                            <th className="px-3 py-2.5">BR</th>
+                            <th className="px-3 py-2.5">Cliente</th>
+                            <th className="px-3 py-2.5">Escopo</th>
+                            <th className="px-3 py-2.5">Andamento</th>
+                            <th className="px-3 py-2.5">Indicador</th>
+                            <th className="px-3 py-2.5 text-right">Valor</th>
+                            <th className="px-3 py-2.5 text-right">A Faturar</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100">
+                          {planejamentoDoMes.map(r=>{
+                            const indCfg={
+                              'Atrasou':'text-red-700 bg-red-50 border-red-200',
+                              'Antecipou':'text-emerald-700 bg-emerald-50 border-emerald-200',
+                              'Atendeu a data do CP':'text-blue-700 bg-blue-50 border-blue-200',
+                              'Não foi faturado':'text-slate-600 bg-slate-100 border-slate-200',
+                            }[r.descricaoIndicador];
+                            return(
+                              <tr key={r.br} className="hover:bg-slate-50">
+                                <td className="px-3 py-2 whitespace-nowrap"><button onClick={()=>setMestraNotasSel(r)} className="font-bold text-indigo-700 hover:underline">{r.br}</button></td>
+                                <td className="px-3 py-2 text-slate-600 truncate max-w-[200px]">{s(r.cliente)}</td>
+                                <td className="px-3 py-2 whitespace-nowrap">{r.escopo2?<span className="text-[10px] font-bold text-slate-600 bg-slate-100 border border-slate-200 rounded-full px-2 py-0.5">{r.escopo2}</span>:<span className="text-[10px] text-slate-300">—</span>}</td>
+                                <td className="px-3 py-2 whitespace-nowrap"><AndamentoSelect value={r.andamentoEfetivo} onChange={v=>salvarCampoManualBR(r.br,'andamento',v)}/></td>
+                                <td className="px-3 py-2 whitespace-nowrap">{indCfg&&<span className={`text-[10px] font-black px-1.5 py-0.5 rounded-full border ${indCfg}`}>{r.descricaoIndicador}</span>}</td>
+                                <td className="px-3 py-2 text-right font-semibold text-slate-500 whitespace-nowrap">{fmtMoeda(r.valorTotal)}</td>
+                                <td className="px-3 py-2 text-right font-bold text-slate-700 whitespace-nowrap">{fmtMoeda(r.valorAFaturar)}</td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
             {aba==='ORDENS_PRODUCAO_SK'&&(isAdmin||isPCP)&&(
               <div className="space-y-4">
                 <SectionHeader title="OPs (Sankhya)" subtitle="Ordens de Produção reais — qual OP é de qual projeto, setor (Processo Produtivo) e itens de matéria-prima consumidos"
