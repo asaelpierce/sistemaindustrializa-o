@@ -1181,15 +1181,19 @@ export default function App(){
       // mais nada (jaFaturado usa nota real, ver abaixo).
       const pctQtd=g.qtdPecas>0?(g.qtdEntregueTotal/g.qtdPecas)*100:0;
       const pctValor=g.valorTotal>0?(g.valorFaturadoReal/g.valorTotal)*100:0;
-      // FATURADO agora é 100% automático — a única fonte de verdade é ter nota fiscal
-      // REAL emitida no Sankhya (valorFaturadoReal>0). Chega de misturar % de
-      // quantidade/valor entregue: isso já deu falso positivo/negativo real nos dados
-      // (ex: BR14289/26 tinha 72% de valor mas 0% de quantidade). Nota real emitida é
-      // simples e direto — bate com o Sankhya, sem depender de ninguém marcar na mão.
-      // O PCP não escolhe mais "Faturado" no dropdown (removido do ANDAMENTO_MANUAL_CFG)
-      // — ele só clica em "Solicitar Faturamento", que registra data/hora do pedido,
-      // sem mudar status nenhum. O status vira Faturado sozinho quando a nota sair.
-      const jaFaturado=g.valorFaturadoReal>0||(g.semPedidoSincronizado&&g.notas.length>0);
+      // FATURADO automático: dois caminhos, cada um cobrindo um jeito real de "estar
+      // pronto" nos dados —
+      //  (a) quantidade 100% entregue + valor cobrindo 70%+ (líquido nunca bate 100%
+      //      do bruto por impostos/frete, mas é o BR físico realmente completo), ou
+      //  (b) nota emitida HÁ POUCO TEMPO (≤15 dias) cobrindo 70%+ do valor — cobre o
+      //      caso real do Sankhya atrasar QTDENTREGUE mesmo com nota já emitida.
+      // NUNCA nota antiga (>15 dias) com valor parcial baixo — achado real: BR13724/25,
+      // BR14012/26, BR14074/26, BR14100/26, BR14148/26 tinham nota de 36 a 77 dias atrás
+      // cobrindo só 15-70% do pedido (entrega genuinamente parcial, faturada há meses,
+      // ainda falta o resto) — critério antigo (só "tem nota") marcava esses como
+      // Faturado inteiro, escondendo o saldo real que falta faturar em agosto.
+      const notaRecente=g.notas.some(n=>n.dataFaturamento&&(new Date()-new Date(n.dataFaturamento))/86400000<=15);
+      const jaFaturado=(pctQtd>=99.5&&pctValor>=70)||(notaRecente&&pctValor>=70)||(g.semPedidoSincronizado&&g.notas.length>0);
       const statusOP=manual.status_op||'NAO_ENTREGUE';
       const andamento=jaFaturado?'FATURADO':(manual.andamento||'A_INICIAR');
       const percentualFaturado=g.valorTotal>0?g.valorFaturadoQtd/g.valorTotal:0;
