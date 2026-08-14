@@ -1728,6 +1728,7 @@ export default function App(){
       // que ninguém tinha marcado ainda. Agrupa por BR+mês (data_neg, mesma referência
       // que a Mestra usa), sem filtrar por andamento_producao em nenhum momento.
       const faturamentoPorBRMes={};
+      const faturamentoTotalPorBR={}; // líquido acumulado do BR (qualquer mês) — usado pra saber quanto FALTA faturar
       (faturamentoDatasRes.data||[]).forEach(f=>{
         const br=s(f.br);if(!br)return;
         if(f.data_faturamento&&(!dataFaturamentoPorBR[br]||f.data_faturamento>dataFaturamentoPorBR[br].data)){
@@ -1740,6 +1741,7 @@ export default function App(){
         faturamentoPorBRMes[chave].valorBruto+=Number(f.valor_nota||0);
         faturamentoPorBRMes[chave].valorLiquido+=Number(f.net_offer_value||0);
         faturamentoPorBRMes[chave].notas+=1;
+        faturamentoTotalPorBR[br]=(faturamentoTotalPorBR[br]||0)+Number(f.net_offer_value||0);
       });
 
       // Mesma marcação manual do PCP usada no Mestra: DESCONSIDERAR some do cálculo,
@@ -1820,7 +1822,14 @@ export default function App(){
         const dataMPPronta=somarDias(dataVigenteOOH,-5);
         const dataAlertaEsteira=somarDias(dataVigenteOOH,-20);
         const precisaEntrarNaEsteira=!atendido&&!pendente&&dataAlertaEsteira&&hojeOOH>=dataAlertaEsteira;
-        return{...r,valorFaturado:r.valorEntregue,percentualFaturado,atendido,pendente,mesPrevisto,plano,
+        // valorFaturado tem que refletir o que REALMENTE saiu. Só r.valorEntregue (base
+        // em qtd_entregue) subestima quando o Sankhya não atualiza a entrega mesmo já
+        // tendo nota emitida — foi o que fez "A faturar" ficar igual à "Carteira total"
+        // e a barra marcar 0%, mesmo com 16 projetos faturados no mês. Pega o maior dos
+        // dois (nunca acima do valor total do projeto, pra não gerar negativo).
+        const faturadoNota=faturamentoTotalPorBR[r.br]||0;
+        const valorFaturadoEfetivo=Math.min(r.valorTotal,Math.max(r.valorEntregue||0,faturadoNota));
+        return{...r,valorFaturado:valorFaturadoEfetivo,percentualFaturado,atendido,pendente,mesPrevisto,plano,
           andamento:andamentoManual,observacaoPendencia:observacaoPorBR[r.br]||null,
           dataFaturamento:dataFaturamentoPorBR[r.br]?.data||null,numeroNotaFaturamento:dataFaturamentoPorBR[r.br]?.numeroNota||null,
           semanaISO:semanaISODoAno(dataVigenteOOH),
