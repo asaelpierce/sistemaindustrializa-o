@@ -281,20 +281,33 @@ function KPICard({label,value,unit,icon:Icon,trend,trendLabel,color='indigo',onC
   );
 }
 
-const ANDAMENTO_CFG={
+// FATURADO não é mais opção que o PCP escolhe na mão — é sempre calculado
+// automático (jaFaturado, olhando nota fiscal real do Sankhya). O PCP só
+// controla A_INICIAR/EM_ANDAMENTO/PENDENTE/CONCLUIDO; pra faturamento, ele usa
+// o botão "Solicitar Faturamento" (só registra data/hora do pedido, não muda
+// status nenhum).
+const ANDAMENTO_MANUAL_CFG={
   A_INICIAR:{label:'A Iniciar',cls:'bg-slate-100 text-slate-600 border-slate-200'},
   EM_ANDAMENTO:{label:'Em Andamento',cls:'bg-blue-50 text-blue-700 border-blue-200'},
   PENDENTE:{label:'Pendente',cls:'bg-amber-50 text-amber-700 border-amber-200'},
   CONCLUIDO:{label:'Concluído',cls:'bg-teal-50 text-teal-700 border-teal-200'},
+};
+const ANDAMENTO_CFG={
+  ...ANDAMENTO_MANUAL_CFG,
   FATURADO:{label:'Faturado',cls:'bg-violet-50 text-violet-700 border-violet-200'},
 };
 
 function AndamentoSelect({value,onChange,title}){
   const cfg=ANDAMENTO_CFG[value]||ANDAMENTO_CFG.A_INICIAR;
+  // Se já está Faturado (calculado automático), não dá pra editar manualmente —
+  // o PCP não escolhe isso, é resultado direto da nota fiscal real no Sankhya.
+  if(value==='FATURADO'){
+    return<span title={title||'Calculado automático — nota fiscal real emitida no Sankhya'} className={`text-[11px] font-bold px-2.5 py-1 rounded-full border ${cfg.cls}`}>✓ {cfg.label}</span>;
+  }
   return(
     <select value={value} onChange={e=>onChange(e.target.value)} onClick={e=>e.stopPropagation()} title={title}
       className={`text-[11px] font-bold px-2.5 py-1 rounded-full border cursor-pointer ${cfg.cls}`}>
-      {Object.entries(ANDAMENTO_CFG).map(([k,c])=><option key={k} value={k}>{c.label}</option>)}
+      {Object.entries(ANDAMENTO_MANUAL_CFG).map(([k,c])=><option key={k} value={k}>{c.label}</option>)}
     </select>
   );
 }
@@ -967,7 +980,7 @@ export default function App(){
       const{data,error}=await supabase.from('andamento_producao').select('*');
       if(error)throw error;
       const campos={};
-      (data||[]).forEach(a=>{campos[s(a.br)]={andamento:a.andamento,definicao:a.definicao,escopo2:a.escopo2,observacao:a.observacao,status_op:a.status_op};});
+      (data||[]).forEach(a=>{campos[s(a.br)]={andamento:a.andamento,definicao:a.definicao,escopo2:a.escopo2,observacao:a.observacao,status_op:a.status_op,faturamentoSolicitadoEm:a.faturamento_solicitado_em,faturamentoSolicitadoPor:a.faturamento_solicitado_por};});
       setPlanilhaMestreCampos(campos);
     }catch(e){addToast('Erro ao buscar campos manuais: '+e.message,'error');}
     finally{setPlanilhaMestreLoading(false);}
@@ -988,6 +1001,23 @@ export default function App(){
       if(error)throw error;
       return true;
     }catch(e){addToast('Erro ao salvar: '+e.message,'error');throw e;}
+  };
+
+  // O PCP nunca marca "Faturado" na mão — só SOLICITA o faturamento (avisa que é pra
+  // faturar). Isso grava só a data/hora do pedido, nada de status. O status real vira
+  // Faturado sozinho, automático, quando a nota fiscal sair no Sankhya (ver jaFaturado).
+  const solicitarFaturamento=async br=>{
+    if(!window.confirm(`Solicitar faturamento de ${br}?\n\nIsso só registra a data/hora do pedido — o status muda pra Faturado sozinho, automático, quando a nota sair no Sankhya.`))return;
+    try{
+      const atual=planilhaMestreCampos[br]||{};
+      const{error}=await supabase.from('andamento_producao').upsert({
+        br,andamento:atual.andamento||'A_INICIAR',definicao:atual.definicao||null,escopo2:atual.escopo2||null,observacao:atual.observacao||null,status_op:atual.status_op||'NAO_ENTREGUE',
+        faturamento_solicitado_em:new Date().toISOString(),faturamento_solicitado_por:s(usuarioLogado?.nome),
+      },{onConflict:'br'});
+      if(error)throw error;
+      addToast(`Faturamento de ${br} solicitado — aguardando nota sair no Sankhya.`);
+      setPlanilhaMestreCampos(prev=>({...prev,[br]:{...prev[br],faturamentoSolicitadoEm:new Date().toISOString(),faturamentoSolicitadoPor:s(usuarioLogado?.nome)}}));
+    }catch(e){addToast('Erro ao solicitar faturamento: '+e.message,'error');}
   };
 
   // Dá liberdade pro PCP registrar faturamento parcial item a item — ex: pedido com 4
@@ -1147,18 +1177,21 @@ export default function App(){
       // bastante pra marcar sem depender de alguém lembrar de marcar manualmente. Exige
       // os dois batendo junto porque cada um sozinho já mostrou falso positivo/negativo
       // real nos dados (ex: BR14289/26 tinha 72% de valor mas 0% de quantidade).
-      // jaFaturado agora é SÓ sinal de monitoramento (o Sankhya mostra que isso foi
-      // entregue/faturado) — NUNCA mais decide nada sozinho. Quem decide se o BR está
-      // Faturado, Pendente, Em Andamento etc. é sempre o PCP, manualmente, no campo
-      // Andamento. Antes essa conta automática chegava a TRAVAR a edição na tela
-      // (mostrava um selo fixo "não editável" quando jaFaturado batia) — o PCP não
-      // conseguia nem corrigir se o cálculo estivesse errado. Confirmado pelo PCP: a
-      // planilha dele é 100% manual, o sistema só deve monitorar, nunca decidir.
+      // pctQtd/pctValor ficam só como INFORMAÇÃO no tooltip da tela — não decidem
+      // mais nada (jaFaturado usa nota real, ver abaixo).
       const pctQtd=g.qtdPecas>0?(g.qtdEntregueTotal/g.qtdPecas)*100:0;
       const pctValor=g.valorTotal>0?(g.valorFaturadoReal/g.valorTotal)*100:0;
-      const jaFaturado=(g.itensTotal>0&&g.itensPendentesTotal===0)||(g.semPedidoSincronizado&&g.notas.length>0)||(pctQtd>=95&&pctValor>=95);
+      // FATURADO agora é 100% automático — a única fonte de verdade é ter nota fiscal
+      // REAL emitida no Sankhya (valorFaturadoReal>0). Chega de misturar % de
+      // quantidade/valor entregue: isso já deu falso positivo/negativo real nos dados
+      // (ex: BR14289/26 tinha 72% de valor mas 0% de quantidade). Nota real emitida é
+      // simples e direto — bate com o Sankhya, sem depender de ninguém marcar na mão.
+      // O PCP não escolhe mais "Faturado" no dropdown (removido do ANDAMENTO_MANUAL_CFG)
+      // — ele só clica em "Solicitar Faturamento", que registra data/hora do pedido,
+      // sem mudar status nenhum. O status vira Faturado sozinho quando a nota sair.
+      const jaFaturado=g.valorFaturadoReal>0||(g.semPedidoSincronizado&&g.notas.length>0);
       const statusOP=manual.status_op||'NAO_ENTREGUE';
-      const andamento=manual.andamento||'A_INICIAR';
+      const andamento=jaFaturado?'FATURADO':(manual.andamento||'A_INICIAR');
       const percentualFaturado=g.valorTotal>0?g.valorFaturadoQtd/g.valorTotal:0;
       const indicador=(dataFaturamento&&dataEntregaCP)?Math.round((new Date(dataFaturamento)-new Date(dataEntregaCP))/86400000):null;
       let descricaoIndicador='Não foi faturado';
@@ -1181,6 +1214,7 @@ export default function App(){
         status:g.situacaoEspecial?.status||null,
         descricaoResumo:g.descricoes.slice(0,1).join(', ')||'—',
         definicao:manual.definicao||'',escopo2:manual.escopo2||escopo2Auto||'',escopo2Deduzido:!manual.escopo2&&!!escopo2Auto,observacao:manual.observacao||'',
+        faturamentoSolicitadoEm:manual.faturamentoSolicitadoEm||null,faturamentoSolicitadoPor:manual.faturamentoSolicitadoPor||null,
       };
     }).sort((a,b)=>(a.dataInicioProjeto||'9999').localeCompare(b.dataInicioProjeto||'9999'));
   },[mestraDb,planilhaMestreCampos]);
@@ -4425,8 +4459,14 @@ export default function App(){
                               <td className="px-1 py-1 text-center">
                                 <AndamentoSelect value={r.andamentoEfetivo} onChange={v=>salvarCampoManualBR(r.br,'andamento',v)}
                                   title={`Qtd entregue: ${r.pctQtd.toFixed(0)}% · Valor faturado: ${r.pctValor.toFixed(0)}%`}/>
-                                {r.jaFaturado&&r.andamentoEfetivo!=='FATURADO'&&<span className="ml-1 text-blue-500" title="Sankhya indica que isso já foi entregue/faturado — só um aviso, você decide se marca">🔍</span>}
                                 {r.temServicoPendente&&<span className="ml-1 text-amber-500" title="Marcado como Faturado, mas ainda tem item de SERVIÇO com 0% entregue">⚠</span>}
+                                {r.andamentoEfetivo!=='FATURADO'&&(
+                                  r.faturamentoSolicitadoEm?(
+                                    <span className="block text-[8px] font-bold text-indigo-500 mt-0.5" title={`Solicitado por ${s(r.faturamentoSolicitadoPor)||'—'} em ${fmtDt(r.faturamentoSolicitadoEm)}`}>⏳ solicitado</span>
+                                  ):(
+                                    <button onClick={()=>solicitarFaturamento(r.br)} className="block text-[8px] font-bold text-indigo-600 hover:underline mt-0.5 mx-auto">Solicitar</button>
+                                  )
+                                )}
                               </td>
                               <td className="px-2 py-1.5 text-right text-slate-500 whitespace-nowrap">{fmtDt(r.dataEntregaCP)}</td>
                               <td className="px-2 py-1.5 text-right whitespace-nowrap">
@@ -4648,6 +4688,13 @@ export default function App(){
                                 <td className="px-3 py-2 whitespace-nowrap">
                                   <AndamentoSelect value={r.andamentoEfetivo} onChange={v=>salvarCampoManualBR(r.br,'andamento',v)}/>
                                   {r.temServicoPendente&&<span className="ml-1 text-amber-500" title="Marcado como Faturado, mas ainda tem item de SERVIÇO com 0% entregue — o produto físico saiu, o serviço não">⚠</span>}
+                                  {r.andamentoEfetivo!=='FATURADO'&&(
+                                    r.faturamentoSolicitadoEm?(
+                                      <span className="ml-1.5 text-[9px] font-bold text-indigo-500" title={`Solicitado por ${s(r.faturamentoSolicitadoPor)||'—'} em ${fmtDt(r.faturamentoSolicitadoEm)}`}>⏳ solicitado</span>
+                                    ):(
+                                      <button onClick={()=>solicitarFaturamento(r.br)} className="ml-1.5 text-[9px] font-bold text-indigo-600 hover:underline">Solicitar faturamento</button>
+                                    )
+                                  )}
                                 </td>
                                 <td className="px-3 py-2 text-slate-500 whitespace-nowrap">{r.dataFaturamento?fmtDt(r.dataFaturamento):<span className="text-slate-300">—</span>}</td>
                                 <td className="px-3 py-2 whitespace-nowrap">
