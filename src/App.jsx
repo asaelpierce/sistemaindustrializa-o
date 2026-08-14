@@ -1196,12 +1196,17 @@ export default function App(){
     const diasNoMes=new Date(anoNum,mesNum,0).getDate();
     const totalSemanas=Math.ceil(diasNoMes/7);
 
+    // PREVISTO = carteira com entrega prevista pra este mês (o compromisso do mês).
     const linhasDoMes=planilhaMestreLinhas.filter(r=>r.mesChave===mesRef);
     const valorPrevisto=linhasDoMes.reduce((a,r)=>a+r.valorTotal,0);
     const metaSemanal=totalSemanas>0?valorPrevisto/totalSemanas:0;
 
+    // REALIZADO = TUDO que foi faturado neste mês, de QUALQUER projeto — inclusive os
+    // previstos pra outros meses (faturado adiantado ou atrasado). Antes só somava
+    // notas de projetos cujo mês previsto era o mês atual, o que descartava boa parte:
+    // em agosto/2026 dava R$257.992 (11 notas) em vez de R$474.792 (16 notas).
     const valorPorSemana=Array(totalSemanas+1).fill(0);
-    linhasDoMes.forEach(r=>{
+    planilhaMestreLinhas.forEach(r=>{
       (r.notas||[]).forEach(n=>{
         if(!n.dataFaturamento)return;
         const dt=s(n.dataFaturamento);
