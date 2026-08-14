@@ -1824,6 +1824,13 @@ export default function App(){
         // do PCP) = não é mais compromisso ativo pra fins de atraso, mesmo sem ter sido
         // fisicamente entregue no Sankhya ainda — o PCP já sabe o real status, não o
         // sistema. "Faturado" resolve o caso de "já faturei mas o sistema ainda cobra".
+        // "Atendido" = compromisso encerrado (não aparece mais no Previsto do mês).
+        // CUIDADO: PENDENTE (andamento manual) NÃO entra aqui — projeto pendente ainda
+        // é compromisso do mês, só está travado esperando algo de fora (desenho,
+        // faturamento de terceiro). Ele sai só da conta de ATRASO/esteira, via a flag
+        // "pendente" logo abaixo — não da lista de previstos. Tratá-lo como atendido
+        // sumia com ele do Previsto e subestimava o valor do mês (ex: BR14349/26,
+        // R$28.069, desaparecia da lista inteira).
         const atendido=percentualFaturado>=0.999||andamentoManual==='FATURADO'||(r.situacaoEspecial&&(r.situacaoEspecial.status==='CANCELADO'||r.situacaoEspecial.status==='PENDENTE'));
         // Data de referência = material tem que estar pronto 5 dias antes do CP.
         // Alerta de esteira = 20 dias antes do CP, pra entrar na fila de fabricação a tempo.
@@ -1835,7 +1842,12 @@ export default function App(){
         const aguardandoImportacao=!!importacaoPorBRooh[r.br];
         // Aguardando importação não entra na esteira nem em atrasados — o material nem
         // chegou no país, cobrar prazo de produção disso não faz sentido.
-        const precisaEntrarNaEsteira=!atendido&&!pendente&&!aguardandoImportacao&&dataAlertaEsteira&&hojeOOH>=dataAlertaEsteira;
+        // O ⚠ de esteira serve pra avisar "faltam ≤20 dias pro CP e isso ainda não
+        // entrou na fila de fabricação". Se o projeto JÁ está em andamento (ou
+        // concluído), o aviso não tem função nenhuma — a produção já começou, e ficar
+        // marcando como atraso só polui a tela com alarme falso.
+        const jaComecou=andamentoManual==='EM_ANDAMENTO'||andamentoManual==='CONCLUIDO';
+        const precisaEntrarNaEsteira=!atendido&&!pendente&&!aguardandoImportacao&&!jaComecou&&dataAlertaEsteira&&hojeOOH>=dataAlertaEsteira;
         // valorFaturado tem que refletir o que REALMENTE saiu. Só r.valorEntregue (base
         // em qtd_entregue) subestima quando o Sankhya não atualiza a entrega mesmo já
         // tendo nota emitida — foi o que fez "A faturar" ficar igual à "Carteira total"
