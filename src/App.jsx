@@ -498,6 +498,52 @@ function Inp({className="",...props}){
   return<input className={`w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-2.5 text-sm font-medium text-slate-900 outline-none focus:border-indigo-400 focus:bg-white transition-colors placeholder:text-slate-400 ${className}`} {...props}/>;
 }
 
+// Filtro multi-seleção estilo Excel: marca várias opções ao mesmo tempo, com busca
+// interna quando a lista é longa. Fecha ao clicar fora.
+function FiltroMulti({label,opcoes,selecionados,onToggle,onLimpar,aberto,onAbrir}){
+  const [busca,setBusca]=React.useState('');
+  const ref=React.useRef(null);
+  React.useEffect(()=>{
+    if(!aberto)return;
+    const fechar=e=>{if(ref.current&&!ref.current.contains(e.target))onAbrir(null);};
+    document.addEventListener('mousedown',fechar);
+    return()=>document.removeEventListener('mousedown',fechar);
+  },[aberto,onAbrir]);
+  const n=selecionados.length;
+  const filtradas=busca.trim()?opcoes.filter(o=>String(o.label).toLowerCase().includes(busca.trim().toLowerCase())):opcoes;
+  return(
+    <div className="relative" ref={ref}>
+      <button onClick={()=>onAbrir(aberto?null:label)}
+        className={`flex items-center gap-1.5 text-xs font-bold border rounded-xl px-3 py-2 transition-colors ${n>0?'bg-indigo-50 border-indigo-300 text-indigo-700':'bg-white border-slate-200 text-slate-600 hover:border-slate-300'}`}>
+        {label}{n>0&&<span className="bg-indigo-600 text-white text-[10px] font-black px-1.5 py-0.5 rounded-full">{n}</span>}
+        <ArrowDown className={`w-3 h-3 transition-transform ${aberto?'rotate-180':''}`}/>
+      </button>
+      {aberto&&(
+        <div className="absolute z-50 mt-1 w-60 bg-white border border-slate-200 rounded-xl shadow-lg overflow-hidden">
+          {opcoes.length>8&&(
+            <input autoFocus value={busca} onChange={e=>setBusca(e.target.value)} placeholder="Buscar..."
+              className="w-full text-xs border-b border-slate-100 px-3 py-2 focus:outline-none"/>
+          )}
+          <div className="max-h-60 overflow-y-auto custom-scrollbar py-1">
+            {filtradas.length===0&&<p className="text-xs text-slate-400 px-3 py-2">Nada encontrado.</p>}
+            {filtradas.map(o=>(
+              <label key={o.valor} className="flex items-center gap-2 px-3 py-1.5 hover:bg-slate-50 cursor-pointer">
+                <input type="checkbox" checked={selecionados.includes(o.valor)} onChange={()=>onToggle(o.valor)}
+                  className="w-3.5 h-3.5 rounded border-slate-300 text-indigo-600 focus:ring-indigo-400"/>
+                <span className="text-xs text-slate-700 truncate">{o.label}</span>
+                {o.count!==undefined&&<span className="ml-auto text-[10px] text-slate-400">{o.count}</span>}
+              </label>
+            ))}
+          </div>
+          {n>0&&(
+            <button onClick={onLimpar} className="w-full text-[11px] font-bold text-slate-500 border-t border-slate-100 py-2 hover:bg-slate-50">Limpar ({n})</button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function Sel({className="",children,...props}){
   return<select className={`w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-2.5 text-sm font-medium text-slate-900 outline-none focus:border-indigo-400 focus:bg-white transition-colors cursor-pointer ${className}`} {...props}>{children}</select>;
 }
@@ -905,6 +951,9 @@ export default function App(){
   const planilhaMestreLinhas=useMemo(()=>{
     const porBR={};
     mestraDb.forEach(r=>{
+      // A partir de 2026: decisão do PCP de não trabalhar mais com histórico de 2025.
+      // Sem prazo definido continua entrando (ainda é compromisso em aberto).
+      if(r.mesReferencia&&r.mesReferencia!=='sem-prazo'&&r.mesReferencia<MESTRA_DATA_CORTE)return;
       const br=r.br;
       if(!porBR[br])porBR[br]={
         br,cliente:r.cliente,vendedor:r.vendedor,emissao:r.dataNeg,
@@ -992,7 +1041,16 @@ export default function App(){
   // Busca + filtros + paginação — com ~500 projetos, montar todas as linhas de uma vez
   // (cada uma com 4 campos editáveis) deixava a tela pesada pra digitar/rolar.
   const [planilhaMestreBusca,setPlanilhaMestreBusca]=useState('');
-  const [planilhaMestreFiltros,setPlanilhaMestreFiltros]=useState({statusOp:'TODOS',andamento:'TODOS',escopo2:'TODOS',situacao:'TODOS',mes:'TODOS'});
+  // Filtros multi-seleção (estilo Excel): array vazio = "todos". Guardar como array
+  // deixa marcar várias opções ao mesmo tempo (ex: KALIMPACT + REVESTIMENTO juntos).
+  const [planilhaMestreFiltros,setPlanilhaMestreFiltros]=useState({statusOp:[],andamento:[],escopo2:[],situacao:[],mes:[]});
+  const [filtroAbertoPM,setFiltroAbertoPM]=useState(null); // qual dropdown de filtro está aberto
+  const toggleFiltroPM=(campo,valor)=>setPlanilhaMestreFiltros(f=>{
+    const atual=f[campo]||[];
+    return{...f,[campo]:atual.includes(valor)?atual.filter(v=>v!==valor):[...atual,valor]};
+  });
+  const limparFiltroPM=campo=>setPlanilhaMestreFiltros(f=>({...f,[campo]:[]}));
+  const totalFiltrosAtivosPM=useMemo(()=>Object.values(planilhaMestreFiltros).reduce((a,arr)=>a+(arr?.length||0),0),[planilhaMestreFiltros]);
   const [planilhaMestrePagina,setPlanilhaMestrePagina]=useState(1);
   const [planilhaMestrePorPagina,setPlanilhaMestrePorPagina]=useState(60);
   const [planilhaMestreExpandida,setPlanilhaMestreExpandida]=useState(false);
@@ -1127,13 +1185,14 @@ export default function App(){
     const f=planilhaMestreFiltros;
     return planilhaMestreLinhas.filter(r=>{
       if(termo&&!(r.br.toLowerCase().includes(termo)||s(r.cliente).toLowerCase().includes(termo)||s(r.vendedor).toLowerCase().includes(termo)||s(r.escopo2).toLowerCase().includes(termo)))return false;
-      if(f.statusOp!=='TODOS'&&r.statusOP!==f.statusOp)return false;
-      if(f.andamento!=='TODOS'&&r.andamentoEfetivo!==f.andamento)return false;
-      if(f.escopo2!=='TODOS'&&r.escopo2!==f.escopo2)return false;
-      if(f.mes!=='TODOS'&&r.mesChave!==f.mes)return false;
-      if(f.situacao!=='TODOS'){
-        if(f.situacao==='NENHUMA'){if(r.status)return false;}
-        else if(r.status!==f.situacao)return false;
+      // Array vazio = sem filtro. Com itens = OR entre eles (igual filtro do Excel).
+      if(f.statusOp.length&&!f.statusOp.includes(r.statusOP))return false;
+      if(f.andamento.length&&!f.andamento.includes(r.andamentoEfetivo))return false;
+      if(f.escopo2.length&&!f.escopo2.includes(r.escopo2))return false;
+      if(f.mes.length&&!f.mes.includes(r.mesChave))return false;
+      if(f.situacao.length){
+        const sit=r.status||'NENHUMA';
+        if(!f.situacao.includes(sit))return false;
       }
       return true;
     });
@@ -3382,8 +3441,11 @@ export default function App(){
 
   const navItems=[
     ...(isAdmin?[{id:'DASHBOARD',label:'Painel Executivo',icon:LayoutDashboard,group:'Visão Geral'}]:[]),
-    ...((isAdmin||isPCP)?[{id:'MESTRA',label:'Mestra PCP',icon:FileSpreadsheet,group:'Visão Geral'},{id:'PLANILHA_MESTRE',label:'Planilha Mestre',icon:FileSpreadsheet,group:'Visão Geral'},{id:'ORDENS_PRODUCAO_SK',label:'OPs (Sankhya)',icon:Factory,group:'Visão Geral'}]:[]),
-    ...(isPCP?[{id:'OOH',label:'Planejamento (OOH)',icon:Calendar,group:'PCP'}]:[]),
+    ...((isAdmin||isPCP)?[{id:'PLANILHA_MESTRE',label:'Planilha Mestre',icon:FileSpreadsheet,group:'Visão Geral'},{id:'ORDENS_PRODUCAO_SK',label:'OPs (Sankhya)',icon:Factory,group:'Visão Geral'}]:[]),
+    // Planejamento (OOH) removido do menu a pedido do PCP: a lógica dele não batia com
+    // a planilha real, e o planejamento passa a ser feito 100% pela Planilha Mestre.
+    // O código da aba continua no arquivo (não foi apagado) — quando a nova versão for
+    // definida, é só reativar esta linha em vez de reconstruir tudo do zero.
     ...((isPCP||isExp)?[{id:'PRODUCAO',label:'Produção por Setor',icon:Factory,group:'PCP'}]:[]),
     ...(isPCP?[{id:'NOVA_OP',label:'Nova Remessa',icon:PackageOpen,group:'PCP'},{id:'HISTORICO_PCP',label:'Histórico de Envios',icon:History,group:'PCP'},{id:'UPLOAD_ESTOQUE',label:'Sincronizar ERP',icon:UploadCloud,group:'PCP'}]:[]),
     ...(isExp?[{id:'EXPEDICAO',label:'Fila de Expedição',icon:Truck,group:'Logística',badge:remPend.length||null},{id:'FORNECEDORES',label:'Retorno de Peças',icon:RotateCcw,group:'Logística'},{id:'CONTROLE_GERAL',label:'Controle Geral',icon:ListChecks,group:'Logística'}]:[]),
@@ -3754,10 +3816,12 @@ export default function App(){
             )}
 
             {/* ── MESTRA PCP (Pedidos de Venda + Faturamento, via Portal de Engenharia) ── */}
-            {aba==='MESTRA'&&(isAdmin||isPCP)&&(
+
+            {/* ── PLANILHA MESTRE — réplica literal da planilha do PCP ─────── */}
+            {aba==='PLANILHA_MESTRE'&&(isAdmin||isPCP)&&(
               <div className="space-y-4">
-                <SectionHeader title="Mestra PCP" subtitle="Pedidos de Venda x Faturamento por Projeto BR — dados sincronizados do Portal de Engenharia"
-                  actions={<div className="flex gap-2"><Btn variant="dark" size="sm" onClick={sincronizarPedidosEFaturamento} disabled={sincronizandoPedidos}><RefreshCw className={`w-4 h-4 ${sincronizandoPedidos?'animate-spin':''}`}/>Sincronizar Sankhya</Btn><Btn variant="secondary" size="sm" onClick={()=>{fetchMestra();fetchImportacaoPendente();}} disabled={mestraLoading}><RefreshCw className={`w-4 h-4 ${mestraLoading?'animate-spin':''}`}/>Recarregar</Btn></div>}/>
+                <SectionHeader title="Planilha Mestre" subtitle="Mesmas colunas da planilha do PCP — uma linha por BR, dados já sincronizados do Sankhya"
+                  actions={<div className="flex gap-2"><Btn variant="dark" size="sm" onClick={sincronizarPedidosEFaturamento} disabled={sincronizandoPedidos}><RefreshCw className={`w-4 h-4 ${sincronizandoPedidos?'animate-spin':''}`}/>Sincronizar Sankhya</Btn><Btn variant="secondary" size="sm" onClick={()=>{fetchMestra();fetchPlanilhaMestreCampos();fetchImportacaoPendente();}} disabled={mestraLoading||planilhaMestreLoading}><RefreshCw className={`w-4 h-4 ${(mestraLoading||planilhaMestreLoading)?'animate-spin':''}`}/>Recarregar</Btn></div>}/>
 
                 {mestraErro&&<div className="bg-red-50 border border-red-200 text-red-700 text-sm font-semibold rounded-xl px-4 py-3">{mestraErro}</div>}
 
@@ -3904,14 +3968,6 @@ export default function App(){
                   </div>
                   )}
                 </div>
-              </div>
-            )}
-
-            {/* ── PLANILHA MESTRE — réplica literal da planilha do PCP ─────── */}
-            {aba==='PLANILHA_MESTRE'&&(isAdmin||isPCP)&&(
-              <div className="space-y-4">
-                <SectionHeader title="Planilha Mestre" subtitle="Mesmas colunas da planilha do PCP — uma linha por BR, dados já sincronizados do Sankhya"
-                  actions={<div className="flex gap-2"><Btn variant="dark" size="sm" onClick={sincronizarPedidosEFaturamento} disabled={sincronizandoPedidos}><RefreshCw className={`w-4 h-4 ${sincronizandoPedidos?'animate-spin':''}`}/>Sincronizar Sankhya</Btn><Btn variant="secondary" size="sm" onClick={()=>{fetchMestra();fetchPlanilhaMestreCampos();fetchImportacaoPendente();}} disabled={mestraLoading||planilhaMestreLoading}><RefreshCw className={`w-4 h-4 ${(mestraLoading||planilhaMestreLoading)?'animate-spin':''}`}/>Recarregar</Btn></div>}/>
 
                 {/* Faturamento Semanal — Meta x Realizado: onde deveríamos estar x onde estamos */}
                 <div className="bg-white rounded-2xl border border-slate-200 p-6">
@@ -3960,35 +4016,27 @@ export default function App(){
                     <input value={planilhaMestreBusca} onChange={e=>setPlanilhaMestreBusca(e.target.value)} placeholder="Buscar BR, cliente, vendedor ou escopo..."
                       className="w-full text-sm border border-slate-200 rounded-xl pl-9 pr-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-200"/>
                   </div>
-                  <select value={planilhaMestreFiltros.statusOp} onChange={e=>setPlanilhaMestreFiltros(f=>({...f,statusOp:e.target.value}))} className="text-xs font-bold border border-slate-200 rounded-xl px-3 py-2 bg-white">
-                    <option value="TODOS">Status OP: Todos</option>
-                    <option value="ENTREGUE">Entregue</option>
-                    <option value="NAO_ENTREGUE">Não entregue</option>
-                  </select>
-                  <select value={planilhaMestreFiltros.andamento} onChange={e=>setPlanilhaMestreFiltros(f=>({...f,andamento:e.target.value}))} className="text-xs font-bold border border-slate-200 rounded-xl px-3 py-2 bg-white">
-                    <option value="TODOS">Andamento: Todos</option>
-                    {Object.entries(ANDAMENTO_CFG).map(([k,c])=><option key={k} value={k}>{c.label}</option>)}
-                  </select>
+                  <FiltroMulti label="Status OP" aberto={filtroAbertoPM==='Status OP'} onAbrir={setFiltroAbertoPM}
+                    opcoes={[{valor:'ENTREGUE',label:'Entregue'},{valor:'NAO_ENTREGUE',label:'Não entregue'}]}
+                    selecionados={planilhaMestreFiltros.statusOp} onToggle={v=>toggleFiltroPM('statusOp',v)} onLimpar={()=>limparFiltroPM('statusOp')}/>
+                  <FiltroMulti label="Andamento" aberto={filtroAbertoPM==='Andamento'} onAbrir={setFiltroAbertoPM}
+                    opcoes={Object.entries(ANDAMENTO_CFG).map(([k,c])=>({valor:k,label:c.label}))}
+                    selecionados={planilhaMestreFiltros.andamento} onToggle={v=>toggleFiltroPM('andamento',v)} onLimpar={()=>limparFiltroPM('andamento')}/>
                   {planilhaMestreOpcoesEscopo2.length>0&&(
-                    <select value={planilhaMestreFiltros.escopo2} onChange={e=>setPlanilhaMestreFiltros(f=>({...f,escopo2:e.target.value}))} className="text-xs font-bold border border-slate-200 rounded-xl px-3 py-2 bg-white">
-                      <option value="TODOS">Escopo2: Todos</option>
-                      {planilhaMestreOpcoesEscopo2.map(e=><option key={e} value={e}>{e}</option>)}
-                    </select>
+                    <FiltroMulti label="Escopo" aberto={filtroAbertoPM==='Escopo'} onAbrir={setFiltroAbertoPM}
+                      opcoes={planilhaMestreOpcoesEscopo2.map(e=>({valor:e,label:e}))}
+                      selecionados={planilhaMestreFiltros.escopo2} onToggle={v=>toggleFiltroPM('escopo2',v)} onLimpar={()=>limparFiltroPM('escopo2')}/>
                   )}
-                  <select value={planilhaMestreFiltros.situacao} onChange={e=>setPlanilhaMestreFiltros(f=>({...f,situacao:e.target.value}))} className="text-xs font-bold border border-slate-200 rounded-xl px-3 py-2 bg-white">
-                    <option value="TODOS">Situação: Todas</option>
-                    <option value="NENHUMA">Sem marcação especial</option>
-                    <option value="PENDENTE">Pendente</option>
-                    <option value="CANCELADO">Cancelado</option>
-                  </select>
+                  <FiltroMulti label="Situação" aberto={filtroAbertoPM==='Situação'} onAbrir={setFiltroAbertoPM}
+                    opcoes={[{valor:'NENHUMA',label:'Sem marcação especial'},{valor:'PENDENTE',label:'Pendente'},{valor:'CANCELADO',label:'Cancelado'}]}
+                    selecionados={planilhaMestreFiltros.situacao} onToggle={v=>toggleFiltroPM('situacao',v)} onLimpar={()=>limparFiltroPM('situacao')}/>
                   {planilhaMestreOpcoesMes.length>0&&(
-                    <select value={planilhaMestreFiltros.mes} onChange={e=>setPlanilhaMestreFiltros(f=>({...f,mes:e.target.value}))} className="text-xs font-bold border border-slate-200 rounded-xl px-3 py-2 bg-white">
-                      <option value="TODOS">Mês: Todos</option>
-                      {planilhaMestreOpcoesMes.map(m=><option key={m.chave} value={m.chave}>{m.label}</option>)}
-                    </select>
+                    <FiltroMulti label="Mês" aberto={filtroAbertoPM==='Mês'} onAbrir={setFiltroAbertoPM}
+                      opcoes={planilhaMestreOpcoesMes.map(m=>({valor:m.chave,label:m.label}))}
+                      selecionados={planilhaMestreFiltros.mes} onToggle={v=>toggleFiltroPM('mes',v)} onLimpar={()=>limparFiltroPM('mes')}/>
                   )}
-                  {(planilhaMestreFiltros.statusOp!=='TODOS'||planilhaMestreFiltros.andamento!=='TODOS'||planilhaMestreFiltros.escopo2!=='TODOS'||planilhaMestreFiltros.situacao!=='TODOS'||planilhaMestreFiltros.mes!=='TODOS')&&(
-                    <button onClick={()=>setPlanilhaMestreFiltros({statusOp:'TODOS',andamento:'TODOS',escopo2:'TODOS',situacao:'TODOS',mes:'TODOS'})} className="text-xs font-bold text-red-600 hover:underline">Limpar filtros</button>
+                  {totalFiltrosAtivosPM>0&&(
+                    <button onClick={()=>setPlanilhaMestreFiltros({statusOp:[],andamento:[],escopo2:[],situacao:[],mes:[]})} className="text-xs font-bold text-red-600 hover:underline">Limpar todos ({totalFiltrosAtivosPM})</button>
                   )}
                   <span className="text-xs text-slate-400 ml-auto">{planilhaMestreFiltrada.length} de {planilhaMestreLinhas.length} projetos</span>
                   <button onClick={()=>setPlanilhaMestreExpandida(v=>!v)} className="flex items-center gap-1.5 text-xs font-bold text-indigo-600 border border-indigo-200 bg-indigo-50 rounded-full px-3 py-1.5 hover:bg-indigo-100">
