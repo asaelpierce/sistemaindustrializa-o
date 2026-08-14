@@ -1474,6 +1474,15 @@ export default function App(){
   // ── ABA PLANEJAMENTO: espelho da Planilha Mestre, por mês, com calendário ──
   const [planejamentoMesRef,setPlanejamentoMesRef]=useState(new Date().toISOString().slice(0,7));
   const [planejamentoVisao,setPlanejamentoVisao]=useState('RESUMO'); // RESUMO | PROJETOS
+  const [planejamentoBusca,setPlanejamentoBusca]=useState('');
+  const [planejamentoFiltros,setPlanejamentoFiltros]=useState({escopo2:[],andamento:[],indicador:[]});
+  const [filtroAbertoPlanej,setFiltroAbertoPlanej]=useState(null);
+  const togglePlanejFiltro=(campo,valor)=>setPlanejamentoFiltros(f=>{
+    const atual=f[campo]||[];
+    return{...f,[campo]:atual.includes(valor)?atual.filter(v=>v!==valor):[...atual,valor]};
+  });
+  const limparPlanejFiltro=campo=>setPlanejamentoFiltros(f=>({...f,[campo]:[]}));
+  const totalPlanejFiltrosAtivos=useMemo(()=>Object.values(planejamentoFiltros).reduce((a,arr)=>a+(arr?.length||0),0),[planejamentoFiltros]);
   const [planejamentoFechamentos,setPlanejamentoFechamentos]=useState({}); // {[mes]: {brs:[...],valorTotal,totalProjetos,fechadoPor,fechadoEm}}
   const [fechandoPlanejamento,setFechandoPlanejamento]=useState(false);
 
@@ -1561,6 +1570,21 @@ export default function App(){
   // Atrasado de verdade = tem valor VENCIDO SEM AVISO (item físico com prazo já
   // passado, sem reprogramação) somado no BR — nunca conta o valor de serviço, que já
   // vem separado (valorServicoEmAberto) desde a correção item a item.
+  // Opções disponíveis pros filtros — só o que realmente aparece no mês, pra não
+  // mostrar opção vazia (ex: só "Serviço" se tiver algum SERVIÇO no mês).
+  const planejamentoOpcoesEscopo=useMemo(()=>[...new Set(planejamentoDoMes.map(r=>r.escopo2).filter(Boolean))].sort(),[planejamentoDoMes]);
+  const planejamentoOpcoesIndicador=useMemo(()=>[...new Set(planejamentoDoMes.map(r=>r.descricaoIndicador).filter(Boolean))],[planejamentoDoMes]);
+  const planejamentoDoMesFiltrado=useMemo(()=>{
+    const termo=planejamentoBusca.trim().toLowerCase();
+    return planejamentoDoMes.filter(r=>{
+      if(termo&&!(r.br.toLowerCase().includes(termo)||s(r.cliente).toLowerCase().includes(termo)))return false;
+      if(planejamentoFiltros.escopo2.length&&!planejamentoFiltros.escopo2.includes(r.escopo2))return false;
+      if(planejamentoFiltros.andamento.length&&!planejamentoFiltros.andamento.includes(r.andamentoEfetivo))return false;
+      if(planejamentoFiltros.indicador.length&&!planejamentoFiltros.indicador.includes(r.descricaoIndicador))return false;
+      return true;
+    });
+  },[planejamentoDoMes,planejamentoBusca,planejamentoFiltros]);
+
   const planejamentoAtrasados=useMemo(()=>planilhaMestreComMesEfetivo.filter(r=>r.mesEfetivo&&r.mesEfetivo<planejamentoMesRef&&!r.jaFaturado&&(r.valorVencidoSemAviso>0)),[planilhaMestreComMesEfetivo,planejamentoMesRef]);
   const planejamentoFaturadosNoMes=useMemo(()=>planilhaMestreComMesEfetivo.filter(r=>(r.notas||[]).some(n=>s(n.dataFaturamento).slice(0,7)===planejamentoMesRef)),[planilhaMestreComMesEfetivo,planejamentoMesRef]);
   const planejamentoAcompanhamento=useMemo(()=>calcularAcompanhamentoSemanal(planejamentoMesRef),[calcularAcompanhamentoSemanal,planejamentoMesRef]);
@@ -4758,31 +4782,6 @@ export default function App(){
                   </div>
                 )}
 
-                {/* Onde deveríamos estar x onde estamos — previsto do mês ÷ semanas do mês */}
-                <div className="bg-white rounded-2xl border border-slate-200 p-6">
-                  <div className="flex items-center justify-between mb-1 flex-wrap gap-3">
-                    <div>
-                      <p className="text-sm font-black text-slate-800">Onde deveríamos estar x onde estamos — {planejamentoMesRef}</p>
-                      <p className="text-[11px] text-slate-400 mt-0.5">Previsto do mês ({fmtMoeda(planejamentoAcompanhamento.valorPrevisto)}) dividido linearmente pelas {planejamentoAcompanhamento.totalSemanas} semanas. Realizado = valor líquido acumulado das notas emitidas nesse mês.</p>
-                    </div>
-                    <div className="flex items-center gap-4 text-[11px] font-bold text-slate-500">
-                      <span className="flex items-center gap-1.5"><span className="w-3 h-[3px] rounded-full bg-red-600"/>Previsto</span>
-                      <span className="flex items-center gap-1.5"><span className="w-3 h-[3px] rounded-full bg-blue-600"/>Realizado</span>
-                    </div>
-                  </div>
-                  <div style={{height:300}}>
-                    <ResponsiveContainer width="100%" height="100%">
-                      <LineChart data={planejamentoAcompanhamento.pontos} margin={{top:15,right:15,left:0,bottom:0}}>
-                        <CartesianGrid strokeDasharray="3 3" vertical={false}/>
-                        <XAxis dataKey="name" tick={{fontSize:11,fontWeight:'700',fill:'#64748b'}}/>
-                        <YAxis tickFormatter={v=>`${(v/1000).toFixed(0)}k`} tick={{fontSize:11,fontWeight:'700',fill:'#64748b'}} width={50}/>
-                        <Tooltip formatter={v=>v!==null?fmtMoeda(v):'—'}/>
-                        <Line type="monotone" dataKey="Previsto" stroke="#dc2626" strokeWidth={3} dot={false} name="Previsto" connectNulls/>
-                        <Line type="monotone" dataKey="Realizado" stroke="#2563eb" strokeWidth={3.5} dot={{r:4}} name="Realizado" connectNulls/>
-                      </LineChart>
-                    </ResponsiveContainer>
-                  </div>
-                </div>
 
                 {planejamentoAtrasados.length>0&&(
                   <div className="bg-white rounded-2xl border border-red-200 overflow-hidden">
@@ -4807,7 +4806,7 @@ export default function App(){
                   <div className="px-5 py-3.5 border-b border-slate-100 bg-slate-50 flex items-center justify-between flex-wrap gap-2">
                     <p className="text-sm font-black text-slate-800">
                       OOH — {MESES_PT[Number(planejamentoMesRef.slice(5,7))-1][0]+MESES_PT[Number(planejamentoMesRef.slice(5,7))-1].slice(1).toLowerCase()}/{planejamentoMesRef.slice(0,4)}
-                      <span className="text-slate-400 font-bold"> ({planejamentoDoMes.length})</span>
+                      <span className="text-slate-400 font-bold"> ({planejamentoDoMesFiltrado.length}{planejamentoDoMesFiltrado.length!==planejamentoDoMes.length?` de ${planejamentoDoMes.length}`:''})</span>
                     </p>
                     {planejamentoFechamentoAtual?(
                       <span className="text-[10px] font-black text-teal-700 bg-teal-50 border border-teal-200 rounded-full px-2 py-0.5">✓ Fechado</span>
@@ -4815,8 +4814,33 @@ export default function App(){
                       <span className="text-[10px] font-black text-amber-700 bg-amber-50 border border-amber-200 rounded-full px-2 py-0.5">Ainda não fechado</span>
                     )}
                   </div>
-                  {planejamentoDoMes.length===0?(
-                    <div className="px-5 py-10 text-center text-slate-400 font-semibold">Nenhum projeto previsto para este mês.</div>
+
+                  <div className="px-5 py-3 border-b border-slate-100 flex items-center gap-2 flex-wrap">
+                    <div className="relative flex-1 min-w-[200px] max-w-xs">
+                      <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2"/>
+                      <input value={planejamentoBusca} onChange={e=>setPlanejamentoBusca(e.target.value)} placeholder="Buscar BR ou cliente..."
+                        className="w-full text-sm border border-slate-200 rounded-xl pl-9 pr-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-200"/>
+                    </div>
+                    {planejamentoOpcoesEscopo.length>0&&(
+                      <FiltroMulti label="Escopo" aberto={filtroAbertoPlanej==='Escopo'} onAbrir={setFiltroAbertoPlanej}
+                        opcoes={planejamentoOpcoesEscopo.map(e=>({valor:e,label:e}))}
+                        selecionados={planejamentoFiltros.escopo2} onToggle={v=>togglePlanejFiltro('escopo2',v)} onLimpar={()=>limparPlanejFiltro('escopo2')}/>
+                    )}
+                    <FiltroMulti label="Andamento" aberto={filtroAbertoPlanej==='Andamento'} onAbrir={setFiltroAbertoPlanej}
+                      opcoes={Object.entries(ANDAMENTO_CFG).map(([k,c])=>({valor:k,label:c.label}))}
+                      selecionados={planejamentoFiltros.andamento} onToggle={v=>togglePlanejFiltro('andamento',v)} onLimpar={()=>limparPlanejFiltro('andamento')}/>
+                    {planejamentoOpcoesIndicador.length>0&&(
+                      <FiltroMulti label="Indicador" aberto={filtroAbertoPlanej==='Indicador'} onAbrir={setFiltroAbertoPlanej}
+                        opcoes={planejamentoOpcoesIndicador.map(i=>({valor:i,label:i}))}
+                        selecionados={planejamentoFiltros.indicador} onToggle={v=>togglePlanejFiltro('indicador',v)} onLimpar={()=>limparPlanejFiltro('indicador')}/>
+                    )}
+                    {(totalPlanejFiltrosAtivos>0||planejamentoBusca)&&(
+                      <button onClick={()=>{setPlanejamentoFiltros({escopo2:[],andamento:[],indicador:[]});setPlanejamentoBusca('');}} className="text-xs font-bold text-red-600 hover:underline">Limpar tudo{totalPlanejFiltrosAtivos>0?` (${totalPlanejFiltrosAtivos})`:''}</button>
+                    )}
+                  </div>
+
+                  {planejamentoDoMesFiltrado.length===0?(
+                    <div className="px-5 py-10 text-center text-slate-400 font-semibold">{planejamentoDoMes.length===0?'Nenhum projeto previsto para este mês.':'Nenhum projeto encontrado com esse filtro.'}</div>
                   ):(
                     <div className="overflow-x-auto custom-scrollbar">
                       <table className="w-full text-sm">
@@ -4834,7 +4858,7 @@ export default function App(){
                           </tr>
                         </thead>
                         <tbody className="divide-y divide-slate-100">
-                          {planejamentoDoMes.map(r=>{
+                          {planejamentoDoMesFiltrado.map(r=>{
                             const indCfg={
                               'Atrasou':'text-red-700 bg-red-50 border-red-200',
                               'Antecipou':'text-emerald-700 bg-emerald-50 border-emerald-200',
