@@ -2597,7 +2597,7 @@ export default function App(){
 
   // ── Produção por Setor: Ordem de Produção própria, por BR (independente de remessas) ──
   const SETORES=['VULCANIZACAO','CALDEIRARIA','REVESTIMENTO','CORTE','PINTURA'];
-  const SETOR_LABEL={VULCANIZACAO:'Vulcanização',CALDEIRARIA:'Caldeiraria',REVESTIMENTO:'Revestimento',CORTE:'Corte',PINTURA:'Pintura'};
+  const SETOR_LABEL={VULCANIZACAO:'Vulcanização',CALDEIRARIA:'Caldeiraria',REVESTIMENTO:'Revestimento',CORTE:'Corte',PINTURA:'Pintura',EXPEDICAO:'Direto p/ Expedição'};
   const [ordensProducao,setOrdensProducao]=useState([]);
   const [setorSelecionado,setSetorSelecionado]=useState('TODOS');
   const [novaOPForm,setNovaOPForm]=useState({br:'',cliente:'',setor:'',descricao:'',quantidade:''});
@@ -2636,10 +2636,28 @@ export default function App(){
   // Kalocer, Abresist. Mantas e mangotes SÃO produção — vão pra Vulcanização.
   // É uma decisão do PCP, mas dá pra derivar automaticamente pela descrição
   // do item (já sincronizada), sem esperar a OP existir.
+  // Roteamento automático de setor, por processo produtivo (Sankhya) + prefixo do
+  // código do item — a mesma regra de PROCESSO já validada pro Escopo2
+  // (deduzirEscopo2PorProcesso), agora decidindo TAMBÉM pra onde a produção manda o
+  // material fisicamente. Descoberta chave: o prefixo do produto (SM-/PP-/WPHSKRX-/
+  // KB-/WPKLT-) é MUITO mais confiável que procurar palavra solta na descrição
+  // inteira — "PP-BD-CJ-CURVA...MANTA-KALIMPACT" tem "MANTA" no nome mas É uma peça
+  // de tubulação fabricada, não vai direto pra expedição só por causa da palavra.
+  //   SM- (adesivo/manta/pastilha pronta — Kalfix, Kalpoxy, Chockybar, mantas) →
+  //     Direto pra Expedição, nunca passa por setor de produção nenhum.
+  //   CALDEIRARIA E REVESTIMENTO (processo) → direto pro setor Caldeiraria.
+  //   FABRICAÇÃO DE PEÇAS VULCANIZADAS BICROMATIZADAS/PINTADAS (processo) → aqui SEMPRE
+  //     precisa perguntar ao usuário se é Corte ou Padrão, porque decide se vai pro
+  //     setor de Corte ou de Pintura — não dá pra deduzir sozinho pela descrição.
+  // Roteamento automático de setor por PREFIXO do código do item — descoberta chave:
+  // o prefixo (SM-/PP-/WPHSKRX-/KB-/WPKLT-) é MUITO mais confiável que procurar
+  // palavra solta na descrição inteira. "PP-BD-CJ-CURVA...MANTA-KALIMPACT" tem
+  // "MANTA" no nome mas É uma peça de tubulação fabricada, não vai direto pra
+  // expedição só por causa da palavra — só item que COMEÇA com "SM-" (adesivo,
+  // manta/pastilha pronta, produto químico) vai direto, sem passar por produção.
   const classificarRoteiroEsperado=descricao=>{
     const d=s(descricao).toUpperCase();
-    if(/MANTA|MANGOTE/.test(d))return 'VULCANIZAÇÃO (esperado)';
-    if(/KALFIX|KALPOXY|CHOCKYBAR|KALOCER|ABRESIST/.test(d))return 'Direto p/ Expedição';
+    if(/^SM[- ]/.test(d))return 'Direto p/ Expedição';
     return null;
   };
 
@@ -5659,7 +5677,7 @@ export default function App(){
                         ))}
                       </div>
                       <p className="text-[11px] text-slate-400 mt-4">
-                        <span className="text-blue-700 font-bold">Azul</span> = OP real pendente (Sankhya). <span className="text-teal-700 font-bold">Verde</span> = OP real concluída. <span className="text-amber-700 font-bold">Âmbar</span> = classificação esperada (Kalfix/Kalpoxy/Chockybar/Kalocer/Abresist = direto p/ expedição; Manta/Mangote = Vulcanização) — <strong>clique pra direcionar pra produção com 1 clique</strong>. Pra qualquer outro item, use "Ver itens e direcionar por área". Base: todo projeto com entrega prevista no mês selecionado, não só quem já tem OP.
+                        <span className="text-blue-700 font-bold">Azul</span> = OP real pendente (Sankhya). <span className="text-teal-700 font-bold">Verde</span> = OP real concluída. <span className="text-amber-700 font-bold">Âmbar</span> = item começa com "SM-" (adesivo/pastilha pronta, ex: Kalfix, Kalpoxy, Chockybar) = direto p/ expedição, sem manufatura — <strong>clique pra direcionar pra produção com 1 clique</strong>. Pra qualquer outro item, use "Ver itens e direcionar por área" — lá aparece a sugestão de setor quando o processo é conhecido (Caldeiraria automático), ou o aviso pra decidir manualmente Corte ou Pintura (processo de peças vulcanizadas). Base: todo projeto com entrega prevista no mês selecionado, não só quem já tem OP.
                       </p>
                     </div>
                   )}
@@ -8280,6 +8298,14 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
             const materiais=produtosDb[item.codProduto]?.materiais;
             const composicaoAberta=itemComposicaoAberta===item.codProduto;
             const qtdNovoLote=novoLoteQtd[item.codProduto]??qtdRestante;
+            // Sugestão de roteamento: processo real do BR (via OP Sankhya, se já
+            // existir) tem prioridade; senão cai no prefixo do código do item.
+            const processoBR=s(itensDirecionarBR.setoresLista?.[0]?.processo).toUpperCase();
+            const sugestaoAutomatica=classificarRoteiroEsperado(item.descricao);
+            let sugestaoTexto=null,sugestaoCls='text-slate-400';
+            if(sugestaoAutomatica==='Direto p/ Expedição'){sugestaoTexto='Direto p/ Expedição (sem manufatura)';sugestaoCls='text-amber-600';}
+            else if(processoBR.includes('CALDEIRARIA')){sugestaoTexto='Sugestão: Caldeiraria (processo do BR)';sugestaoCls='text-indigo-600';}
+            else if(processoBR.includes('VULCANIZADA')){sugestaoTexto='Decisão manual: Corte ou Pintura?';sugestaoCls='text-orange-600 font-black';}
             return(
               <div key={i} className="bg-slate-50 border border-slate-100 rounded-xl px-4 py-3">
                 <button onClick={()=>setItemComposicaoAberta(composicaoAberta?null:item.codProduto)} className="w-full text-left flex items-start gap-1.5 group mb-2">
@@ -8287,6 +8313,7 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
                   <span className="min-w-0">
                     <p className="text-sm font-bold text-slate-900 group-hover:text-indigo-700 truncate" title={item.descricao}>{item.descricao}</p>
                     <p className="text-xs text-slate-500 mt-0.5">Código PA: {item.codProduto} · Qtd pedida: {item.qtdPedida} {item.unidade} {Array.isArray(materiais)?`· ${materiais.length} insumo(s) na composição`:'· composição não cadastrada'}</p>
+                    {sugestaoTexto&&<p className={`text-[11px] mt-1 ${sugestaoCls}`}>{sugestaoTexto}</p>}
                   </span>
                 </button>
 
