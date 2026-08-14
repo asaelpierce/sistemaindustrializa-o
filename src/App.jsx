@@ -1079,7 +1079,7 @@ export default function App(){
         br,cliente:r.cliente,vendedor:r.vendedor,emissao:r.dataNeg,
         valorTotal:0,valorFaturadoQtd:0,valorAFaturar:0,qtdPecas:0,qtdEntregueTotal:0,valorFaturadoReal:0,pedidosCount:0,
         descricoes:[],datasEntregaCP:[],datasReferencia:[],situacaoEspecial:null,reprogramacao:null,
-        itensPendentesTotal:0,itensTotal:0,notas:r.notas||[],semPedidoSincronizado:r.semPedidoSincronizado,
+        itensPendentesTotal:0,itensTotal:0,notas:r.notas||[],semPedidoSincronizado:r.semPedidoSincronizado,itens:[],
       };
       const g=porBR[br];
       g.pedidosCount+=1;
@@ -1091,6 +1091,9 @@ export default function App(){
       g.valorTotal+=r.valorTotal;
       g.valorFaturadoQtd+=r.valorPedidoAtendido;
       g.valorAFaturar+=r.valorAFaturar;
+      // Junta os itens de TODOS os pedidos deste BR — quem clica no BR na Planilha
+      // Mestra precisa ver todo item, de qualquer nunota, não só do primeiro pedido.
+      g.itens.push(...(r.itens||[]));
       (r.itens||[]).forEach(it=>{g.qtdPecas+=it.qtdPedida||0;g.qtdEntregueTotal+=it.qtdEntregue||0;});
       if(r.descricaoResumo&&r.descricaoResumo!=='—'&&!g.descricoes.includes(r.descricaoResumo))g.descricoes.push(r.descricaoResumo);
       if(r.dataPrevistaOriginal)g.datasEntregaCP.push(r.dataPrevistaOriginal);
@@ -4214,7 +4217,8 @@ export default function App(){
                           return(
                             <tr key={r.br} className="hover:bg-slate-50">
                               <td className="px-2 py-1.5 font-bold text-indigo-700 whitespace-nowrap sticky left-0 bg-white hover:bg-slate-50">
-                                {r.br}{r.semPedidoSincronizado&&<span className="ml-1 text-[8px] text-violet-500" title="Sem pedido sincronizado">•</span>}
+                                <button onClick={()=>setMestraNotasSel(r)} className="hover:underline" title="Ver itens e notas fiscais deste BR">{r.br}</button>
+                                {r.semPedidoSincronizado&&<span className="ml-1 text-[8px] text-violet-500" title="Sem pedido sincronizado">•</span>}
                                 {importacaoPorBR[r.br]?.itensImportacao.length>0&&(
                                   <button onClick={()=>setImportacaoDetalheSel(importacaoPorBR[r.br])} className={`ml-1 ${importacaoPorBR[r.br].prioridadeMin<=2?'text-red-500':'text-amber-500'}`} title={`Ver itens aguardando importação${importacaoPorBR[r.br].maiorAtrasoEmbarque>0?` — ${importacaoPorBR[r.br].maiorAtrasoEmbarque}d de atraso no embarque`:''}`}>⏳</button>
                                 )}
