@@ -1475,6 +1475,16 @@ export default function App(){
   const [planejamentoMesRef,setPlanejamentoMesRef]=useState(new Date().toISOString().slice(0,7));
   const [planejamentoVisao,setPlanejamentoVisao]=useState('RESUMO'); // RESUMO | PROJETOS
   const [planejamentoBusca,setPlanejamentoBusca]=useState('');
+  // Montagem manual do fechamento: quando o mês ainda não foi fechado, o PCP escolhe
+  // um por um quais projetos entram — igual ele já faz na planilha Excel. Todos vêm
+  // pré-marcados por padrão (mais rápido pro caso comum de incluir quase tudo), ele
+  // desmarca quem não quer. Set de BRs desmarcados (mais barato que marcar todos).
+  const [planejamentoDesmarcados,setPlanejamentoDesmarcados]=useState(()=>new Set());
+  const togglePlanejamentoSelecao=br=>setPlanejamentoDesmarcados(prev=>{
+    const novo=new Set(prev);
+    if(novo.has(br))novo.delete(br);else novo.add(br);
+    return novo;
+  });
   const [planejamentoFiltros,setPlanejamentoFiltros]=useState({escopo2:[],andamento:[],indicador:[]});
   const [filtroAbertoPlanej,setFiltroAbertoPlanej]=useState(null);
   const togglePlanejFiltro=(campo,valor)=>setPlanejamentoFiltros(f=>{
@@ -1532,8 +1542,11 @@ export default function App(){
 
   const fecharPlanejamentoDoMes=async()=>{
     const jaFechado=!!planejamentoFechamentoAtual;
-    const brsParaFechar=jaFechado?planejamentoDoMes:planejamentoDinamicoDoMes;
-    if(brsParaFechar.length===0)return addToast('Nenhum projeto pra fechar.','error');
+    // Re-fechar mantém tudo que já estava na lista fechada (o PCP usa "incluir" pra
+    // adicionar caso a caso). Fechar pela primeira vez usa a montagem manual —
+    // só quem NÃO foi desmarcado no checklist.
+    const brsParaFechar=jaFechado?planejamentoDoMes:planejamentoDinamicoDoMes.filter(r=>!planejamentoDesmarcados.has(r.br));
+    if(brsParaFechar.length===0)return addToast('Nenhum projeto selecionado pra fechar.','error');
     if(!window.confirm(`${jaFechado?'Re-fechar':'Fechar'} o planejamento de ${planejamentoMesRef} com ${brsParaFechar.length} projeto(s)?\n\nIsso define QUAIS projetos fazem parte do mês — valor e status continuam sempre atualizados ao vivo.`))return;
     setFechandoPlanejamento(true);
     try{
@@ -1546,6 +1559,7 @@ export default function App(){
       }]);
       if(error)throw error;
       addToast(`Planejamento de ${planejamentoMesRef} fechado: ${snapshot.length} projeto(s).`);
+      setPlanejamentoDesmarcados(new Set());
       fetchPlanejamentoFechamentos();
     }catch(e){addToast('Erro ao fechar: '+e.message,'error');}
     finally{setFechandoPlanejamento(false);}
@@ -4600,9 +4614,11 @@ export default function App(){
                         </span>
                       )}
                     </div>
-                    <Btn variant="dark" size="sm" onClick={fecharPlanejamentoDoMes} disabled={fechandoPlanejamento} className="!bg-white/10 hover:!bg-white/20 !text-white">
-                      <CheckCircle className={`w-4 h-4 ${fechandoPlanejamento?'animate-pulse':''}`}/>{planejamentoFechamentoAtual?'Re-fechar planejamento':'Fechar planejamento do mês'}
-                    </Btn>
+                    {planejamentoFechamentoAtual&&(
+                      <Btn variant="dark" size="sm" onClick={fecharPlanejamentoDoMes} disabled={fechandoPlanejamento} className="!bg-white/10 hover:!bg-white/20 !text-white">
+                        <CheckCircle className={`w-4 h-4 ${fechandoPlanejamento?'animate-pulse':''}`}/>Re-fechar planejamento
+                      </Btn>
+                    )}
                   </div>
                   <div className="relative px-6 py-6 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-x-8 gap-y-5">
                     <div>
@@ -4815,6 +4831,21 @@ export default function App(){
                     )}
                   </div>
 
+                  {!planejamentoFechamentoAtual&&(()=>{
+                    const selecionados=planejamentoDinamicoDoMes.filter(r=>!planejamentoDesmarcados.has(r.br));
+                    const valorSelecionado=selecionados.reduce((a,r)=>a+r.valorTotal,0);
+                    return(
+                      <div className="px-5 py-3 border-b border-indigo-100 bg-indigo-50/50 flex items-center justify-between flex-wrap gap-3">
+                        <p className="text-xs font-bold text-indigo-800">
+                          Montando o planejamento: <span className="font-black">{selecionados.length}</span> de {planejamentoDinamicoDoMes.length} selecionado(s), <span className="font-black">{fmtMoeda(valorSelecionado)}</span>
+                        </p>
+                        <Btn variant="primary" size="sm" onClick={fecharPlanejamentoDoMes} disabled={fechandoPlanejamento||selecionados.length===0}>
+                          <CheckCircle className={`w-4 h-4 ${fechandoPlanejamento?'animate-pulse':''}`}/>Fechar com {selecionados.length} projeto(s)
+                        </Btn>
+                      </div>
+                    );
+                  })()}
+
                   <div className="px-5 py-3 border-b border-slate-100 flex items-center gap-2 flex-wrap">
                     <div className="relative flex-1 min-w-[200px] max-w-xs">
                       <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2"/>
@@ -4846,6 +4877,20 @@ export default function App(){
                       <table className="w-full text-sm">
                         <thead className="bg-slate-50 border-b border-slate-200">
                           <tr className="text-left text-[10px] font-black text-slate-500 uppercase tracking-wider">
+                            {!planejamentoFechamentoAtual&&(
+                              <th className="px-3 py-2.5 w-8">
+                                <input type="checkbox"
+                                  checked={planejamentoDoMesFiltrado.length>0&&planejamentoDoMesFiltrado.every(r=>!planejamentoDesmarcados.has(r.br))}
+                                  onChange={e=>{
+                                    setPlanejamentoDesmarcados(prev=>{
+                                      const novo=new Set(prev);
+                                      planejamentoDoMesFiltrado.forEach(r=>{if(e.target.checked)novo.delete(r.br);else novo.add(r.br);});
+                                      return novo;
+                                    });
+                                  }}
+                                  className="w-4 h-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-400"/>
+                              </th>
+                            )}
                             <th className="px-3 py-2.5">BR</th>
                             <th className="px-3 py-2.5">Cliente</th>
                             <th className="px-3 py-2.5">Escopo</th>
@@ -4872,8 +4917,15 @@ export default function App(){
                             const entregueInferido=r.statusOP==='ENTREGUE'||r.andamentoEfetivo==='FATURADO'||r.andamentoEfetivo==='CONCLUIDO';
                             const valorLinha=planejamentoFechamentoAtual?(valorFechadoPorBr[r.br]??r.valorTotal):r.valorTotal;
                             const aFaturarLinha=r.andamentoEfetivo==='FATURADO'?0:valorLinha;
+                            const desmarcado=planejamentoDesmarcados.has(r.br);
                             return(
-                              <tr key={r.br} className="hover:bg-slate-50">
+                              <tr key={r.br} className={`hover:bg-slate-50 ${desmarcado?'opacity-40':''}`}>
+                                {!planejamentoFechamentoAtual&&(
+                                  <td className="px-3 py-2">
+                                    <input type="checkbox" checked={!desmarcado} onChange={()=>togglePlanejamentoSelecao(r.br)}
+                                      className="w-4 h-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-400"/>
+                                  </td>
+                                )}
                                 <td className="px-3 py-2 whitespace-nowrap"><button onClick={()=>setMestraNotasSel(r)} className="font-bold text-indigo-700 hover:underline">{r.br}</button></td>
                                 <td className="px-3 py-2 text-slate-600 truncate max-w-[200px]">{s(r.cliente)}</td>
                                 <td className="px-3 py-2 whitespace-nowrap">{r.escopo2?<span className="text-[10px] font-bold text-slate-600 bg-slate-100 border border-slate-200 rounded-full px-2 py-0.5">{r.escopo2}</span>:<span className="text-[10px] text-slate-300">—</span>}</td>
