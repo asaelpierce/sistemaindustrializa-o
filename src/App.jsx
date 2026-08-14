@@ -846,7 +846,7 @@ export default function App(){
     if(!supabase)return;
     setImportacaoLoading(true);
     try{
-      const{data,error}=await supabase.from('compras_pendentes').select('br,fornecedor,descricao_produto,quantidade_pendente,data_embarque,data_prevista_entrega,dias_atraso_embarque,dias_atraso_entrega,prioridade,numero_pedido,tipo_pedido').not('br','is',null);
+      const{data,error}=await supabase.from('compras_pendentes').select('br,fornecedor,descricao_produto,quantidade_pendente,data_embarque,data_prevista_entrega,dias_atraso_embarque,dias_atraso_entrega,prioridade,numero_pedido,tipo_pedido').not('br','is',null).gt('quantidade_pendente',0);
       if(error)throw error;
       const porBR={};
       (data||[]).forEach(p=>{
@@ -1750,15 +1750,26 @@ export default function App(){
         const percentualAtendido=r.valorTotal>0?valorPedidoAtendido/r.valorTotal:(faturado>0?1:0);
 
         // Visão de PRAZO (é o que o PCP precisa cobrar): do que está em aberto,
-        // quanto venceu sem ninguém informar nova data.
-        const somaAberto=f=>itensDoPedido.filter(f).reduce((a,i)=>a+i.valorEmAberto,0);
+        // quanto venceu sem ninguém informar nova data. SERVIÇO é separado ITEM A
+        // ITEM aqui (não pelo pedido inteiro) — um pedido pode ter item físico
+        // atrasado de verdade junto com 1 item de serviço; excluir o pedido inteiro
+        // escondia o atraso físico real. Achado com dado real: BR14349/26 tem 4 itens
+        // físicos atrasados + 1 de serviço — o atraso físico não pode desaparecer.
+        const ehItemServico=i=>/^SERVI/i.test(s(i.descricao)||'');
+        const somaAberto=f=>itensDoPedido.filter(i=>!ehItemServico(i)).filter(f).reduce((a,i)=>a+i.valorEmAberto,0);
+        const somaAbertoServico=f=>itensDoPedido.filter(ehItemServico).filter(f).reduce((a,i)=>a+i.valorEmAberto,0);
         const valorVencidoSemAviso=somaAberto(i=>i.situacaoPrazo==='VENCIDO_SEM_AVISO');
         const valorReprogramado=somaAberto(i=>i.situacaoPrazo==='REPROGRAMADO'||i.situacaoPrazo==='REPROG_VENCIDO');
         const valorAVencer=somaAberto(i=>i.situacaoPrazo==='A_VENCER');
         const valorSemPrazo=somaAberto(i=>i.situacaoPrazo==='SEM_PRAZO');
+        // Valor de serviço em aberto (qualquer situação de prazo) — informativo, nunca
+        // conta como atraso, mas precisa aparecer em algum lugar (não pode só sumir).
+        const valorServicoEmAberto=itensDoPedido.filter(ehItemServico).reduce((a,i)=>a+i.valorEmAberto,0);
 
-        // Situação do projeto = a mais grave entre seus itens em aberto
-        const abertos=itensDoPedido.filter(i=>i.qtdFaltante>0);
+        // Situação do projeto = a mais grave entre seus itens FÍSICOS em aberto —
+        // serviço não entra na avaliação (nem pra melhorar, nem pra piorar o status).
+        const abertos=itensDoPedido.filter(i=>i.qtdFaltante>0&&!ehItemServico(i));
+        const abertosServico=itensDoPedido.filter(i=>i.qtdFaltante>0&&ehItemServico(i));
         let situacaoPrazoBR='ENTREGUE';
         if(abertos.length>0){
           if(abertos.some(i=>i.situacaoPrazo==='VENCIDO_SEM_AVISO')) situacaoPrazoBR='VENCIDO_SEM_AVISO';
@@ -1766,10 +1777,15 @@ export default function App(){
           else if(abertos.some(i=>i.situacaoPrazo==='REPROGRAMADO')) situacaoPrazoBR='REPROGRAMADO';
           else if(abertos.some(i=>i.situacaoPrazo==='SEM_PRAZO')) situacaoPrazoBR='SEM_PRAZO';
           else situacaoPrazoBR='A_VENCER';
+        }else if(abertosServico.length>0){
+          // Só sobrou serviço em aberto (nada físico pendente) — aí sim o projeto como
+          // um todo é "SERVIÇO", igual já era antes, só que agora é preciso mesmo:
+          // não tem mais nenhum item físico atrasado escondido atrás disso.
+          situacaoPrazoBR='SERVICO';
         }
         const maiorAtraso=abertos.reduce((m,i)=>Math.max(m,i.diasAtraso||0),0);
-        // Prazo vigente do projeto = o mais apertado entre os itens em aberto
-        const dataVigenteBR=abertos.map(i=>i.dataVigente).filter(Boolean).sort()[0]||null;
+        // Prazo vigente do projeto = o mais apertado entre os itens FÍSICOS em aberto
+        const dataVigenteBR=(abertos.length>0?abertos:abertosServico).map(i=>i.dataVigente).filter(Boolean).sort()[0]||null;
         const dataPrevistaBR=itensDoPedido.map(i=>i.dataPrevista).filter(Boolean).sort()[0]||null;
 
         // Overrides manuais do PCP e regra de negócio de SERVIÇO — nesses casos o pedido
@@ -1778,16 +1794,12 @@ export default function App(){
         const situacaoEspecial=situacaoDoPedido(r.br,r.nunota);
         let situacaoPrazoFinal=situacaoPrazoBR;
         let valorVencidoFinal=valorVencidoSemAviso,valorReprogFinal=valorReprogramado,valorAVencerFinal=valorAVencer,valorSemPrazoFinal=valorSemPrazo;
-        let valorServico=0,valorPendenteEspecial=0,valorCanceladoEspecial=0;
+        let valorServico=valorServicoEmAberto,valorPendenteEspecial=0,valorCanceladoEspecial=0;
         if(situacaoEspecial&&abertos.length>0){
           const valorAberto=valorVencidoSemAviso+valorReprogramado+valorAVencer+valorSemPrazo;
           situacaoPrazoFinal=situacaoEspecial.status; // 'PENDENTE' ou 'CANCELADO'
           valorVencidoFinal=0;valorReprogFinal=0;valorAVencerFinal=0;valorSemPrazoFinal=0;
           if(situacaoEspecial.status==='PENDENTE')valorPendenteEspecial=valorAberto;else valorCanceladoEspecial=valorAberto;
-        }else if(r.temItemServico&&abertos.length>0){
-          valorServico=valorVencidoSemAviso+valorReprogramado+valorAVencer+valorSemPrazo;
-          situacaoPrazoFinal='SERVICO';
-          valorVencidoFinal=0;valorReprogFinal=0;valorAVencerFinal=0;valorSemPrazoFinal=0;
         }
 
         return{
