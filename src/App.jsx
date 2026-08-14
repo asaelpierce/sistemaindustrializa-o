@@ -908,7 +908,7 @@ export default function App(){
       const br=r.br;
       if(!porBR[br])porBR[br]={
         br,cliente:r.cliente,vendedor:r.vendedor,emissao:r.dataNeg,
-        valorTotal:0,valorFaturadoQtd:0,valorAFaturar:0,qtdPecas:0,pedidosCount:0,
+        valorTotal:0,valorFaturadoQtd:0,valorAFaturar:0,qtdPecas:0,qtdEntregueTotal:0,valorFaturadoReal:0,pedidosCount:0,
         descricoes:[],datasEntregaCP:[],datasReferencia:[],situacaoEspecial:null,reprogramacao:null,
         itensPendentesTotal:0,itensTotal:0,notas:r.notas||[],semPedidoSincronizado:r.semPedidoSincronizado,
       };
@@ -916,10 +916,13 @@ export default function App(){
       g.pedidosCount+=1;
       if(r.situacaoEspecial&&!g.situacaoEspecial)g.situacaoEspecial=r.situacaoEspecial;
       if(r.reprogramacao&&!g.reprogramacao)g.reprogramacao=r.reprogramacao;
+      // valorFaturado do mestraDb já é o total por BR (faturadoPorBR[br]), duplicado em
+      // toda linha de pedido do mesmo BR — pega só uma vez, nunca soma entre pedidos.
+      if(!g.valorFaturadoReal)g.valorFaturadoReal=r.valorFaturado||0;
       g.valorTotal+=r.valorTotal;
       g.valorFaturadoQtd+=r.valorPedidoAtendido;
       g.valorAFaturar+=r.valorAFaturar;
-      (r.itens||[]).forEach(it=>{g.qtdPecas+=it.qtdPedida||0;});
+      (r.itens||[]).forEach(it=>{g.qtdPecas+=it.qtdPedida||0;g.qtdEntregueTotal+=it.qtdEntregue||0;});
       if(r.descricaoResumo&&r.descricaoResumo!=='—'&&!g.descricoes.includes(r.descricaoResumo))g.descricoes.push(r.descricaoResumo);
       if(r.dataPrevistaOriginal)g.datasEntregaCP.push(r.dataPrevistaOriginal);
       if(r.dataVigente||r.dataPrevistaOriginal)g.datasReferencia.push(r.dataVigente||r.dataPrevistaOriginal);
@@ -954,7 +957,15 @@ export default function App(){
       // item nenhum pra checar saldo — a própria nota já é a única prova que existe, e
       // nesse caso ela vale. Achado real: BR12661/25 tinha nota de R$65.556,61 emitida e
       // aparecia como "não faturado" porque simplesmente não tinha pedido pra comparar.
-      const jaFaturado=(g.itensTotal>0&&g.itensPendentesTotal===0)||(g.semPedidoSincronizado&&g.notas.length>0);
+      // Terceira via: quando os itens individualmente ainda mostram saldo (às vezes o
+      // Sankhya não atualiza QTDENTREGUE direito mesmo já tendo nota), mas TANTO a
+      // quantidade quanto o valor já batem 95%+ no agregado do BR inteiro — confiável o
+      // bastante pra marcar sem depender de alguém lembrar de marcar manualmente. Exige
+      // os dois batendo junto porque cada um sozinho já mostrou falso positivo/negativo
+      // real nos dados (ex: BR14289/26 tinha 72% de valor mas 0% de quantidade).
+      const pctQtd=g.qtdPecas>0?(g.qtdEntregueTotal/g.qtdPecas)*100:0;
+      const pctValor=g.valorTotal>0?(g.valorFaturadoReal/g.valorTotal)*100:0;
+      const jaFaturado=(g.itensTotal>0&&g.itensPendentesTotal===0)||(g.semPedidoSincronizado&&g.notas.length>0)||(pctQtd>=95&&pctValor>=95);
       const statusOP=jaFaturado?'ENTREGUE':(manual.status_op||'NAO_ENTREGUE');
       const andamento=jaFaturado?'FATURADO':(manual.andamento||'A_INICIAR');
       const percentualFaturado=g.valorTotal>0?g.valorFaturadoQtd/g.valorTotal:0;
@@ -970,7 +981,7 @@ export default function App(){
       // por urgência (quem já devia ter começado aparece primeiro).
       const dataInicioProjeto=dataReferencia?subtrairDiasISO(dataReferencia,20):null;
       return{
-        ...g,dataEntregaCP,dataReferencia,dataInicioProjeto,mes,mesChave,semana,statusOP,andamento:manual.andamento,andamentoEfetivo:andamento,jaFaturado,percentualFaturado,dataFaturamento,indicador,descricaoIndicador,reprogramacao:g.reprogramacao,
+        ...g,dataEntregaCP,dataReferencia,dataInicioProjeto,mes,mesChave,semana,statusOP,andamento:manual.andamento,andamentoEfetivo:andamento,jaFaturado,pctQtd,pctValor,percentualFaturado,dataFaturamento,indicador,descricaoIndicador,reprogramacao:g.reprogramacao,
         status:g.situacaoEspecial?.status||null,
         descricaoResumo:g.descricoes.slice(0,1).join(', ')||'—',
         definicao:manual.definicao||'',escopo2:manual.escopo2||'',observacao:manual.observacao||'',
@@ -3969,7 +3980,8 @@ export default function App(){
                                 {r.jaFaturado?(
                                   <span className={`text-[11px] font-bold px-2.5 py-1 rounded-full border ${ANDAMENTO_CFG.FATURADO.cls}`} title="Já existe nota emitida no Sankhya — não editável">{ANDAMENTO_CFG.FATURADO.label}</span>
                                 ):(
-                                  <AndamentoSelect value={r.andamentoEfetivo} onChange={v=>salvarCampoManualBR(r.br,'andamento',v)}/>
+                                  <AndamentoSelect value={r.andamentoEfetivo} onChange={v=>salvarCampoManualBR(r.br,'andamento',v)}
+                                    title={`Qtd entregue: ${r.pctQtd.toFixed(0)}% · Valor faturado: ${r.pctValor.toFixed(0)}%${r.jaFaturado&&r.andamento!=='FATURADO'?' — marcado automático (ambos ≥95%)':''}`}/>
                                 )}
                               </td>
                               <td className="px-2 py-1.5 text-right text-slate-500 whitespace-nowrap">{fmtDt(r.dataEntregaCP)}</td>
