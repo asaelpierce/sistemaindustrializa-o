@@ -1770,7 +1770,7 @@ export default function App(){
         const sit=situacaoDoPedidoOOH(br,p.nunota);
         if(sit&&!agrup[br].situacaoEspecial)agrup[br].situacaoEspecial=sit;
         if(!itensPorBR[br])itensPorBR[br]=[];
-        if(p.cod_produto)itensPorBR[br].push({codProduto:s(p.cod_produto),descricao:p.produto_descricao,quantidade:qtd});
+        if(p.cod_produto)itensPorBR[br].push({codProduto:s(p.cod_produto),descricao:p.produto_descricao,quantidade:qtd,qtdEntregue:qtdEnt,valor:valorItem});
       });
 
       const planPorBR={};
@@ -1951,6 +1951,12 @@ export default function App(){
   // Todo projeto com um plano (antecipado ou reprogramado), de qualquer mês — pra
   // revisar de uma vez só as justificativas dadas, sem precisar caçar mês por mês.
   const oohReprogramados=useMemo(()=>oohProjetosComProducao.filter(p=>p.plano),[oohProjetosComProducao]);
+  // Faturamento parcial: já tem alguma coisa faturada (não é mais "nada aconteceu"),
+  // mas não bateu 100% ainda — nem está marcado Faturado/Pendente/Cancelado manual.
+  // Mostra item a item qual pedaço já saiu e qual ainda falta, pra não ficar tudo
+  // misturado num "não faturado" genérico.
+  const [oohFaturamentoParcialAberto,setOohFaturamentoParcialAberto]=useState(null); // br do card expandido
+  const oohFaturamentoParcial=useMemo(()=>oohProjetosComProducao.filter(p=>!p.atendido&&p.percentualFaturado>0&&p.percentualFaturado<0.999),[oohProjetosComProducao]);
   const oohFaturados=useMemo(()=>oohProjetosComProducao.filter(p=>p.andamento==='FATURADO'),[oohProjetosComProducao]);
   // O card deve responder "o que faturamos ESSE mês", não "tudo que já foi marcado
   // Faturado alguma vez" — filtra pela dataFaturamento REAL (do Sankhya), não pelo mês
@@ -1966,6 +1972,19 @@ export default function App(){
     if(!termo)return oohServicos;
     return oohServicos.filter(sv=>sv.br.toLowerCase().includes(termo)||s(sv.cliente).toLowerCase().includes(termo)||s(sv.descricao).toLowerCase().includes(termo));
   },[oohServicos,oohServicosBusca]);
+  // Só pra conhecimento do PCP — não é indicador nem pendência dele, serviço não
+  // depende do PCP. Só o valor total, quebrado por mês previsto, pra visibilidade.
+  const oohServicosPorMes=useMemo(()=>{
+    const porMes={};
+    oohServicos.forEach(sv=>{
+      const mes=s(sv.dataPrevista)?.slice(0,7)||'sem-data';
+      if(!porMes[mes])porMes[mes]={mes,valor:0,valorAEmitir:0,itens:0};
+      porMes[mes].valor+=sv.valor;
+      if(!sv.entregue)porMes[mes].valorAEmitir+=sv.valor;
+      porMes[mes].itens+=1;
+    });
+    return Object.values(porMes).sort((a,b)=>a.mes.localeCompare(b.mes));
+  },[oohServicos]);
   const [oohFaturadosBusca,setOohFaturadosBusca]=useState('');
   const oohFaturadosFiltrados=useMemo(()=>{
     const base=oohFaturadosTodosMeses?oohFaturados:[...oohFaturadosDoMes,...oohFaturadosSemNota];
@@ -4165,6 +4184,7 @@ export default function App(){
                     {id:'ATRASADOS',label:'Atrasados',count:oohAtrasados.length},
                     {id:'PENDENTES',label:'Pendentes',count:oohPendentes.length},
                     {id:'REPROGRAMADOS',label:'Reprogramados/Antecipados',count:oohReprogramados.length},
+                    {id:'PARCIAL',label:'Faturamento Parcial',count:oohFaturamentoParcial.length},
                     {id:'FATURADOS',label:'Faturados',count:oohFaturadosDoMes.length},
                     {id:'SERVICOS',label:'Serviços',count:oohServicos.length},
                   ].map(t=>(
@@ -4304,6 +4324,58 @@ export default function App(){
                   </div>
                 )}
 
+                {oohVisaoAtiva==='PARCIAL'&&(
+                  <div className="bg-white rounded-2xl border border-orange-200 overflow-hidden">
+                    <div className="px-5 py-3.5 border-b border-orange-100 bg-orange-50/50">
+                      <p className="text-sm font-black text-orange-800">Faturamento Parcial <span className="text-orange-500 font-bold">({oohFaturamentoParcial.length})</span> — já saiu parte, falta emitir o resto. Clique num projeto pra ver item a item.</p>
+                    </div>
+                    {oohFaturamentoParcial.length===0?(
+                      <p className="text-sm text-slate-400 text-center py-10">Nenhum projeto com faturamento parcial no momento.</p>
+                    ):(
+                      <div className="divide-y divide-slate-100">
+                        {oohFaturamentoParcial.map(p=>{
+                          const aberto=oohFaturamentoParcialAberto===p.br;
+                          return(
+                            <div key={p.br}>
+                              <button onClick={()=>setOohFaturamentoParcialAberto(aberto?null:p.br)} className="w-full px-5 py-3 flex items-center justify-between gap-4 hover:bg-slate-50 text-left">
+                                <div className="min-w-0 flex items-center gap-2">
+                                  <ArrowDown className={`w-3.5 h-3.5 text-slate-400 flex-shrink-0 transition-transform ${aberto?'':'-rotate-90'}`}/>
+                                  <div className="min-w-0">
+                                    <p className="text-sm font-bold text-indigo-700">{p.br} <span className="text-slate-400 font-normal">· {s(p.cliente)}</span></p>
+                                    <p className="text-[11px] text-slate-500">{(p.itens||[]).filter(it=>it.quantidade>0&&it.qtdEntregue>=it.quantidade).length} de {(p.itens||[]).length} item(ns) já faturado(s)</p>
+                                  </div>
+                                </div>
+                                <div className="text-right flex-shrink-0">
+                                  <p className="text-sm font-black text-orange-600">{Math.round(p.percentualFaturado*100)}%</p>
+                                  <p className="text-[11px] text-slate-400">{fmtMoeda(p.valorTotal)}</p>
+                                </div>
+                              </button>
+                              {aberto&&(
+                                <div className="px-5 pb-3 -mt-1">
+                                  <div className="bg-slate-50 rounded-lg overflow-hidden">
+                                    {(p.itens||[]).map((it,i)=>{
+                                      const faturado=it.quantidade>0&&it.qtdEntregue>=it.quantidade;
+                                      return(
+                                        <div key={i} className={`flex items-center justify-between gap-3 px-3 py-2 text-xs ${i>0?'border-t border-slate-200':''}`}>
+                                          <span className="text-slate-600 truncate max-w-[320px]" title={s(it.descricao)}>{s(it.descricao)}</span>
+                                          <div className="flex items-center gap-3 flex-shrink-0">
+                                            <span className="text-slate-500">{it.qtdEntregue}/{it.quantidade}</span>
+                                            {faturado?<span className="text-[10px] font-black text-teal-700 bg-teal-50 border border-teal-200 rounded-full px-2 py-0.5">✓ faturado</span>:<span className="text-[10px] font-black text-orange-700 bg-orange-50 border border-orange-200 rounded-full px-2 py-0.5">a emitir</span>}
+                                          </div>
+                                        </div>
+                                      );
+                                    })}
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                )}
+
                 {oohVisaoAtiva==='FATURADOS'&&(
                   <div className="bg-white rounded-2xl border border-teal-200 overflow-hidden">
                     <div className="px-5 py-3.5 border-b border-teal-100 bg-teal-50/50 flex items-center justify-between flex-wrap gap-2">
@@ -4359,10 +4431,27 @@ export default function App(){
 
                 {oohVisaoAtiva==='SERVICOS'&&(
                   <div className="bg-white rounded-2xl border border-slate-300 overflow-hidden">
-                    <div className="px-5 py-3.5 border-b border-slate-100 bg-slate-50 flex items-center justify-between flex-wrap gap-2">
-                      <p className="text-sm font-black text-slate-800">Serviços <span className="text-slate-400 font-bold">({oohServicosFiltrados.length}{oohServicosBusca?` de ${oohServicos.length}`:''})</span> — itens "SERVIÇO..." de todos os BRs; não entram no cálculo de atraso/esteira</p>
+                    <div className="px-5 py-3.5 border-b border-slate-100 bg-slate-50">
+                      <p className="text-sm font-black text-slate-800">Serviços <span className="text-slate-400 font-bold">({oohServicosFiltrados.length}{oohServicosBusca?` de ${oohServicos.length}`:''})</span></p>
+                      <p className="text-[11px] text-slate-400 mt-0.5">Só pra conhecimento — serviço não é pendência do PCP, não depende dele. Aqui é só controle de valor, separado do resto.</p>
+                    </div>
+
+                    {oohServicosPorMes.length>0&&(
+                      <div className="px-5 py-3 border-b border-slate-100 bg-slate-50/50 flex flex-wrap gap-3">
+                        {oohServicosPorMes.map(m=>(
+                          <div key={m.mes} className="bg-white border border-slate-200 rounded-lg px-3 py-2 min-w-[140px]">
+                            <p className="text-[10px] font-black text-slate-400 uppercase">{m.mes==='sem-data'?'Sem data prevista':m.mes}</p>
+                            <p className="text-sm font-black text-slate-800">{fmtMoeda(m.valor)}</p>
+                            <p className="text-[10px] text-slate-400">{m.itens} item(ns){m.valorAEmitir>0?` · ${fmtMoeda(m.valorAEmitir)} a emitir`:''}</p>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
+                    <div className="px-5 py-2.5 border-b border-slate-100">
                       <input value={oohServicosBusca} onChange={e=>setOohServicosBusca(e.target.value)} placeholder="Buscar BR, cliente ou descrição..." className="text-xs border border-slate-200 rounded-lg px-3 py-1.5 w-64 focus:outline-none focus:ring-2 focus:ring-slate-200"/>
                     </div>
+
                     {oohServicosFiltrados.length===0?(
                       <p className="text-sm text-slate-400 text-center py-10">{oohServicosBusca?'Nenhum serviço encontrado com esse termo.':'Nenhum item de serviço no momento.'}</p>
                     ):(
@@ -4388,7 +4477,7 @@ export default function App(){
                                 <td className="px-3 py-2 text-slate-500 whitespace-nowrap">{fmtDt(sv.dataPrevista)}</td>
                                 <td className="px-3 py-2 text-right text-slate-600 whitespace-nowrap">{sv.qtdEntregue}/{sv.quantidade}</td>
                                 <td className="px-3 py-2 text-right font-bold text-slate-700 whitespace-nowrap">{fmtMoeda(sv.valor)}</td>
-                                <td className="px-3 py-2 whitespace-nowrap">{sv.entregue?<span className="text-[10px] font-black text-teal-700 bg-teal-50 border border-teal-200 rounded-full px-2 py-0.5">✓ concluído</span>:<span className="text-[10px] font-black text-amber-700 bg-amber-50 border border-amber-200 rounded-full px-2 py-0.5">pendente</span>}</td>
+                                <td className="px-3 py-2 whitespace-nowrap">{sv.entregue?<span className="text-[10px] font-black text-teal-700 bg-teal-50 border border-teal-200 rounded-full px-2 py-0.5">✓ emitido</span>:<span className="text-[10px] font-black text-slate-500 bg-slate-100 border border-slate-200 rounded-full px-2 py-0.5">a emitir</span>}</td>
                               </tr>
                             ))}
                           </tbody>
