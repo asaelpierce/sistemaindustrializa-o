@@ -3607,13 +3607,29 @@ export default function App(){
   // processar (ex: 19090); a nota fiscal de remessa sai com a MATÉRIA-PRIMA
   // individual da composição dele (ex: 187 — descoberto comparando dado real: a
   // nota nunca cita o código do item acabado, só os insumos da ficha técnica). Por
-  // isso o vínculo passa pela composição (produtos.materiais) como ponte: casa por
-  // BR normalizado + "o código da nota está na composição do produto_acabado da
-  // remessa" + quantidade compatível (quantidade_na_nota ≈ qtd_por_peça × quantidade_op).
-  // Validado com 88 remessas reais: 74 (84%) acham pelo menos 1 candidata por
-  // BR+composição; o refino por quantidade escolhe a certa (testado com BR14169/26:
-  // diferença de só 2 unidades pra nota certa, contra 452+ pras erradas).
+  // isso o vínculo passa pela composição (produtos.materiais) como ponte.
+  //
+  // ACHADO IMPORTANTE (investigando os casos de confiança baixa): a mesma MP é
+  // MUITAS VEZES compartilhada entre vários itens/remessas do MESMO BR — ex:
+  // BR14169/26 tem 7 itens diferentes (19090 a 19097) todos usando MP 187, cada
+  // remessa pedindo só 2 a 12 unidades. Uma nota de 86un nunca bate com nenhuma
+  // remessa individual (por isso davam "confiança baixa" antes) — ela cobre a
+  // SOMA de várias remessas de uma vez. Corrigido: agrupa TODAS as remessas do
+  // mesmo BR que usam a mesma MP, soma a quantidade esperada do grupo inteiro, e
+  // compara essa soma com a nota — isso é o que realmente bate.
   const normalizarBR=br=>s(br).replace(/\/\d+$/,'').toUpperCase();
+  const somaEsperadaGrupoMP=useCallback((brNorm,codMP,remessasList)=>{
+    return remessasList.filter(r=>{
+      if(r.status==='CANCELADO')return false;
+      if(normalizarBR(r.projeto)!==brNorm)return false;
+      const mats=produtosDb[r.produto_acabado]?.materiais;
+      return Array.isArray(mats)&&mats.some(m=>s(m.codigoMP)===codMP);
+    }).reduce((acc,r)=>{
+      const mats=produtosDb[r.produto_acabado]?.materiais||[];
+      const item=mats.find(m=>s(m.codigoMP)===codMP);
+      return acc+(Number(item?.quantidade||0)*Number(r.quantidade_op||0));
+    },0);
+  },[produtosDb]);
   const sugerirVinculoRemessa=useCallback(remessa=>{
     const brNorm=normalizarBR(remessa.projeto);
     const materiais=produtosDb[remessa.produto_acabado]?.materiais;
@@ -3624,21 +3640,30 @@ export default function App(){
     const qtdOP=Number(remessa.quantidade_op||0);
     const candidatas=notasRemessaInd.filter(n=>normalizarBR(n.br)===brNorm&&codsComposicao.has(s(n.cod_produto)));
     if(candidatas.length===0)return null;
-    // Confiança ALTA: a quantidade da nota bate com o esperado (qtd_por_peça × qtd_op),
-    // com folga de 15% pra cobrir arredondamento/pequenas variações de fornecedor.
+    // Confiança ALTA: a quantidade da nota bate com o esperado (qtd_por_peça × qtd_op,
+    // OU a soma de todas as remessas do BR que compartilham essa MP), com folga de
+    // 15% pra cobrir arredondamento/pequenas variações de fornecedor.
     const comDiferenca=candidatas.map(n=>{
-      const esperado=(qtdPorCod[s(n.cod_produto)]||0)*qtdOP;
-      const diferenca=Math.abs(Number(n.quantidade||0)-esperado);
+      const cod=s(n.cod_produto);
+      const esperadoIndividual=(qtdPorCod[cod]||0)*qtdOP;
+      const esperadoGrupo=somaEsperadaGrupoMP(brNorm,cod,remessasDb);
+      const difIndividual=Math.abs(Number(n.quantidade||0)-esperadoIndividual);
+      const difGrupo=Math.abs(Number(n.quantidade||0)-esperadoGrupo);
+      // Usa o que bater melhor: sozinho (remessa única pra essa MP) ou em grupo
+      // (MP compartilhada por várias remessas do mesmo BR, nota cobre o total).
+      const usaGrupo=difGrupo<difIndividual;
+      const esperado=usaGrupo?esperadoGrupo:esperadoIndividual;
+      const diferenca=usaGrupo?difGrupo:difIndividual;
       const pctDiferenca=esperado>0?diferenca/esperado:1;
-      return{nota:n,diferenca,pctDiferenca,esperado};
+      return{nota:n,diferenca,pctDiferenca,esperado,compartilhada:usaGrupo};
     }).sort((a,b)=>a.diferenca-b.diferenca);
     const melhor=comDiferenca[0];
-    if(melhor.pctDiferenca<=0.15)return{nota:melhor.nota,confianca:'ALTA',esperado:melhor.esperado};
-    if(melhor.pctDiferenca<=0.5)return{nota:melhor.nota,confianca:'MEDIA',esperado:melhor.esperado};
+    if(melhor.pctDiferenca<=0.15)return{nota:melhor.nota,confianca:'ALTA',esperado:melhor.esperado,compartilhada:melhor.compartilhada};
+    if(melhor.pctDiferenca<=0.5)return{nota:melhor.nota,confianca:'MEDIA',esperado:melhor.esperado,compartilhada:melhor.compartilhada};
     // Só BR+composição bateram, quantidade muito diferente — pode ser parcial
     // genuíno (ex: OC de 100, remessa de só 80) ou vínculo errado; marca BAIXA
     // pra deixar claro que precisa de conferência manual.
-    return{nota:melhor.nota,confianca:'BAIXA',esperado:melhor.esperado};
+    return{nota:melhor.nota,confianca:'BAIXA',esperado:melhor.esperado,compartilhada:melhor.compartilhada};
   },[notasRemessaInd,produtosDb]);
   const sugerirOCRemessa=useCallback(remessa=>{
     const brNorm=normalizarBR(remessa.projeto);
