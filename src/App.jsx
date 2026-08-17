@@ -3368,23 +3368,30 @@ export default function App(){
   // de quantidade ≤15%) e a nota já não está mais PENDENTE no Sankhya, confirma o
   // recebimento sozinho — não faz sentido pedir pro usuário clicar em "retornar"
   // manualmente algo que o sistema já tem certeza que voltou.
+  // Retorno automático NÃO ajusta o saldo de estoque_mp na mão (diferente do fluxo
+  // manual processarRetorno, que é anterior e já existia assim). Por quê: estoque_mp
+  // é sobrescrito por completo pela sincronização real (sankhya-stock-sync, dias 1 e
+  // 16 do mês) direto do saldo real do Sankhya (TGFEST). Se a MP já retornou de
+  // verdade lá (nota não pendente — é exatamente o que confirma esse vínculo), o
+  // saldo real do Sankhya JÁ SUBIU sozinho. Somar aqui também duplicaria o valor até
+  // a próxima sincronização "corrigir" — e se ela demorar a rodar, o saldo fica
+  // inflado por dias, exatamente o problema que o usuário apontou. A ação certa é
+  // disparar a sincronização real na hora, não fingir um ajuste manual paralelo.
   const confirmarRetornoAutomatico=async(rem,vinculo)=>{
     try{
-      const prop=1; // confiança ALTA = considera o total da remessa como retornado
-      const novosItens=[...(rem.itens||[])];
-      for(let i=0;i<novosItens.length;i++){
-        const qm=Number((novosItens[i].quantidadeTotal*prop).toFixed(4));
-        novosItens[i].quantidadeRetornada=Number(((novosItens[i].quantidadeRetornada||0)+qm).toFixed(4));
-        const{data:cur}=await supabase.from('estoque_mp').select('saldo_disponivel').eq('codigo_mp',novosItens[i].codigoMP).single();
-        await supabase.from('estoque_mp').update({saldo_disponivel:Number(((cur?.saldo_disponivel||0)+qm).toFixed(4))}).eq('codigo_mp',novosItens[i].codigoMP);
-      }
+      const novosItens=(rem.itens||[]).map(it=>({...it,quantidadeRetornada:Number(it.quantidadeTotal||0)}));
       const{error}=await supabase.from('remessas').update({
         itens:novosItens,status:'RETORNADO',pecas_recebidas:rem.quantidade_op,data_retorno:new Date().toISOString(),
         recebido_por:`Automático — NF ${vinculo.nota.numero_nota} (${s(vinculo.nota.fornecedor)})`,
       }).eq('id',rem.id);
       if(error)throw error;
-      addToast(`${rem.projeto}: retorno confirmado automaticamente — NF ${vinculo.nota.numero_nota} já retornou no Sankhya.`);
+      addToast(`${rem.projeto}: retorno confirmado — NF ${vinculo.nota.numero_nota} já retornou no Sankhya. Sincronizando estoque real...`);
       fetchAll();
+      // Sincroniza o estoque real na hora — não soma na mão, pega o saldo verdadeiro
+      // do Sankhya (que já reflete o retorno), evitando duplicidade com a próxima sync.
+      fetch(`${SUPABASE_URL}/functions/v1/sankhya-stock-sync`,{method:'POST',headers:{'Content-Type':'application/json','apikey':SUPABASE_KEY},body:JSON.stringify({})})
+        .then(()=>addToast('Estoque sincronizado com o saldo real do Sankhya.'))
+        .catch(()=>addToast('Retorno confirmado, mas a sincronização de estoque falhou — rode manualmente.','warning'));
     }catch(e){addToast('Erro ao confirmar retorno automático: '+e.message,'error');}
   };
 
@@ -3682,7 +3689,13 @@ export default function App(){
       return{nota:n,diferenca,pctDiferenca,esperado,compartilhada:usaGrupo};
     }).sort((a,b)=>a.diferenca-b.diferenca);
     const melhor=comDiferenca[0];
-    if(melhor.pctDiferenca<=0.15)return{nota:melhor.nota,confianca:'ALTA',esperado:melhor.esperado,compartilhada:melhor.compartilhada};
+    // Limite ajustado pra 30% (era 15%) — investigando os casos de "confiança
+    // média/baixa", achei que a maioria das remessas com diferença de 19-25% JÁ
+    // ESTAVAM marcadas RETORNADO manualmente pelo usuário — ou seja, o vínculo
+    // estava certo, só a matemática tem uma folga natural (nota bruta inclui
+    // impostos/frete, o fornecedor manda sobra de material, arredondamento) que
+    // passava dos 15% originais. Não era erro de vínculo, era rigidez demais.
+    if(melhor.pctDiferenca<=0.30)return{nota:melhor.nota,confianca:'ALTA',esperado:melhor.esperado,compartilhada:melhor.compartilhada};
     if(melhor.pctDiferenca<=0.5)return{nota:melhor.nota,confianca:'MEDIA',esperado:melhor.esperado,compartilhada:melhor.compartilhada};
     // Só BR+composição bateram, quantidade muito diferente — pode ser parcial
     // genuíno (ex: OC de 100, remessa de só 80) ou vínculo errado; marca BAIXA
