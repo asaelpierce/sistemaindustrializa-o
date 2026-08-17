@@ -3702,9 +3702,19 @@ export default function App(){
     // pra deixar claro que precisa de conferência manual.
     return{nota:melhor.nota,confianca:'BAIXA',esperado:melhor.esperado,compartilhada:melhor.compartilhada};
   },[notasRemessaInd,produtosDb]);
-  const sugerirOCRemessa=useCallback(remessa=>{
+  // Vínculo com a Ordem de Compra: BR + fornecedor (não cod_produto — descoberto que
+  // o item da OC de industrialização é o SERVIÇO em si, ex: "FORNADA DE AUTOCLAVE",
+  // diferente do item acabado/MP da remessa). Prioriza o fornecedor já confirmado
+  // pela nota vinculada (mais específico), senão pega a primeira OC do BR.
+  const sugerirOCRemessa=useCallback((remessa,fornecedorSugerido)=>{
     const brNorm=normalizarBR(remessa.projeto);
-    return ordensCompraInd.find(oc=>normalizarBR(oc.br)===brNorm&&oc.cod_produto===remessa.produto_acabado)||null;
+    const doBR=ordensCompraInd.filter(oc=>normalizarBR(oc.br)===brNorm);
+    if(doBR.length===0)return null;
+    if(fornecedorSugerido){
+      const match=doBR.find(oc=>s(oc.fornecedor).toUpperCase()===s(fornecedorSugerido).toUpperCase());
+      if(match)return match;
+    }
+    return doBR[0];
   },[ordensCompraInd]);
 
   const chatNaoLidos = chatInternoDb.filter(m=>
@@ -7059,6 +7069,7 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
                     const dataSaida=rem.data_envio?new Date(rem.data_envio):null;
                     const diasFora=dataSaida?Math.floor((new Date()-dataSaida)/(864e5)):null;
                     const vinculo=sugerirVinculoRemessa(rem);
+                    const oc=sugerirOCRemessa(rem,vinculo?.nota?.fornecedor);
                     return(
                       <div key={rem.id} className={`bg-white rounded-2xl border overflow-hidden transition-all ${rem.status==='RETORNADO'?'border-slate-100 opacity-70':'border-slate-200 shadow-sm'}`}>
                         {/* Header do card */}
@@ -7093,6 +7104,14 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
                                     ✓ Confirmar retorno automático
                                   </button>
                                 )}
+                              </div>
+                            )}
+                            {oc&&(
+                              <div className="text-[10px] font-bold text-slate-500 bg-slate-50 border border-slate-200 rounded-lg px-2.5 py-1.5">
+                                📋 OC {oc.numero_pedido} · {s(oc.fornecedor)} · {s(oc.descricao_produto).slice(0,40)}
+                                {Number(oc.quantidade_remetida)>=Number(oc.quantidade_pedida)?
+                                  <span className="ml-1.5 text-teal-600">✓ processamento concluído no Sankhya</span>:
+                                  <span className="ml-1.5 text-amber-600">⏳ {oc.quantidade_remetida}/{oc.quantidade_pedida} processado</span>}
                               </div>
                             )}
                             {/* Projeto e produto */}
