@@ -3124,15 +3124,17 @@ export default function App(){
       }
       // Dados pesados — só para perfis que precisam
       if(!isQualidadeOnly){
-        const[pR,eR,rR,rlR]=await Promise.all([
+        const[pR,eR,rR,rlR,nrR]=await Promise.all([
           supabase.from('produtos').select('codigo_pa,descricao,materiais'),
           supabase.from('estoque_mp').select('codigo_mp,descricao,saldo_disponivel,unidade'),
           supabase.from('remessas').select('*').order('data_criacao',{ascending:false}).limit(200),
-          supabase.from('relatorios_ia').select('*').order('data_criacao',{ascending:false}).limit(50)
+          supabase.from('relatorios_ia').select('*').order('data_criacao',{ascending:false}).limit(50),
+          supabase.from('notas_remessa_industrializacao').select('*')
         ]);
         if(pR.data){const m={};pR.data.forEach(p=>{if(p.codigo_pa)m[p.codigo_pa]=p;});setProdutosDb(m);}
         if(eR.data){const m={};eR.data.forEach(e=>{if(e.codigo_mp)m[e.codigo_mp]=e;});setEstoqueDb(m);}
         if(rR.data)setRemessasDb(rR.data);
+        if(nrR.data)setNotasRemessaInd(nrR.data);
         if(rlR.data)setRelatoriosIaDb(rlR.data);
       }
       setDbOnline(true);
@@ -3601,23 +3603,43 @@ export default function App(){
     }catch(e){/* silencioso — tabelas ainda vazias, sem sincronização ativa */}
   },[supabase]);
 
-  // Sugestão de vínculo: casa remessa com nota real pelo BR (normalizado, sem
-  // sufixo/ano) + código do item + quantidade compatível. Confiança ALTA quando
-  // BR+item+qtd batem exato; MEDIA quando BR+item batem mas a quantidade diverge
-  // (cobre o caso real descrito: OC de 100 peças, remessa de só 80 — parcial).
+  // Sugestão de vínculo: a remessa registra o ITEM ACABADO que foi mandado
+  // processar (ex: 19090); a nota fiscal de remessa sai com a MATÉRIA-PRIMA
+  // individual da composição dele (ex: 187 — descoberto comparando dado real: a
+  // nota nunca cita o código do item acabado, só os insumos da ficha técnica). Por
+  // isso o vínculo passa pela composição (produtos.materiais) como ponte: casa por
+  // BR normalizado + "o código da nota está na composição do produto_acabado da
+  // remessa" + quantidade compatível (quantidade_na_nota ≈ qtd_por_peça × quantidade_op).
+  // Validado com 88 remessas reais: 74 (84%) acham pelo menos 1 candidata por
+  // BR+composição; o refino por quantidade escolhe a certa (testado com BR14169/26:
+  // diferença de só 2 unidades pra nota certa, contra 452+ pras erradas).
   const normalizarBR=br=>s(br).replace(/\/\d+$/,'').toUpperCase();
   const sugerirVinculoRemessa=useCallback(remessa=>{
     const brNorm=normalizarBR(remessa.projeto);
-    const candidatas=notasRemessaInd.filter(n=>normalizarBR(n.br)===brNorm&&n.cod_produto===remessa.produto_acabado);
+    const materiais=produtosDb[remessa.produto_acabado]?.materiais;
+    if(!Array.isArray(materiais)||materiais.length===0)return null;
+    const codsComposicao=new Set(materiais.map(m=>s(m.codigoMP)));
+    const qtdPorCod={};
+    materiais.forEach(m=>{qtdPorCod[s(m.codigoMP)]=Number(m.quantidade||0);});
+    const qtdOP=Number(remessa.quantidade_op||0);
+    const candidatas=notasRemessaInd.filter(n=>normalizarBR(n.br)===brNorm&&codsComposicao.has(s(n.cod_produto)));
     if(candidatas.length===0)return null;
-    const qtdRemessa=Number(remessa.quantidade_op||0);
-    const exata=candidatas.find(n=>Math.abs(Number(n.quantidade||0)-qtdRemessa)<0.01);
-    if(exata)return{nota:exata,confianca:'ALTA'};
-    // Sem match exato: pega a nota de maior quantidade compatível (>=, cobre parcial)
-    const parcial=candidatas.filter(n=>Number(n.quantidade||0)>=qtdRemessa).sort((a,b)=>Number(a.quantidade)-Number(b.quantidade))[0];
-    if(parcial)return{nota:parcial,confianca:'MEDIA'};
-    return{nota:candidatas[0],confianca:'MEDIA'};
-  },[notasRemessaInd]);
+    // Confiança ALTA: a quantidade da nota bate com o esperado (qtd_por_peça × qtd_op),
+    // com folga de 15% pra cobrir arredondamento/pequenas variações de fornecedor.
+    const comDiferenca=candidatas.map(n=>{
+      const esperado=(qtdPorCod[s(n.cod_produto)]||0)*qtdOP;
+      const diferenca=Math.abs(Number(n.quantidade||0)-esperado);
+      const pctDiferenca=esperado>0?diferenca/esperado:1;
+      return{nota:n,diferenca,pctDiferenca,esperado};
+    }).sort((a,b)=>a.diferenca-b.diferenca);
+    const melhor=comDiferenca[0];
+    if(melhor.pctDiferenca<=0.15)return{nota:melhor.nota,confianca:'ALTA',esperado:melhor.esperado};
+    if(melhor.pctDiferenca<=0.5)return{nota:melhor.nota,confianca:'MEDIA',esperado:melhor.esperado};
+    // Só BR+composição bateram, quantidade muito diferente — pode ser parcial
+    // genuíno (ex: OC de 100, remessa de só 80) ou vínculo errado; marca BAIXA
+    // pra deixar claro que precisa de conferência manual.
+    return{nota:melhor.nota,confianca:'BAIXA',esperado:melhor.esperado};
+  },[notasRemessaInd,produtosDb]);
   const sugerirOCRemessa=useCallback(remessa=>{
     const brNorm=normalizarBR(remessa.projeto);
     return ordensCompraInd.find(oc=>normalizarBR(oc.br)===brNorm&&oc.cod_produto===remessa.produto_acabado)||null;
@@ -6974,6 +6996,7 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
                     const temNota=!!(rem.obs_expedicao||rem.observacao);
                     const dataSaida=rem.data_envio?new Date(rem.data_envio):null;
                     const diasFora=dataSaida?Math.floor((new Date()-dataSaida)/(864e5)):null;
+                    const vinculo=sugerirVinculoRemessa(rem);
                     return(
                       <div key={rem.id} className={`bg-white rounded-2xl border overflow-hidden transition-all ${rem.status==='RETORNADO'?'border-slate-100 opacity-70':'border-slate-200 shadow-sm'}`}>
                         {/* Header do card */}
@@ -6992,6 +7015,13 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
                                 </span>
                               )}
                             </div>
+                            {vinculo&&(
+                              <div className={`text-[10px] font-bold px-2.5 py-1.5 rounded-lg border inline-flex items-center gap-1.5 ${vinculo.confianca==='ALTA'?'bg-teal-50 text-teal-700 border-teal-200':vinculo.confianca==='MEDIA'?'bg-amber-50 text-amber-700 border-amber-200':'bg-slate-50 text-slate-500 border-slate-200'}`} title={`Vínculo ${vinculo.confianca} — casado por BR + item da composição + quantidade (esperado ${vinculo.esperado?.toFixed(1)}, nota tem ${vinculo.nota.quantidade})`}>
+                                {vinculo.nota.pendente?<AlertTriangle className="w-3 h-3"/>:<CheckCircle className="w-3 h-3"/>}
+                                NF {vinculo.nota.numero_nota} · {s(vinculo.nota.fornecedor)} {vinculo.nota.pendente?'— PENDENTE DE RETORNO':'— retornado'}
+                                <span className="opacity-60">({vinculo.confianca.toLowerCase()})</span>
+                              </div>
+                            )}
                             {/* Projeto e produto */}
                             <div>
                               <p className="font-black text-slate-900 text-base uppercase leading-tight">
