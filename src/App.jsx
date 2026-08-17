@@ -1400,21 +1400,29 @@ export default function App(){
   // Meta = trajetória linear (100% dividido pelo número de semanas do ano).
   // Realizado = % acumulado de fato faturado até aquela semana.
   const META_FATURAMENTO_ANUAL_PCP=33500000;
+  const [mestraFatNotasCruas,setMestraFatNotasCruas]=useState([]); // [{br,valor_nota,net_offer_value,data_neg}] — nível de nota, populado por fetchMestraFaturamentoPorNegociacao
 
   const faturamentoSemanalAcompanhamento=useMemo(()=>{
     const anoRef=new Date().getFullYear();
     const totalSemanas=semanaISODoAno(`${anoRef}-12-28`)||52; // 28/dez está sempre na última semana ISO do ano
     const semanaAtual=semanaISODoAno(new Date().toISOString().slice(0,10));
 
-    const valorPorSemana=Array(totalSemanas+1).fill(0); // índice 1..totalSemanas
-    planilhaMestreLinhas.forEach(r=>{
-      (r.notas||[]).forEach(n=>{
-        if(!n.dataFaturamento)return;
-        const ano=Number(s(n.dataFaturamento).slice(0,4));
-        if(ano!==anoRef)return;
-        const sem=semanaISODoAno(n.dataFaturamento);
-        if(sem>=1&&sem<=totalSemanas)valorPorSemana[sem]+=(n.valor||0);
-      });
+    // Realizado precisa ser TODA nota emitida no ano, igual o "Faturamento Emitido —
+    // por negociação" já calcula certo — não pode passar pelo corte de 2026 por DATA
+    // DE ENTREGA (MESTRA_DATA_CORTE), que é só pro PREVISTO. Achado real: BRs com
+    // compromisso original de entrega em 2025 mas faturados de verdade em 2026 (ex:
+    // BR12491/25, R$2.475.845,84 sozinho) ficavam de fora de planilhaMestreLinhas
+    // (que já aplica esse corte) e por isso sumiam também daqui — R$6.645.556 de
+    // faturamento real ficava fora da conta. Corrigido usando mestraFatNotasCruas
+    // (nível de nota individual, direto de faturamento_resumo, sem filtro nenhum de
+    // entrega) — mesma fonte usada pelo Faturamento Emitido, garantindo que os dois
+    // totais do ano batam exatamente.
+    const valorPorSemana=Array(totalSemanas+1).fill(0);
+    mestraFatNotasCruas.forEach(row=>{
+      const dataNeg=s(row.data_neg);
+      if(!dataNeg||Number(dataNeg.slice(0,4))!==anoRef)return;
+      const sem=semanaISODoAno(dataNeg);
+      if(sem>=1&&sem<=totalSemanas)valorPorSemana[sem]+=Number(row.net_offer_value||0);
     });
 
     let acumulado=0;
@@ -1429,7 +1437,7 @@ export default function App(){
       });
     }
     return{pontos,totalEsperado:META_FATURAMENTO_ANUAL_PCP,acumuladoAtual:Math.round(acumulado),semanaAtual,totalSemanas,anoRef};
-  },[planilhaMestreLinhas]);
+  },[mestraFatNotasCruas]);
 
   // "Onde deveríamos estar x onde estamos", só que por MÊS (não ano fixo): o valor
   // previsto pra entrega no mês (já considerando reprogramação, mesChave) dividido
@@ -1756,6 +1764,7 @@ export default function App(){
       })).sort((a,b)=>a.mes.localeCompare(b.mes));
 
       setMestraFatPorMesNeg(lista);
+      setMestraFatNotasCruas(data||[]);
     }catch(e){
       setMestraFatNegErro('Erro ao buscar faturamento por negociação: '+e.message);
     }finally{
