@@ -3364,6 +3364,30 @@ export default function App(){
     }catch(e){addToast('Falha ao processar expedição: '+e.message,'error');setIsLoading(false);}
   };
 
+  // Retorno AUTOMÁTICO: quando o vínculo remessa↔nota é confiável (ALTA, diferença
+  // de quantidade ≤15%) e a nota já não está mais PENDENTE no Sankhya, confirma o
+  // recebimento sozinho — não faz sentido pedir pro usuário clicar em "retornar"
+  // manualmente algo que o sistema já tem certeza que voltou.
+  const confirmarRetornoAutomatico=async(rem,vinculo)=>{
+    try{
+      const prop=1; // confiança ALTA = considera o total da remessa como retornado
+      const novosItens=[...(rem.itens||[])];
+      for(let i=0;i<novosItens.length;i++){
+        const qm=Number((novosItens[i].quantidadeTotal*prop).toFixed(4));
+        novosItens[i].quantidadeRetornada=Number(((novosItens[i].quantidadeRetornada||0)+qm).toFixed(4));
+        const{data:cur}=await supabase.from('estoque_mp').select('saldo_disponivel').eq('codigo_mp',novosItens[i].codigoMP).single();
+        await supabase.from('estoque_mp').update({saldo_disponivel:Number(((cur?.saldo_disponivel||0)+qm).toFixed(4))}).eq('codigo_mp',novosItens[i].codigoMP);
+      }
+      const{error}=await supabase.from('remessas').update({
+        itens:novosItens,status:'RETORNADO',pecas_recebidas:rem.quantidade_op,data_retorno:new Date().toISOString(),
+        recebido_por:`Automático — NF ${vinculo.nota.numero_nota} (${s(vinculo.nota.fornecedor)})`,
+      }).eq('id',rem.id);
+      if(error)throw error;
+      addToast(`${rem.projeto}: retorno confirmado automaticamente — NF ${vinculo.nota.numero_nota} já retornou no Sankhya.`);
+      fetchAll();
+    }catch(e){addToast('Erro ao confirmar retorno automático: '+e.message,'error');}
+  };
+
   const processarRetorno=async()=>{
     const pd=parseN(qtdRet);const rem=remParaRet;if(!rem)return;
     const jaRec=Number(rem.pecas_recebidas||0);const saldo=Number(rem.quantidade_op)-jaRec;
@@ -7041,10 +7065,21 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
                               )}
                             </div>
                             {vinculo&&(
-                              <div className={`text-[10px] font-bold px-2.5 py-1.5 rounded-lg border inline-flex items-center gap-1.5 ${vinculo.confianca==='ALTA'?'bg-teal-50 text-teal-700 border-teal-200':vinculo.confianca==='MEDIA'?'bg-amber-50 text-amber-700 border-amber-200':'bg-slate-50 text-slate-500 border-slate-200'}`} title={`Vínculo ${vinculo.confianca} — casado por BR + item da composição + quantidade (esperado ${vinculo.esperado?.toFixed(1)}, nota tem ${vinculo.nota.quantidade})`}>
-                                {vinculo.nota.pendente?<AlertTriangle className="w-3 h-3"/>:<CheckCircle className="w-3 h-3"/>}
-                                NF {vinculo.nota.numero_nota} · {s(vinculo.nota.fornecedor)} {vinculo.nota.pendente?'— PENDENTE DE RETORNO':'— retornado'}
-                                <span className="opacity-60">({vinculo.confianca.toLowerCase()})</span>
+                              <div className={`text-[10px] font-bold px-2.5 py-1.5 rounded-lg border ${vinculo.confianca==='ALTA'?'bg-teal-50 text-teal-700 border-teal-200':vinculo.confianca==='MEDIA'?'bg-amber-50 text-amber-700 border-amber-200':'bg-slate-50 text-slate-500 border-slate-200'}`}>
+                                <div className="flex items-center gap-1.5 flex-wrap">
+                                  {vinculo.nota.pendente?<AlertTriangle className="w-3 h-3 flex-shrink-0"/>:<CheckCircle className="w-3 h-3 flex-shrink-0"/>}
+                                  <span>NF {vinculo.nota.numero_nota} · {s(vinculo.nota.fornecedor)} {vinculo.nota.pendente?'— PENDENTE DE RETORNO':'— já retornou no Sankhya'}</span>
+                                  <span className="opacity-60">({vinculo.confianca.toLowerCase()}{vinculo.compartilhada?', MP compartilhada':''})</span>
+                                  <BotaoAbrirSankhya nunota={vinculo.nota.nunota} tipmov={vinculo.nota.tipmov} codtipoper={vinculo.nota.top} label="ver no Sankhya ↗"
+                                    className="underline hover:no-underline"/>
+                                </div>
+                                {/* Confiança ALTA + nota já retornou de verdade no Sankhya = confirma
+                                    sozinho, sem esperar o usuário clicar em "retornar" manualmente. */}
+                                {vinculo.confianca==='ALTA'&&!vinculo.nota.pendente&&['ENVIADO','RETORNO_PARCIAL'].includes(rem.status)&&(
+                                  <button onClick={()=>confirmarRetornoAutomatico(rem,vinculo)} className="mt-1.5 text-[10px] font-black text-white bg-teal-600 hover:bg-teal-700 rounded-lg px-2.5 py-1">
+                                    ✓ Confirmar retorno automático
+                                  </button>
+                                )}
                               </div>
                             )}
                             {/* Projeto e produto */}
