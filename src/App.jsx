@@ -3557,6 +3557,50 @@ export default function App(){
   const remPend=useMemo(()=>remessasDb.filter(r=>s(r.status)==='PENDENTE_EXPEDICAO'&&s(r.status)!=='CANCELADO'),[remessasDb]);
   const remFora=useMemo(()=>remessasDb.filter(r=>['ENVIADO','RETORNO_PARCIAL','RETORNADO'].includes(s(r.status))),[remessasDb]);
 
+  // ── Vínculo Remessa ↔ Nota Real ↔ Ordem de Compra de Industrialização ──────
+  // Preparado pra quando as duas fontes existirem (aguardando: TOPs reais das notas
+  // de remessa, que o usuário vai passar; sincronização nova de Ordem de Compra de
+  // Industrialização, que ainda não existe). Por enquanto os dois estados ficam
+  // vazios (sem fetch ativo ainda) — a lógica de comparação já fica pronta, só
+  // rodando com array vazio até os dados chegarem.
+  const [notasRemessaInd,setNotasRemessaInd]=useState([]); // notas_remessa_industrializacao
+  const [ordensCompraInd,setOrdensCompraInd]=useState([]); // ordens_compra_industrializacao
+  const fetchRemessaIndustrializacao=useCallback(async()=>{
+    if(!supabase)return;
+    try{
+      const[notasRes,ocRes]=await Promise.all([
+        supabase.from('notas_remessa_industrializacao').select('*'),
+        supabase.from('ordens_compra_industrializacao').select('*'),
+      ]);
+      if(notasRes.error)throw notasRes.error;
+      if(ocRes.error)throw ocRes.error;
+      setNotasRemessaInd(notasRes.data||[]);
+      setOrdensCompraInd(ocRes.data||[]);
+    }catch(e){/* silencioso — tabelas ainda vazias, sem sincronização ativa */}
+  },[supabase]);
+
+  // Sugestão de vínculo: casa remessa com nota real pelo BR (normalizado, sem
+  // sufixo/ano) + código do item + quantidade compatível. Confiança ALTA quando
+  // BR+item+qtd batem exato; MEDIA quando BR+item batem mas a quantidade diverge
+  // (cobre o caso real descrito: OC de 100 peças, remessa de só 80 — parcial).
+  const normalizarBR=br=>s(br).replace(/\/\d+$/,'').toUpperCase();
+  const sugerirVinculoRemessa=useCallback(remessa=>{
+    const brNorm=normalizarBR(remessa.projeto);
+    const candidatas=notasRemessaInd.filter(n=>normalizarBR(n.br)===brNorm&&n.cod_produto===remessa.produto_acabado);
+    if(candidatas.length===0)return null;
+    const qtdRemessa=Number(remessa.quantidade_op||0);
+    const exata=candidatas.find(n=>Math.abs(Number(n.quantidade||0)-qtdRemessa)<0.01);
+    if(exata)return{nota:exata,confianca:'ALTA'};
+    // Sem match exato: pega a nota de maior quantidade compatível (>=, cobre parcial)
+    const parcial=candidatas.filter(n=>Number(n.quantidade||0)>=qtdRemessa).sort((a,b)=>Number(a.quantidade)-Number(b.quantidade))[0];
+    if(parcial)return{nota:parcial,confianca:'MEDIA'};
+    return{nota:candidatas[0],confianca:'MEDIA'};
+  },[notasRemessaInd]);
+  const sugerirOCRemessa=useCallback(remessa=>{
+    const brNorm=normalizarBR(remessa.projeto);
+    return ordensCompraInd.find(oc=>normalizarBR(oc.br)===brNorm&&oc.cod_produto===remessa.produto_acabado)||null;
+  },[ordensCompraInd]);
+
   const chatNaoLidos = chatInternoDb.filter(m=>
     m.remetente!==usuarioLogado?.nome &&
     (m.destinatario==='Geral'||m.destinatario===usuarioLogado?.nome) &&
