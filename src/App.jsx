@@ -297,6 +297,37 @@ const ANDAMENTO_CFG={
   FATURADO:{label:'Faturado',cls:'bg-violet-50 text-violet-700 border-violet-200'},
 };
 
+// ── Link direto pro Sankhya web — Nota de Venda / Pedido de Venda ──────────
+// Servidor fixo do Sankhya da Kalenborn. Nota de Venda e Pedido de Venda usam a
+// MESMA tela (CentralNotas_VENDA), só muda o TIPMOV passado (V ou P).
+const SANKHYA_SERVIDOR='https://snkbrp01667.ativy.com';
+const SANKHYA_CONFIG_POR_TIPMOV={
+  C:{classe:'br.com.sankhya.com.mov.CentralNotas_COMPRA',tipoportal:'PC'},
+  V:{classe:'br.com.sankhya.com.mov.CentralNotas_VENDA',tipoportal:'PV'},
+  P:{classe:'br.com.sankhya.com.mov.CentralNotas_VENDA',tipoportal:'PV'},
+};
+function base64Utf8(texto){return btoa(unescape(encodeURIComponent(texto)));}
+// codtipoper vem do campo "top" em faturamento_resumo (mesmo dado, nome diferente).
+function linkSankhyaNota({nunota,tipmov,codtipoper}){
+  const cfg=SANKHYA_CONFIG_POR_TIPMOV[tipmov];
+  if(!cfg||!nunota)return null;
+  const agora=Date.now();
+  const parametros={NUNOTA:Number(nunota),TIPMOV:tipmov,ehPedidoW:false,CODTIPOPER:Number(codtipoper)||0,TIPOPORTAL:cfg.tipoportal,forceNewHash:agora};
+  const blocoA=base64Utf8(cfg.classe);
+  const blocoB=base64Utf8(JSON.stringify(parametros));
+  return `${SANKHYA_SERVIDOR}/mge/system.jsp#app/${blocoA}/${blocoB}&pk-refresh=${agora}`;
+}
+function BotaoAbrirSankhya({nunota,tipmov,codtipoper,label,className}){
+  const link=linkSankhyaNota({nunota,tipmov,codtipoper});
+  if(!link)return null;
+  return(
+    <a href={link} target="_blank" rel="noopener noreferrer" onClick={e=>e.stopPropagation()}
+      className={className||"inline-flex items-center gap-1 text-[11px] font-bold text-indigo-600 hover:underline"}>
+      {label||'Abrir no Sankhya ↗'}
+    </a>
+  );
+}
+
 function AndamentoSelect({value,onChange,title}){
   const cfg=ANDAMENTO_CFG[value]||ANDAMENTO_CFG.A_INICIAR;
   // Se já está Faturado (calculado automático), não dá pra editar manualmente —
@@ -1849,7 +1880,7 @@ export default function App(){
     try{
       const[pedidosItensData,faturamentoRes,notaItensRes,planRes,situacaoRes,fatManualRes]=await Promise.all([
         fetchPedidosItensCache(),
-        supabase.from('faturamento_resumo').select('br,cliente_nome,net_offer_value,valor_nota,tipmov,data_neg,numero_nota,data_faturamento').eq('tipmov','V'),
+        supabase.from('faturamento_resumo').select('br,cliente_nome,net_offer_value,valor_nota,tipmov,data_neg,numero_nota,data_faturamento,nunota,top').eq('tipmov','V'),
         supabase.from('nota_venda_itens').select('br,produto_descricao,cod_produto,quantidade,valor_bruto'),
         supabase.from('ooh_planejamento').select('br,mes_referencia,nova_data,data_original,justificativa,status,criado_em'),
         supabase.from('situacao_especial_pedido').select('*'),
@@ -1911,7 +1942,7 @@ export default function App(){
         if(!clienteFaturadoPorBR[br])clienteFaturadoPorBR[br]=f.cliente_nome;
         if(f.data_neg&&(!dataFaturadoPorBR[br]||f.data_neg<dataFaturadoPorBR[br]))dataFaturadoPorBR[br]=f.data_neg;
         if(!notasPorBR[br])notasPorBR[br]=[];
-        notasPorBR[br].push({numeroNota:s(f.numero_nota),dataFaturamento:f.data_faturamento||f.data_neg,valor:Number(f.net_offer_value||0)});
+        notasPorBR[br].push({numeroNota:s(f.numero_nota),dataFaturamento:f.data_faturamento||f.data_neg,valor:Number(f.net_offer_value||0),nunota:f.nunota,tipmov:f.tipmov,codtipoper:f.top});
       });
 
       // Itens faturados por item (cod_produto), pra saber quanto de cada item já saiu
@@ -8926,6 +8957,7 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
                 <div>
                   <p className="text-sm font-bold text-slate-900">NF {n.numeroNota||'—'}</p>
                   <p className="text-xs text-slate-500">{fmtDt(n.dataFaturamento)}</p>
+                  <BotaoAbrirSankhya nunota={n.nunota} tipmov={n.tipmov} codtipoper={n.codtipoper} className="inline-flex items-center gap-1 text-[10px] font-bold text-indigo-600 hover:underline mt-1"/>
                 </div>
                 <p className="text-sm font-black text-emerald-600">{fmtMoeda(n.valor)}</p>
               </div>
