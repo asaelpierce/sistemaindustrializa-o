@@ -900,7 +900,7 @@ export default function App(){
   const fetchPedidosItensCache=useCallback(async()=>{
     const cache=pedidosItensCacheRef.current;
     if(cache.data&&Date.now()-cache.ts<30000)return cache.data;
-    const{data,error}=await supabase.from('pedidos_itens').select('br,nunota,numero_pedido,cliente_nome,vendedor_nome,valor_liquido,produto_descricao,cod_produto,quantidade,qtd_entregue,unidade,data_neg,data_prevista_entrega');
+    const{data,error}=await supabase.from('pedidos_itens').select('br,nunota,numero_pedido,cliente_nome,vendedor_nome,valor_liquido,produto_descricao,cod_produto,quantidade,qtd_entregue,unidade,data_neg,data_prevista_entrega,top');
     if(error)throw error;
     pedidosItensCacheRef.current={data:data||[],ts:Date.now()};
     return data||[];
@@ -1182,6 +1182,9 @@ export default function App(){
       // valorFaturado do mestraDb já é o total por BR (faturadoPorBR[br]), duplicado em
       // toda linha de pedido do mesmo BR — pega só uma vez, nunca soma entre pedidos.
       if(!g.valorFaturadoReal)g.valorFaturadoReal=r.valorFaturado||0;
+      // Pedido de referência pro link direto do Sankhya (Pedido de Venda) — pega o
+      // primeiro que tiver nunota+top, já que um BR pode ter mais de um pedido.
+      if(!g.nunotaPedidoRef&&r.nunota&&r.topPedido){g.nunotaPedidoRef=r.nunota;g.topPedidoRef=r.topPedido;}
       g.valorTotal+=r.valorTotal;
       g.valorFaturadoQtd+=r.valorPedidoAtendido;
       g.valorAFaturar+=r.valorAFaturar;
@@ -1432,6 +1435,25 @@ export default function App(){
   // Realizado = % acumulado de fato faturado até aquela semana.
   const META_FATURAMENTO_ANUAL_PCP=33500000;
   const [mestraFatNotasCruas,setMestraFatNotasCruas]=useState([]); // [{br,valor_nota,net_offer_value,data_neg}] — nível de nota, populado por fetchMestraFaturamentoPorNegociacao
+  // Notas de remessa pra industrialização ainda PENDENTES de retorno — o ponto
+  // crítico apontado pelo PCP: não pode fechar o faturamento final do BR se ainda
+  // tem material fora, na industrialização, sem ter voltado.
+  const [remessasIndPendentesPorBR,setRemessasIndPendentesPorBR]=useState({}); // {[brNormalizado]: [{numeroNota,fornecedor,dataNeg,codProduto}]}
+  const fetchRemessasIndPendentes=useCallback(async()=>{
+    if(!supabase)return;
+    try{
+      const{data,error}=await supabase.from('notas_remessa_industrializacao').select('br,numero_nota,fornecedor,data_neg,cod_produto').eq('pendente',true).not('br','is',null);
+      if(error)throw error;
+      const m={};
+      (data||[]).forEach(n=>{
+        const brNorm=s(n.br).replace(/\/\d+$/,'').toUpperCase();
+        if(!m[brNorm])m[brNorm]=[];
+        m[brNorm].push({numeroNota:n.numero_nota,fornecedor:n.fornecedor,dataNeg:n.data_neg,codProduto:n.cod_produto});
+      });
+      setRemessasIndPendentesPorBR(m);
+    }catch(e){/* tabela nova, silencioso se ainda não tiver RLS liberado ou dado */}
+  },[supabase]);
+  useEffect(()=>{if(supabase&&(aba==='PLANILHA_MESTRE'||aba==='PLANEJAMENTO'))fetchRemessasIndPendentes();},[supabase,aba]);
 
   const faturamentoSemanalAcompanhamento=useMemo(()=>{
     const anoRef=new Date().getFullYear();
@@ -1969,7 +1991,7 @@ export default function App(){
         // some do cálculo por completo, como se não existisse.
         if(nunotasDesconsiderados.has(p.nunota)||brsDesconsiderados.has(br))return;
         const chave=`${br}|${nunota}`;
-        if(!agrup[chave])agrup[chave]={chave,br,nunota,numeroPedido:s(p.numero_pedido),cliente:p.cliente_nome,vendedor:p.vendedor_nome,valorTotal:0,dataNeg:p.data_neg,dataPrevista:p.data_prevista_entrega,produtos:[],temItemServico:false};
+        if(!agrup[chave])agrup[chave]={chave,br,nunota,topPedido:p.top||null,numeroPedido:s(p.numero_pedido),cliente:p.cliente_nome,vendedor:p.vendedor_nome,valorTotal:0,dataNeg:p.data_neg,dataPrevista:p.data_prevista_entrega,produtos:[],temItemServico:false};
         agrup[chave].valorTotal+=Number(p.valor_liquido||0);
         if(p.produto_descricao&&!agrup[chave].produtos.includes(p.produto_descricao))agrup[chave].produtos.push(p.produto_descricao);
         if(p.data_neg&&(!agrup[chave].dataNeg||p.data_neg<agrup[chave].dataNeg))agrup[chave].dataNeg=p.data_neg;
@@ -8909,6 +8931,28 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
 
       {/* ── MODAL MESTRA: Detalhamento por Item e Notas Fiscais ────────── */}
       <Modal open={!!mestraNotasSel} onClose={()=>{setMestraNotasSel(null);setMestraDetalheTab('ITENS');}} title={`${s(mestraNotasSel?.br)}${mestraNotasSel?.nunota?` · Pedido ${mestraNotasSel.nunota}`:''}`} subtitle={`${s(mestraNotasSel?.cliente)} — pedido ${fmtMoeda(mestraNotasSel?.valorTotal)} / entregue ${fmtMoeda(mestraNotasSel?.valorPedidoAtendido)}`} maxWidth="max-w-2xl">
+        {mestraNotasSel?.nunotaPedidoRef&&(
+          <div className="mb-3">
+            <BotaoAbrirSankhya nunota={mestraNotasSel.nunotaPedidoRef} tipmov="P" codtipoper={mestraNotasSel.topPedidoRef} label="Ver Pedido de Venda no Sankhya ↗"
+              className="inline-flex items-center gap-1.5 text-xs font-bold text-white bg-slate-800 hover:bg-slate-900 rounded-lg px-3 py-1.5"/>
+          </div>
+        )}
+        {(()=>{
+          const brNorm=s(mestraNotasSel?.br).replace(/\/\d+$/,'').toUpperCase();
+          const pendentes=remessasIndPendentesPorBR[brNorm]||[];
+          if(pendentes.length===0)return null;
+          return(
+            <div className="mb-4 bg-amber-50 border border-amber-200 rounded-xl px-4 py-3">
+              <p className="text-xs font-black text-amber-800 flex items-center gap-1.5"><AlertTriangle className="w-3.5 h-3.5"/>{pendentes.length} remessa(s) de industrialização ainda PENDENTE(S) de retorno</p>
+              <p className="text-[11px] text-amber-700 mt-1">Material fora, no fornecedor — cuidado antes de solicitar o faturamento final deste BR.</p>
+              <div className="mt-2 space-y-1">
+                {pendentes.map((p,i)=>(
+                  <p key={i} className="text-[11px] text-amber-700">NF {p.numeroNota} · {s(p.fornecedor)} · desde {fmtDt(p.dataNeg)}</p>
+                ))}
+              </div>
+            </div>
+          );
+        })()}
         <div className="flex gap-2 mb-4">
           <button onClick={()=>setMestraDetalheTab('ITENS')} className={`text-xs font-bold px-3 py-1.5 rounded-full border ${mestraDetalheTab==='ITENS'?'bg-indigo-600 text-white border-indigo-600':'bg-white text-slate-600 border-slate-200'}`}>Itens (o que falta)</button>
           <button onClick={()=>setMestraDetalheTab('NOTAS')} className={`text-xs font-bold px-3 py-1.5 rounded-full border ${mestraDetalheTab==='NOTAS'?'bg-indigo-600 text-white border-indigo-600':'bg-white text-slate-600 border-slate-200'}`}>Notas Fiscais</button>
