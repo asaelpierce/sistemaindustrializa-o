@@ -1447,23 +1447,37 @@ export default function App(){
 
   // Gráfico "Previsto ÷ semanas x Realizado", parametrizado por mês — usado tanto no
   // resumo da Planilha Mestre (mês atual) quanto na aba Planejamento (mês escolhido).
+  // Fechamentos mensais do Planejamento — precisa estar disponível ANTES de
+  // calcularAcompanhamentoSemanal (usado tanto pelo Planejamento quanto pela
+  // Planilha Mestre), porque o Previsto de ambas as telas passa a vir daqui quando
+  // o mês já foi fechado. Buscado ao entrar em qualquer uma das duas abas, pra que
+  // sempre que uma mexer, a outra já reflita — é a mesma fonte única.
+  const [planejamentoFechamentos,setPlanejamentoFechamentos]=useState({}); // {[mes]: {brs:[...],valorTotal,totalProjetos,fechadoPor,fechadoEm}}
+  const fetchPlanejamentoFechamentos=useCallback(async()=>{
+    if(!supabase)return;
+    try{
+      const{data,error}=await supabase.from('ooh_fechamentos_mensais').select('*');
+      if(error)throw error;
+      const m={};
+      (data||[]).forEach(f=>{m[f.mes_referencia]={brs:(f.brs_selecionados||[]).map(x=>x.br),snapshot:f.brs_selecionados||[],valorTotal:Number(f.valor_selecionado||0),totalProjetos:f.total_selecionados,fechadoPor:f.fechado_por,fechadoEm:f.fechado_em};});
+      setPlanejamentoFechamentos(m);
+    }catch(e){addToast('Erro ao buscar fechamentos: '+e.message,'error');}
+  },[supabase]);
+  useEffect(()=>{if(supabase&&(aba==='PLANEJAMENTO'||aba==='PLANILHA_MESTRE'))fetchPlanejamentoFechamentos();},[supabase,aba]);
+
   const calcularAcompanhamentoSemanal=useCallback(mesRef=>{
     const[anoNum,mesNum]=mesRef.split('-').map(Number);
     const diasNoMes=new Date(anoNum,mesNum,0).getDate();
     const totalSemanas=Math.ceil(diasNoMes/7);
 
-    // PREVISTO = carteira com mês EFETIVO igual ao selecionado (já considera
-    // reprogramação/antecipação), excluindo só quem está marcado manualmente como
-    // FATURADO. Confirmado direto com o PCP: a planilha dele (Orders On Hand) é
-    // mantida NA MÃO — ele tira o BR da lista quando sabe que já fechou, não existe
-    // fórmula automática por trás. Por isso a exclusão automática por quantidade/
-    // valor entregue (jaFaturado) NUNCA vai bater exatamente com a planilha — ela
-    // pode incluir um BR 100% entregue (o PCP ainda não teve tempo de tirar) e
-    // excluir outro que nem chegou a 50% de quantidade (o PCP já sabe que fechou
-    // por outro motivo, ex: nota emitida faz tempo). A única fonte de verdade
-    // possível é a mesma que o PCP usa: a marcação manual dele no próprio portal.
+    // PREVISTO: se o mês JÁ FOI FECHADO no Planejamento, usa o valor fechado — é a
+    // mesma fonte única das duas telas, pra uma nunca ficar dessincronizada da outra
+    // quando o PCP mexer numa delas. Só recalcula na hora (cálculo dinâmico, com as
+    // mesmas regras de mesEfetivo/FATURADO) quando o mês AINDA não foi fechado.
+    const fechamento=planejamentoFechamentos[mesRef];
     const linhasDoMes=planilhaMestreComMesEfetivo.filter(r=>r.mesEfetivo===mesRef&&r.andamentoEfetivo!=='FATURADO');
-    const valorPrevisto=linhasDoMes.reduce((a,r)=>a+r.valorTotal,0);
+    const valorPrevisto=fechamento?fechamento.valorTotal:linhasDoMes.reduce((a,r)=>a+r.valorTotal,0);
+    const totalProjetosPrevisto=fechamento?fechamento.totalProjetos:linhasDoMes.length;
     const metaSemanal=totalSemanas>0?valorPrevisto/totalSemanas:0;
 
     // REALIZADO = TUDO que foi faturado neste mês, de QUALQUER projeto — inclusive os
@@ -1495,8 +1509,8 @@ export default function App(){
         Realizado:(mesFuturo||sw>semanaAtualDoMes)?null:Math.round(acumulado),
       });
     }
-    return{pontos,valorPrevisto,metaSemanal,totalSemanas,mesRef,semanaAtualDoMes,acumuladoAtual:Math.round(acumulado),totalProjetos:linhasDoMes.length};
-  },[planilhaMestreComMesEfetivo]);
+    return{pontos,valorPrevisto,metaSemanal,totalSemanas,mesRef,semanaAtualDoMes,acumuladoAtual:Math.round(acumulado),totalProjetos:totalProjetosPrevisto,fechado:!!fechamento};
+  },[planilhaMestreComMesEfetivo,planejamentoFechamentos]);
 
   const mestraAcompanhamentoMensal=useMemo(()=>calcularAcompanhamentoSemanal(new Date().toISOString().slice(0,7)),[calcularAcompanhamentoSemanal]);
 
@@ -1522,20 +1536,7 @@ export default function App(){
   });
   const limparPlanejFiltro=campo=>setPlanejamentoFiltros(f=>({...f,[campo]:[]}));
   const totalPlanejFiltrosAtivos=useMemo(()=>Object.values(planejamentoFiltros).reduce((a,arr)=>a+(arr?.length||0),0),[planejamentoFiltros]);
-  const [planejamentoFechamentos,setPlanejamentoFechamentos]=useState({}); // {[mes]: {brs:[...],valorTotal,totalProjetos,fechadoPor,fechadoEm}}
   const [fechandoPlanejamento,setFechandoPlanejamento]=useState(false);
-
-  const fetchPlanejamentoFechamentos=useCallback(async()=>{
-    if(!supabase)return;
-    try{
-      const{data,error}=await supabase.from('ooh_fechamentos_mensais').select('*');
-      if(error)throw error;
-      const m={};
-      (data||[]).forEach(f=>{m[f.mes_referencia]={brs:(f.brs_selecionados||[]).map(x=>x.br),snapshot:f.brs_selecionados||[],valorTotal:Number(f.valor_selecionado||0),totalProjetos:f.total_selecionados,fechadoPor:f.fechado_por,fechadoEm:f.fechado_em};});
-      setPlanejamentoFechamentos(m);
-    }catch(e){addToast('Erro ao buscar fechamentos: '+e.message,'error');}
-  },[supabase]);
-  useEffect(()=>{if(supabase&&aba==='PLANEJAMENTO')fetchPlanejamentoFechamentos();},[supabase,aba]);
 
   // PLANEJAMENTO FECHADO fixa só a LISTA DE PROJETOS do mês (quais BRs fazem parte) —
   // é a decisão que o PCP acorda com a diretoria. O VALOR e o STATUS (se já faturou
@@ -4368,7 +4369,7 @@ export default function App(){
                     pelas semanas do mês, comparado com quanto já foi faturado de fato. */}
                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
                   <ExecKPICard tone="slate" icon={LayoutDashboard} label="Previsto no mês" value={fmtMoeda(mestraAcompanhamentoMensal.valorPrevisto)}
-                    trendLabel={`${mestraAcompanhamentoMensal.totalProjetos} projeto(s) — ${mestraAcompanhamentoMensal.mesRef}`}/>
+                    trendLabel={`${mestraAcompanhamentoMensal.totalProjetos} projeto(s) — ${mestraAcompanhamentoMensal.mesRef}${mestraAcompanhamentoMensal.fechado?' · planejamento fechado':' · ainda não fechado'}`}/>
                   <ExecKPICard tone="blue" icon={Activity} label="Realizado até agora" value={fmtMoeda(mestraAcompanhamentoMensal.acumuladoAtual)}
                     trendLabel={`Semana ${Math.min(mestraAcompanhamentoMensal.semanaAtualDoMes,mestraAcompanhamentoMensal.totalSemanas)} de ${mestraAcompanhamentoMensal.totalSemanas}`}/>
                   {(()=>{
