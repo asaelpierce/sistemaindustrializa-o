@@ -3839,42 +3839,24 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
   // considerar risco em OC de data_pedido >= INICIO_MONITORAMENTO_OC, senão gera
   // alarme falso pra histórico que nunca teve chance de ser cadastrado.
   const INICIO_MONITORAMENTO_OC='2026-05-01';
-  // Conjunto de BRs (normalizados) que JÁ TÊM uma nota de entrada de retorno
-  // confirmada — é isso que resolve de verdade a pendência da nota de saída,
-  // confirmado pelo usuário: "acompanhamos as remessas pelo portal de vendas". O
-  // campo PENDENTE da nota de SAÍDA sozinho não é confiável — vimos casos reais
-  // (BR14384/26) marcados como "já retornou" no controle interno da remessa,
-  // mas SEM nenhuma entrada correspondente no Sankhya, ou seja, ainda
-  // genuinamente pendente de retorno físico.
-  //
-  // ERRO REAL CORRIGIDO (apontado pelo usuário com print real): NF 9523 (BR14169/26,
-  // fornecedor MARFLEX) aparecia como "já retornou" mesmo com pendente=true no
-  // Sankhya — porque esse BR tem outras entradas confirmadas, só que de FNR e
-  // Lapido, fornecedores DIFERENTES da Marflex. A checagem antiga só olhava
-  // "existe QUALQUER entrada do mesmo BR", sem exigir o mesmo fornecedor — mesma
-  // falha estrutural já corrigida em sugerirVinculoRemessa, mas que continuava
-  // aqui. Corrigido: agora a chave é BR+FORNECEDOR normalizado, nunca só BR.
-  const brsFornecedorComEntradaConfirmada=useMemo(()=>new Set(
-    notasEntradaRetornoInd.filter(n=>n.br).map(n=>`${normalizarBR(n.br)}|${normalizarFornecedor(n.fornecedor)}`)
-  ),[notasEntradaRetornoInd]);
-  // "Pendente de verdade" = campo pendente da SAÍDA ainda true E não existe
-  // entrada confirmada pro MESMO BR+FORNECEDOR (não só o mesmo BR — um fornecedor
-  // diferente ter devolvido não resolve a pendência deste). Se já existe entrada
-  // do mesmo fornecedor, a nota está resolvida de fato.
-  const notaRealmentePendente=nota=>{
-    if(!nota.pendente)return false;
-    const chaveExata=`${normalizarBR(nota.br)}|${normalizarFornecedor(nota.fornecedor)}`;
-    if(brsFornecedorComEntradaConfirmada.has(chaveExata))return false;
-    // Fallback tolerante: comparação parcial (fornecedoresBatem), pra cobrir
-    // pequenas variações de grafia entre a nota de saída e a de entrada.
-    return!notasEntradaRetornoInd.some(e=>normalizarBR(e.br)===normalizarBR(nota.br)&&fornecedoresBatem(e.fornecedor,nota.fornecedor));
-  };
+  // CONFIRMADO PELO USUÁRIO (correção de terminologia importante): "remessa não é
+  // entrada, é SAÍDA. Retorno é ENTRADA." — e o campo PENDENTE da própria nota de
+  // REMESSA (saída) já é 100% confiável sozinho: o Sankhya mesmo mantém esse campo
+  // atualizado quando a nota de retorno (entrada) correspondente chega.
+  // PENDENTE=SIM → ainda não tem nota de retorno, logística precisa ficar de olho.
+  // PENDENTE=NÃO → já tem retorno, logística já resolveu, nada a fazer.
+  // Removida toda a lógica anterior que cruzava com notas_entrada_retorno_
+  // industrializacao pra "confirmar" a pendência — isso causou dois bugs reais
+  // (BR14384/26 e BR14169/26, onde o cruzamento por BR ou por BR+fornecedor
+  // gerava falso "já retornou" mesmo com pendente=true de verdade). O campo já
+  // é a fonte de verdade, não precisa de segunda opinião.
+  const notaRealmentePendente=nota=>!!nota.pendente;
   // Contagem simples de notas de remessa AINDA PENDENTES de retorno físico —
   // usado como badge no menu (mesmo padrão já existente em "Fila de Expedição") e
   // alerta no topo da tela, pra não depender de rolar até achar o card certo.
   // Só conta a partir do início do monitoramento — nota antiga de antes do portal
   // existir não é "pendência esquecida", é histórico que nunca foi acompanhado.
-  const notasRemessaPendentesCount=useMemo(()=>notasRemessaInd.filter(n=>notaRealmentePendente(n)&&n.data_neg>=INICIO_MONITORAMENTO_OC).length,[notasRemessaInd,brsFornecedorComEntradaConfirmada]);
+  const notasRemessaPendentesCount=useMemo(()=>notasRemessaInd.filter(n=>notaRealmentePendente(n)&&n.data_neg>=INICIO_MONITORAMENTO_OC).length,[notasRemessaInd]);
 
   // Notas pendentes que NÃO batem com nenhuma remessa cadastrada no controle
   // interno — sem BR vinculado, ou com BR mas nenhuma remessa correspondente. A
@@ -3884,7 +3866,7 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
   const notasPendentesSemRemessa=useMemo(()=>{
     const brsComRemessa=new Set(remessasDb.filter(r=>r.status!=='CANCELADO').map(r=>normalizarBR(r.projeto)));
     return notasRemessaInd.filter(n=>notaRealmentePendente(n)&&n.data_neg>=INICIO_MONITORAMENTO_OC&&!brsComRemessa.has(normalizarBR(n.br)));
-  },[notasRemessaInd,brsFornecedorComEntradaConfirmada,remessasDb]);
+  },[notasRemessaInd,remessasDb]);
 
   const riscoOCPendente=useMemo(()=>{
     const porOC={};
@@ -7377,7 +7359,7 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
                               <div className={`text-[10px] font-bold px-2.5 py-1.5 rounded-lg border ${vinculo.confianca==='ALTA'?'bg-teal-50 text-teal-700 border-teal-200':vinculo.confianca==='MEDIA'?'bg-amber-50 text-amber-700 border-amber-200':'bg-slate-50 text-slate-500 border-slate-200'}`}>
                                 <div className="flex items-center gap-1.5 flex-wrap">
                                   {pendenteDeVerdade?<AlertTriangle className="w-3 h-3 flex-shrink-0"/>:<CheckCircle className="w-3 h-3 flex-shrink-0"/>}
-                                  <span>NF {vinculo.nota.numero_nota} · {s(vinculo.nota.fornecedor)} {pendenteDeVerdade?'— PENDENTE DE RETORNO':'— já retornou (confirmado por nota de entrada)'}</span>
+                                  <span>NF {vinculo.nota.numero_nota} · {s(vinculo.nota.fornecedor)} {pendenteDeVerdade?'— PENDENTE DE RETORNO':'— já retornou'}</span>
                                 </div>
                                 <p className="mt-1 opacity-70 font-semibold">
                                   Confiança do vínculo: <span className={vinculo.confianca==='ALTA'?'text-teal-700':vinculo.confianca==='MEDIA'?'text-amber-700':'text-slate-600'}>{{ALTA:'alta',MEDIA:'média',BAIXA:'baixa — vale conferir'}[vinculo.confianca]}</span>
@@ -7452,15 +7434,13 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
                                 <CheckCircle className="w-4 h-4"/>Ciclo encerrado
                               </div>
                             )}
-                            {/* Achado real confirmado pelo usuário: o PCP pode confirmar o retorno
-                                físico no controle interno (RETORNADO), mas isso NÃO é o que resolve
-                                a pendência de verdade — só uma nota de ENTRADA real (TOP 2409/2410)
-                                no Sankhya confirma que o material voltou de fato. Sem ela, a
-                                remessa continua genuinamente pendente, mesmo com o PCP dizendo que
-                                recebeu — por isso isso precisa ficar bem visível, não escondido. */}
+                            {/* PCP confirmou o retorno no controle interno (RETORNADO), mas o campo
+                                PENDENTE da própria nota de remessa no Sankhya ainda diz que sim,
+                                está pendente — o Sankhya é a fonte de verdade sobre isso, então
+                                precisa ficar visível mesmo quando o controle interno já foi marcado. */}
                             {rem.status==='RETORNADO'&&vinculo&&notaRealmentePendente(vinculo.nota)&&(
                               <div className="flex items-center gap-1.5 text-red-700 bg-red-50 border border-red-200 px-3 py-1.5 rounded-xl text-[10px] font-bold max-w-[220px] text-right">
-                                <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0"/>PCP confirmou o retorno aqui, mas NÃO existe nota de entrada de retorno (TOP 2409/2410) no Sankhya pra NF {vinculo.nota.numero_nota} — o material pode não ter voltado de verdade ainda
+                                <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0"/>PCP confirmou o retorno aqui, mas a NF {vinculo.nota.numero_nota} ainda consta PENDENTE no Sankhya — confirme com a logística se o material já voltou de verdade
                               </div>
                             )}
                             <span className="text-[10px] text-slate-400">Saída: {fmtDt(rem.data_envio)}</span>
