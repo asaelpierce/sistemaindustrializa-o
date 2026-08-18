@@ -7384,7 +7384,7 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
                     const saldo=Number(rem.quantidade_op)-pecasRecebidasReal;
                     const pct=Number(rem.quantidade_op)>0?Math.min(100,(pecasRecebidasReal/Number(rem.quantidade_op))*100):0;
                     return(
-                      <div key={rem.id} className={`bg-white rounded-2xl border overflow-hidden transition-all ${rem.status==='RETORNADO'?'border-slate-100 opacity-70':'border-slate-200 shadow-sm'}`}>
+                      <div key={rem.id} className={`bg-white rounded-2xl border overflow-hidden transition-all ${rem.status==='RETORNADO'&&!marcacaoIncorreta?'border-slate-100 opacity-70':'border-slate-200 shadow-sm'}`}>
                         {/* Header do card */}
                         <div className="flex items-start gap-4 p-5 pb-4">
                           <div className="flex-1 min-w-0 space-y-2">
@@ -7415,8 +7415,13 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
                             </div>
                             {vinculo&&(()=>{
                               const pendenteDeVerdade=notaRealmentePendente(vinculo.nota);
+                              // Cor de fundo reflete PENDÊNCIA (o que importa pro negócio), não mais
+                              // a confiança do vínculo (informação técnica secundária) — antes um
+                              // vínculo de confiança "alta" ficava verde/teal mesmo com a nota
+                              // genuinamente pendente, dando a falsa impressão de "resolvido".
+                              const corBloco=pendenteDeVerdade?'bg-red-50 text-red-700 border-red-200':'bg-teal-50 text-teal-700 border-teal-200';
                               return(
-                              <div className={`text-[10px] font-bold px-2.5 py-1.5 rounded-lg border ${vinculo.confianca==='ALTA'?'bg-teal-50 text-teal-700 border-teal-200':vinculo.confianca==='MEDIA'?'bg-amber-50 text-amber-700 border-amber-200':'bg-slate-50 text-slate-500 border-slate-200'}`}>
+                              <div className={`text-[10px] font-bold px-2.5 py-1.5 rounded-lg border ${corBloco}`}>
                                 <div className="flex items-center gap-1.5 flex-wrap">
                                   {pendenteDeVerdade?<AlertTriangle className="w-3 h-3 flex-shrink-0"/>:<CheckCircle className="w-3 h-3 flex-shrink-0"/>}
                                   <span>NF {vinculo.nota.numero_nota} · {s(vinculo.nota.fornecedor)} {pendenteDeVerdade?'— PENDENTE DE RETORNO':'— já retornou'}</span>
