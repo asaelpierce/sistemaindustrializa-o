@@ -7360,6 +7360,16 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
                                 <CheckCircle className="w-4 h-4"/>Ciclo encerrado
                               </div>
                             )}
+                            {/* Contradição real que pode acontecer: PCP já confirmou o
+                                retorno físico (RETORNADO), mas a nota fiscal vinculada
+                                ainda consta PENDENTE no Sankhya — o material chegou, só
+                                o fiscal/financeiro ainda não deu baixa na nota. Precisa
+                                ficar visível, não escondido dentro de textos separados. */}
+                            {rem.status==='RETORNADO'&&vinculo?.nota?.pendente&&(
+                              <div className="flex items-center gap-1.5 text-amber-700 bg-amber-50 border border-amber-200 px-3 py-1.5 rounded-xl text-[10px] font-bold max-w-[200px] text-right">
+                                <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0"/>Material já retornou, mas NF {vinculo.nota.numero_nota} ainda consta pendente no Sankhya — avisar o fiscal/financeiro
+                              </div>
+                            )}
                             <span className="text-[10px] text-slate-400">Saída: {fmtDt(rem.data_envio)}</span>
                           </div>
                         </div>
