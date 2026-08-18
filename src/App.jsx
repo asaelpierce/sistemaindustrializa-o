@@ -781,6 +781,17 @@ export default function App(){
 
   // Retorno
   const [buscaForn,setBuscaForn]=useState('');
+  const [filtroSoPendentes,setFiltroSoPendentes]=useState(false);
+  const [notaItensSel,setNotaItensSel]=useState(null); // {numeroNota,fornecedor,itens:[...],carregando}
+  const verItensDaNota=async nota=>{
+    setNotaItensSel({numeroNota:nota.numero_nota,fornecedor:nota.fornecedor,itens:[],carregando:true});
+    try{
+      const res=await fetch(`${SUPABASE_URL}/functions/v1/consultar-itens-nota-sankhya`,{method:'POST',headers:{'Content-Type':'application/json','apikey':SUPABASE_KEY},body:JSON.stringify({nunota:nota.nunota})});
+      const data=await res.json();
+      if(!data.ok)throw new Error(data.erro||'Erro ao consultar itens');
+      setNotaItensSel({numeroNota:nota.numero_nota,fornecedor:nota.fornecedor,itens:data.itens||[],carregando:false});
+    }catch(e){addToast('Erro ao buscar itens da nota: '+e.message,'error');setNotaItensSel(null);}
+  };
   const [remParaRet,setRemParaRet]=useState(null);
   const [qtdRet,setQtdRet]=useState('');
 
@@ -7184,17 +7195,25 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
             {aba==='FORNECEDORES'&&(
               <div className="space-y-6">
                 <SectionHeader title="Gestão de Retornos" subtitle="Registre o retorno físico de materiais e atualize o estoque ERP"
-                  actions={<div className="relative"><Search className="w-4 h-4 absolute left-3 top-2.5 text-slate-400"/><Inp placeholder="Filtrar projeto..." className="pl-9 w-52" value={buscaForn} onChange={e=>setBuscaForn(e.target.value)}/></div>}
+                  actions={
+                    <div className="flex items-center gap-2">
+                      <button onClick={()=>setFiltroSoPendentes(v=>!v)}
+                        className={`text-xs font-bold px-3 py-2 rounded-lg border whitespace-nowrap transition-colors ${filtroSoPendentes?'bg-red-600 text-white border-red-600':'bg-white text-slate-600 border-slate-200 hover:border-slate-300'}`}>
+                        {filtroSoPendentes?'✓ Só pendentes':'Só pendentes'}
+                      </button>
+                      <div className="relative"><Search className="w-4 h-4 absolute left-3 top-2.5 text-slate-400"/><Inp placeholder="Filtrar projeto..." className="pl-9 w-52" value={buscaForn} onChange={e=>setBuscaForn(e.target.value)}/></div>
+                    </div>
+                  }
                 />
 
                 {/* Alerta-resumo bem no topo — antes o "pendente" só aparecia dentro do
                     card de cada remessa (precisava rolar/achar); agora avisa de cara
-                    quantas notas ainda estão sem retornar, sem precisar procurar. */}
+                    quantas notas ainda estão sem retornar, e clicar já filtra a lista. */}
                 {notasRemessaPendentesCount>0&&(
-                  <div className="bg-red-600 text-white rounded-2xl px-5 py-3.5 flex items-center gap-3">
+                  <button onClick={()=>setFiltroSoPendentes(true)} className="w-full text-left bg-red-600 hover:bg-red-700 text-white rounded-2xl px-5 py-3.5 flex items-center gap-3 transition-colors">
                     <AlertTriangle className="w-5 h-5 flex-shrink-0"/>
-                    <p className="text-sm font-bold">{notasRemessaPendentesCount} nota{notasRemessaPendentesCount>1?'s':''} fiscal{notasRemessaPendentesCount>1?'is':''} de industrialização ainda PENDENTE{notasRemessaPendentesCount>1?'S':''} de retorno físico — material fora, no fornecedor, sem ter voltado.</p>
-                  </div>
+                    <p className="text-sm font-bold">{notasRemessaPendentesCount} nota{notasRemessaPendentesCount>1?'s':''} fiscal{notasRemessaPendentesCount>1?'is':''} de industrialização ainda PENDENTE{notasRemessaPendentesCount>1?'S':''} de retorno físico — material fora, no fornecedor, sem ter voltado. <span className="underline">Clique pra filtrar</span>.</p>
+                  </button>
                 )}
 
                 {/* Painel de risco: OC com cobrança emitida (nota) mas ainda pendente de
@@ -7223,6 +7242,7 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
                               <span key={j} className="text-[10px] font-black text-red-700 bg-white border border-red-200 rounded-full px-2.5 py-1 flex items-center gap-1.5">
                                 NF {n.numero_nota} pendente
                                 <BotaoAbrirSankhya nunota={n.nunota} tipmov={n.tipmov} codtipoper={n.top} label="ver no Sankhya 🔗" className="text-indigo-600 hover:underline"/>
+                                <button onClick={()=>verItensDaNota(n)} className="text-indigo-600 hover:underline">· itens</button>
                               </span>
                             ))}
                           </div>
@@ -7233,7 +7253,10 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
                 )}
 
                 <div className="space-y-4">
-                  {remFora.filter(r=>!buscaForn||s(r.projeto).toUpperCase().includes(buscaForn.toUpperCase())).map(rem=>{
+                  {remFora
+                    .filter(r=>!buscaForn||s(r.projeto).toUpperCase().includes(buscaForn.toUpperCase()))
+                    .filter(r=>!filtroSoPendentes||sugerirVinculoRemessa(r)?.nota?.pendente)
+                    .map(rem=>{
                     const saldo=Number(rem.quantidade_op)-Number(rem.pecas_recebidas||0);
                     const pct=Number(rem.quantidade_op)>0?Math.min(100,(Number(rem.pecas_recebidas||0)/Number(rem.quantidade_op))*100):0;
                     const temNota=!!(rem.obs_expedicao||rem.observacao);
@@ -7269,8 +7292,13 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
                                   Confiança do vínculo: <span className={vinculo.confianca==='ALTA'?'text-teal-700':vinculo.confianca==='MEDIA'?'text-amber-700':'text-slate-600'}>{{ALTA:'alta',MEDIA:'média',BAIXA:'baixa — vale conferir'}[vinculo.confianca]}</span>
                                   {vinculo.compartilhada?' · matéria-prima compartilhada com outra remessa do mesmo BR':''}
                                 </p>
-                                <BotaoAbrirSankhya nunota={vinculo.nota.nunota} tipmov={vinculo.nota.tipmov} codtipoper={vinculo.nota.top} label="🔗 Ver esta nota no Sankhya"
-                                  className="mt-1.5 inline-flex items-center gap-1 text-[10px] font-black text-white bg-indigo-600 hover:bg-indigo-700 rounded-lg px-2.5 py-1"/>
+                                <div className="flex items-center gap-1.5 flex-wrap">
+                                  <BotaoAbrirSankhya nunota={vinculo.nota.nunota} tipmov={vinculo.nota.tipmov} codtipoper={vinculo.nota.top} label="🔗 Ver esta nota no Sankhya"
+                                    className="mt-1.5 inline-flex items-center gap-1 text-[10px] font-black text-white bg-indigo-600 hover:bg-indigo-700 rounded-lg px-2.5 py-1"/>
+                                  <button onClick={()=>verItensDaNota(vinculo.nota)} className="mt-1.5 inline-flex items-center gap-1 text-[10px] font-black text-indigo-700 bg-white border border-indigo-200 hover:bg-indigo-50 rounded-lg px-2.5 py-1">
+                                    📋 Ver itens da nota
+                                  </button>
+                                </div>
                                 {/* Monitoramento automático (cron de hora em hora) já confirma isso
                                     sozinho — este botão só ADIANTA, sem esperar a próxima rodada. */}
                                 {vinculo.confianca==='ALTA'&&!vinculo.nota.pendente&&['ENVIADO','RETORNO_PARCIAL'].includes(rem.status)&&(
@@ -9229,6 +9257,25 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
             <p className="text-[11px] text-amber-600 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">Este BR não tem pedido específico vinculado — a marcação vai se aplicar a todos os pedidos deste BR.</p>
           )}
         </div>
+      </Modal>
+
+      {/* ── MODAL: Itens de uma nota de remessa (consulta ao vivo no Sankhya) ── */}
+      <Modal open={!!notaItensSel} onClose={()=>setNotaItensSel(null)} title={`NF ${s(notaItensSel?.numeroNota)}`} subtitle={s(notaItensSel?.fornecedor)} maxWidth="max-w-xl">
+        {notaItensSel?.carregando&&<div className="py-8 text-center text-sm text-slate-400">Consultando o Sankhya...</div>}
+        {!notaItensSel?.carregando&&notaItensSel?.itens?.length===0&&<div className="py-8 text-center text-sm text-slate-400">Nenhum item encontrado nessa nota.</div>}
+        {!notaItensSel?.carregando&&notaItensSel?.itens?.length>0&&(
+          <div className="divide-y divide-slate-100">
+            {notaItensSel.itens.map((it,i)=>(
+              <div key={i} className="py-3 flex items-center justify-between gap-3">
+                <div className="min-w-0">
+                  <p className="text-sm font-bold text-slate-900 truncate" title={it.descricao}>{it.descricao}</p>
+                  <p className="text-xs text-slate-500 mt-0.5">Código: {it.cod_produto} · {it.quantidade} {it.unidade}</p>
+                </div>
+                <p className="text-sm font-black text-slate-700 whitespace-nowrap">{fmtMoeda(it.valor_total)}</p>
+              </div>
+            ))}
+          </div>
+        )}
       </Modal>
 
       {/* ── MODAL MESTRA: Detalhamento por Item e Notas Fiscais ────────── */}
