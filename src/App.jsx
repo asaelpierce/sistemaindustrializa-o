@@ -596,19 +596,23 @@ function FiltroMulti({label,opcoes,selecionados,onToggle,onLimpar,aberto,onAbrir
 // sozinho, só ajuda o usuário a decidir mais rápido, mostrando o raciocínio.
 function AnalisarVinculoIABotao({rem,candidatas,onAnalisar}){
   const [estado,setEstado]=React.useState('ocioso'); // ocioso | carregando | pronto
-  const [resposta,setResposta]=React.useState('');
-  if(estado==='pronto'){
+  const [resultado,setResultado]=React.useState(null);
+  if(estado==='pronto'&&resultado){
+    const certeza=Number(resultado.certeza_percentual)||0;
     return(
-      <div className="mt-1.5 bg-violet-50 border border-violet-200 rounded-lg p-2.5">
-        <p className="text-[9px] font-black text-violet-600 uppercase mb-1">🤖 Análise da IA</p>
-        <p className="text-[11px] text-violet-800 leading-relaxed">{resposta}</p>
+      <div className={`mt-1.5 border rounded-lg p-2.5 ${resultado.decidiuSozinha?'bg-teal-50 border-teal-200':'bg-amber-50 border-amber-200'}`}>
+        <p className={`text-[9px] font-black uppercase mb-1 ${resultado.decidiuSozinha?'text-teal-600':'text-amber-600'}`}>
+          🤖 IA — {certeza}% de certeza {resultado.decidiuSozinha?'· confirmou sozinha':'· abaixo de 80%, logística notificada'}
+        </p>
+        {resultado.numero_nota_escolhida&&<p className="text-[11px] font-bold text-slate-700">Nota sugerida: {resultado.numero_nota_escolhida}</p>}
+        <p className="text-[11px] text-slate-600 leading-relaxed mt-0.5">{resultado.justificativa||''}</p>
       </div>
     );
   }
   return(
-    <button onClick={async()=>{setEstado('carregando');const r=await onAnalisar(rem,candidatas);setResposta(r||'Não foi possível analisar.');setEstado('pronto');}}
+    <button onClick={async()=>{setEstado('carregando');const r=await onAnalisar(rem,candidatas);setResultado(r);setEstado('pronto');}}
       disabled={estado==='carregando'} className="mt-1.5 text-[10px] font-black text-violet-700 border border-violet-200 bg-violet-50 rounded-lg px-2.5 py-1 hover:bg-violet-100 disabled:opacity-50">
-      {estado==='carregando'?'Analisando...':'🤖 Analisar com IA'}
+      {estado==='carregando'?'Analisando...':'🤖 Analisar com IA (decide se ≥80% certeza)'}
     </button>
   );
 }
@@ -3401,12 +3405,15 @@ export default function App(){
   // Análise por IA pra vínculos AMBÍGUOS (confiança média/baixa) — a matemática de
   // proximidade (BR + composição + quantidade) resolve a maioria sozinha, mas fica
   // sem força de decisão nos casos limítrofes (ex: MP compartilhada entre remessas
-  // de fornecedores diferentes, valores parecidos). Não é uma fonte de verdade nova
-  // — a IA olha os MESMOS dados (composição, quantidade, todas as notas candidatas
-  // do BR) e devolve um julgamento com justificativa, que o usuário ainda revisa e
-  // confirma manualmente. Não decide sozinha, só ajuda a decidir mais rápido.
+  // de fornecedores diferentes, valores parecidos).
+  //
+  // CRITÉRIO DE DECISÃO (definido com o usuário): a IA responde com um % de
+  // certeza. ≥80% → confirma o retorno sozinha, automático, registrando que foi a
+  // IA que decidiu (auditável, nunca silencioso). <80% → NÃO decide nada — só
+  // notifica a logística no chat/sino, com a análise da IA como apoio, pra alguém
+  // confirmar manualmente. A IA nunca é a única a saber que ficou em dúvida.
   const analisarVinculoComIA=async(rem,candidatas)=>{
-    if(!openAIKey)return addToast('Configure a chave da OpenAI em Configurações pra usar a análise por IA.','error');
+    if(!openAIKey){addToast('Configure a chave da OpenAI em Configurações pra usar a análise por IA.','error');return null;}
     const materiais=produtosDb[rem.produto_acabado]?.materiais||[];
     const contexto=`Você é um analista de logística industrial. Uma remessa de matéria-prima foi enviada pra um fornecedor terceirizar um processamento (industrialização). Preciso saber qual nota fiscal de retorno corresponde a essa remessa.
 
@@ -3419,22 +3426,44 @@ REMESSA ENVIADA:
 NOTAS FISCAIS DE RETORNO CANDIDATAS (mesmo BR):
 ${candidatas.map((n,i)=>`${i+1}. NF ${n.numero_nota} — fornecedor ${s(n.fornecedor)} — código ${n.cod_produto} — quantidade ${n.quantidade} — ${n.pendente?'AINDA PENDENTE (não retornou)':'já retornou'} — data ${n.data_neg}`).join('\n')}
 
-Qual dessas notas (se alguma) corresponde a essa remessa? Considere que a nota pode cobrir só uma parte da composição (a mesma matéria-prima às vezes é usada em várias remessas do mesmo BR, e uma nota pode cobrir a soma de várias). Responda em português, em até 4 frases: qual nota escolher (ou nenhuma), e por quê. Seja direto.`;
+Qual dessas notas (se alguma) corresponde a essa remessa? Considere que a nota pode cobrir só uma parte da composição (a mesma matéria-prima às vezes é usada em várias remessas do mesmo BR, e uma nota pode cobrir a soma de várias).
+
+Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
+{"numero_nota_escolhida":"9515 ou null se nenhuma servir","certeza_percentual":0 a 100,"justificativa":"até 3 frases em português, direto"}`;
     try{
-      const res=await fetch('https://api.openai.com/v1/chat/completions',{method:'POST',headers:{'Content-Type':'application/json','Authorization':`Bearer ${openAIKey}`},body:JSON.stringify({model:'gpt-4o',messages:[{role:'user',content:contexto}],max_tokens:400,temperature:.2})});
+      const res=await fetch('https://api.openai.com/v1/chat/completions',{method:'POST',headers:{'Content-Type':'application/json','Authorization':`Bearer ${openAIKey}`},body:JSON.stringify({model:'gpt-4o',messages:[{role:'user',content:contexto}],max_tokens:400,temperature:.2,response_format:{type:'json_object'}})});
       if(!res.ok)throw new Error(`OpenAI respondeu ${res.status}`);
       const data=await res.json();
-      const analise=data.choices?.[0]?.message?.content||'Sem resposta.';
-      return analise;
+      const bruto=data.choices?.[0]?.message?.content||'{}';
+      const analise=JSON.parse(bruto);
+      const notaEscolhida=candidatas.find(n=>s(n.numero_nota)===s(analise.numero_nota_escolhida));
+      const certeza=Number(analise.certeza_percentual)||0;
+
+      if(notaEscolhida&&certeza>=80){
+        // Certeza alta o suficiente (≥80%) — confirma o retorno sozinha, mas
+        // sempre auditável: registra explicitamente que foi decisão da IA.
+        await confirmarRetornoAutomatico(rem,{nota:notaEscolhida,confianca:'IA',certeza});
+        return{...analise,decidiuSozinha:true};
+      }else{
+        // Abaixo de 80% (ou a IA não achou nenhuma nota confiável) — nunca decide
+        // sozinha. Notifica a logística no chat/sino pra alguém revisar na mão.
+        await supabase.from('chat_interno').insert([{
+          remetente:'Sistema (análise IA)',destinatario:'Geral',tipo:'sistema',
+          mensagem:`⚠ Remessa ${s(rem.projeto)} (${rem.produto_acabado}) precisa de conferência manual — IA achou ${certeza}% de certeza (abaixo dos 80% pra confirmar sozinha). ${notaEscolhida?`Sugestão: NF ${notaEscolhida.numero_nota}.`:'Nenhuma nota bateu com confiança.'} ${s(analise.justificativa)}`,
+        }]);
+        addToast(`Certeza de ${certeza}% — abaixo do limite. Logística notificada pra conferir manualmente.`,'warning');
+        return{...analise,decidiuSozinha:false};
+      }
     }catch(e){addToast('Erro ao consultar IA: '+e.message,'error');return null;}
   };
 
   const confirmarRetornoAutomatico=async(rem,vinculo)=>{
     try{
       const novosItens=(rem.itens||[]).map(it=>({...it,quantidadeRetornada:Number(it.quantidadeTotal||0)}));
+      const origem=vinculo.confianca==='IA'?`IA (${vinculo.certeza}% de certeza)`:'Automático';
       const{error}=await supabase.from('remessas').update({
         itens:novosItens,status:'RETORNADO',pecas_recebidas:rem.quantidade_op,data_retorno:new Date().toISOString(),
-        recebido_por:`Automático — NF ${vinculo.nota.numero_nota} (${s(vinculo.nota.fornecedor)})`,
+        recebido_por:`${origem} — NF ${vinculo.nota.numero_nota} (${s(vinculo.nota.fornecedor)})`,
       }).eq('id',rem.id);
       if(error)throw error;
       addToast(`${rem.projeto}: retorno confirmado — NF ${vinculo.nota.numero_nota} já retornou no Sankhya. Sincronizando estoque real...`);
