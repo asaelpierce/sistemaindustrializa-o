@@ -3852,11 +3852,26 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
   // é a fonte de verdade, não precisa de segunda opinião.
   const notaRealmentePendente=nota=>!!nota.pendente;
   // Contagem simples de notas de remessa AINDA PENDENTES de retorno físico —
+  // notasRemessaInd agora vem 1 LINHA POR ITEM (nunota+sequencia) — corrigido um
+  // erro grave onde a sincronização somava quantidade de itens de unidades
+  // diferentes (KG+LT+PC+CJ+UN) numa soma sem sentido. Este memo agrupa de volta
+  // por NOTA (numero_nota), pra qualquer lógica que precisa de "1 registro por
+  // nota" (contagem, pendência, exibição) — cada nota carrega sua lista de itens.
+  const notasRemessaIndAgrupadas=useMemo(()=>{
+    const porNota={};
+    notasRemessaInd.forEach(it=>{
+      if(!porNota[it.numero_nota])porNota[it.numero_nota]={...it,itens:[]};
+      porNota[it.numero_nota].itens.push({cod_produto:it.cod_produto,descricao:it.descricao_produto,quantidade:it.quantidade});
+    });
+    return Object.values(porNota);
+  },[notasRemessaInd]);
+
+  // Contagem simples de notas de remessa AINDA PENDENTES de retorno físico —
   // usado como badge no menu (mesmo padrão já existente em "Fila de Expedição") e
   // alerta no topo da tela, pra não depender de rolar até achar o card certo.
   // Só conta a partir do início do monitoramento — nota antiga de antes do portal
   // existir não é "pendência esquecida", é histórico que nunca foi acompanhado.
-  const notasRemessaPendentesCount=useMemo(()=>notasRemessaInd.filter(n=>notaRealmentePendente(n)&&n.data_neg>=INICIO_MONITORAMENTO_OC).length,[notasRemessaInd]);
+  const notasRemessaPendentesCount=useMemo(()=>notasRemessaIndAgrupadas.filter(n=>notaRealmentePendente(n)&&n.data_neg>=INICIO_MONITORAMENTO_OC).length,[notasRemessaIndAgrupadas]);
 
   // Notas pendentes que NÃO batem com nenhuma remessa cadastrada no controle
   // interno — sem BR vinculado, ou com BR mas nenhuma remessa correspondente. A
@@ -3865,8 +3880,8 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
   // usuário clicava "Só pendentes" e a lista ficava vazia, sem explicação.
   const notasPendentesSemRemessa=useMemo(()=>{
     const brsComRemessa=new Set(remessasDb.filter(r=>r.status!=='CANCELADO').map(r=>normalizarBR(r.projeto)));
-    return notasRemessaInd.filter(n=>notaRealmentePendente(n)&&n.data_neg>=INICIO_MONITORAMENTO_OC&&!brsComRemessa.has(normalizarBR(n.br)));
-  },[notasRemessaInd,remessasDb]);
+    return notasRemessaIndAgrupadas.filter(n=>notaRealmentePendente(n)&&n.data_neg>=INICIO_MONITORAMENTO_OC&&!brsComRemessa.has(normalizarBR(n.br)));
+  },[notasRemessaIndAgrupadas,remessasDb]);
 
   const riscoOCPendente=useMemo(()=>{
     const porOC={};
@@ -3879,7 +3894,7 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
       porOC[chave].pedidos.push(oc.numero_pedido);
     });
     const notasPendentesPorChave={};
-    notasRemessaInd.filter(n=>notaRealmentePendente(n)).forEach(n=>{
+    notasRemessaIndAgrupadas.filter(n=>notaRealmentePendente(n)).forEach(n=>{
       const chave=`${normalizarBR(n.br)}|${s(n.fornecedor).toUpperCase()}`;
       if(!notasPendentesPorChave[chave])notasPendentesPorChave[chave]=[];
       notasPendentesPorChave[chave].push(n);
@@ -3893,7 +3908,7 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
       })
       .filter(g=>g.notasPendentes.length>0) // só o que tem risco real: nota emitida (cobrança) mas ainda pendente de retorno físico
       .sort((a,b)=>b.notasPendentes.length-a.notasPendentes.length);
-  },[ordensCompraInd,notasRemessaInd]);
+  },[ordensCompraInd,notasRemessaIndAgrupadas]);
 
   const chatNaoLidos = chatInternoDb.filter(m=>
     m.remetente!==usuarioLogado?.nome &&
