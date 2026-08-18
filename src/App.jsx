@@ -7367,13 +7367,22 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
                       .filter(r=>!filtroSoPendentes||notaRealmentePendente(sugerirVinculoRemessa(r)?.nota||{}))
                       .filter(r=>!filtroSoEmTransito||r.status==='ENVIADO'||r.status==='RETORNO_PARCIAL'||(r.status==='RETORNADO'&&notaRealmentePendente(sugerirVinculoRemessa(r)?.nota||{})));
                     return remessasFiltradas.map(rem=>{
-                    const saldo=Number(rem.quantidade_op)-Number(rem.pecas_recebidas||0);
-                    const pct=Number(rem.quantidade_op)>0?Math.min(100,(Number(rem.pecas_recebidas||0)/Number(rem.quantidade_op))*100):0;
                     const temNota=!!(rem.obs_expedicao||rem.observacao);
                     const dataSaida=rem.data_envio?new Date(rem.data_envio):null;
                     const diasFora=dataSaida?Math.floor((new Date()-dataSaida)/(864e5)):null;
                     const vinculo=sugerirVinculoRemessa(rem);
                     const oc=sugerirOCRemessa(rem,vinculo?.nota?.fornecedor);
+                    // Contradição real: PCP marcou RETORNADO (pecas_recebidas cheio no
+                    // banco), mas a nota real no Sankhya ainda está pendente — o material
+                    // NÃO voltou de verdade. A barra de progresso não pode mostrar
+                    // "100% retornado" nesse caso, senão fica a mesma contradição que já
+                    // corrigimos no selo (aqui só num lugar diferente da tela). Enquanto o
+                    // usuário não clica em "Corrigir p/ Em Trânsito", a barra já mostra o
+                    // progresso real: 0% (nada voltou de verdade ainda).
+                    const marcacaoIncorreta=rem.status==='RETORNADO'&&vinculo&&notaRealmentePendente(vinculo.nota);
+                    const pecasRecebidasReal=marcacaoIncorreta?0:Number(rem.pecas_recebidas||0);
+                    const saldo=Number(rem.quantidade_op)-pecasRecebidasReal;
+                    const pct=Number(rem.quantidade_op)>0?Math.min(100,(pecasRecebidasReal/Number(rem.quantidade_op))*100):0;
                     return(
                       <div key={rem.id} className={`bg-white rounded-2xl border overflow-hidden transition-all ${rem.status==='RETORNADO'?'border-slate-100 opacity-70':'border-slate-200 shadow-sm'}`}>
                         {/* Header do card */}
@@ -7461,7 +7470,7 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
                                 <span className="text-slate-500 font-medium">Progresso de retorno</span>
                                 <div className="flex gap-3">
                                   <span className="text-amber-600">{fmtD(rem.quantidade_op)} saíram</span>
-                                  <span className="text-emerald-600">{fmtD(rem.pecas_recebidas||0)} voltaram</span>
+                                  <span className="text-emerald-600">{fmtD(pecasRecebidasReal)} voltaram</span>
                                   {saldo>0&&<span className="text-red-600 font-black">{fmtD(saldo)} pendente</span>}
                                 </div>
                               </div>
