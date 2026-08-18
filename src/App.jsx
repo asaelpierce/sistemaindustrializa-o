@@ -592,6 +592,27 @@ function FiltroMulti({label,opcoes,selecionados,onToggle,onLimpar,aberto,onAbrir
 // qualquer quantidade (não precisa ser tudo ou nada), com observação opcional.
 // "O setor produziu X peças do código Y" — confirma a produção real e desconta a
 // matéria-prima consumida (via ficha técnica) do saldo daquele setor.
+// Botão de análise por IA pra vínculo ambíguo (confiança média/baixa) — não decide
+// sozinho, só ajuda o usuário a decidir mais rápido, mostrando o raciocínio.
+function AnalisarVinculoIABotao({rem,candidatas,onAnalisar}){
+  const [estado,setEstado]=React.useState('ocioso'); // ocioso | carregando | pronto
+  const [resposta,setResposta]=React.useState('');
+  if(estado==='pronto'){
+    return(
+      <div className="mt-1.5 bg-violet-50 border border-violet-200 rounded-lg p-2.5">
+        <p className="text-[9px] font-black text-violet-600 uppercase mb-1">🤖 Análise da IA</p>
+        <p className="text-[11px] text-violet-800 leading-relaxed">{resposta}</p>
+      </div>
+    );
+  }
+  return(
+    <button onClick={async()=>{setEstado('carregando');const r=await onAnalisar(rem,candidatas);setResposta(r||'Não foi possível analisar.');setEstado('pronto');}}
+      disabled={estado==='carregando'} className="mt-1.5 text-[10px] font-black text-violet-700 border border-violet-200 bg-violet-50 rounded-lg px-2.5 py-1 hover:bg-violet-100 disabled:opacity-50">
+      {estado==='carregando'?'Analisando...':'🤖 Analisar com IA'}
+    </button>
+  );
+}
+
 function InformarProducaoBotao({o,onInformar}){
   const [aberto,setAberto]=React.useState(false);
   const [qtd,setQtd]=React.useState('');
@@ -3377,6 +3398,37 @@ export default function App(){
   // a próxima sincronização "corrigir" — e se ela demorar a rodar, o saldo fica
   // inflado por dias, exatamente o problema que o usuário apontou. A ação certa é
   // disparar a sincronização real na hora, não fingir um ajuste manual paralelo.
+  // Análise por IA pra vínculos AMBÍGUOS (confiança média/baixa) — a matemática de
+  // proximidade (BR + composição + quantidade) resolve a maioria sozinha, mas fica
+  // sem força de decisão nos casos limítrofes (ex: MP compartilhada entre remessas
+  // de fornecedores diferentes, valores parecidos). Não é uma fonte de verdade nova
+  // — a IA olha os MESMOS dados (composição, quantidade, todas as notas candidatas
+  // do BR) e devolve um julgamento com justificativa, que o usuário ainda revisa e
+  // confirma manualmente. Não decide sozinha, só ajuda a decidir mais rápido.
+  const analisarVinculoComIA=async(rem,candidatas)=>{
+    if(!openAIKey)return addToast('Configure a chave da OpenAI em Configurações pra usar a análise por IA.','error');
+    const materiais=produtosDb[rem.produto_acabado]?.materiais||[];
+    const contexto=`Você é um analista de logística industrial. Uma remessa de matéria-prima foi enviada pra um fornecedor terceirizar um processamento (industrialização). Preciso saber qual nota fiscal de retorno corresponde a essa remessa.
+
+REMESSA ENVIADA:
+- Projeto (BR): ${s(rem.projeto)}
+- Produto acabado enviado: ${rem.produto_acabado} (${s(produtosDb[rem.produto_acabado]?.descricao)})
+- Quantidade de peças enviadas: ${rem.quantidade_op}
+- Composição (matéria-prima por peça): ${materiais.map(m=>`${m.codigoMP} (${m.quantidade} ${m.um}/peça)`).join(', ')||'não cadastrada'}
+
+NOTAS FISCAIS DE RETORNO CANDIDATAS (mesmo BR):
+${candidatas.map((n,i)=>`${i+1}. NF ${n.numero_nota} — fornecedor ${s(n.fornecedor)} — código ${n.cod_produto} — quantidade ${n.quantidade} — ${n.pendente?'AINDA PENDENTE (não retornou)':'já retornou'} — data ${n.data_neg}`).join('\n')}
+
+Qual dessas notas (se alguma) corresponde a essa remessa? Considere que a nota pode cobrir só uma parte da composição (a mesma matéria-prima às vezes é usada em várias remessas do mesmo BR, e uma nota pode cobrir a soma de várias). Responda em português, em até 4 frases: qual nota escolher (ou nenhuma), e por quê. Seja direto.`;
+    try{
+      const res=await fetch('https://api.openai.com/v1/chat/completions',{method:'POST',headers:{'Content-Type':'application/json','Authorization':`Bearer ${openAIKey}`},body:JSON.stringify({model:'gpt-4o',messages:[{role:'user',content:contexto}],max_tokens:400,temperature:.2})});
+      if(!res.ok)throw new Error(`OpenAI respondeu ${res.status}`);
+      const data=await res.json();
+      const analise=data.choices?.[0]?.message?.content||'Sem resposta.';
+      return analise;
+    }catch(e){addToast('Erro ao consultar IA: '+e.message,'error');return null;}
+  };
+
   const confirmarRetornoAutomatico=async(rem,vinculo)=>{
     try{
       const novosItens=(rem.itens||[]).map(it=>({...it,quantidadeRetornada:Number(it.quantidadeTotal||0)}));
@@ -3695,12 +3747,12 @@ export default function App(){
     // estava certo, só a matemática tem uma folga natural (nota bruta inclui
     // impostos/frete, o fornecedor manda sobra de material, arredondamento) que
     // passava dos 15% originais. Não era erro de vínculo, era rigidez demais.
-    if(melhor.pctDiferenca<=0.30)return{nota:melhor.nota,confianca:'ALTA',esperado:melhor.esperado,compartilhada:melhor.compartilhada};
-    if(melhor.pctDiferenca<=0.5)return{nota:melhor.nota,confianca:'MEDIA',esperado:melhor.esperado,compartilhada:melhor.compartilhada};
+    if(melhor.pctDiferenca<=0.30)return{nota:melhor.nota,confianca:'ALTA',esperado:melhor.esperado,compartilhada:melhor.compartilhada,candidatas:comDiferenca.map(c=>c.nota)};
+    if(melhor.pctDiferenca<=0.5)return{nota:melhor.nota,confianca:'MEDIA',esperado:melhor.esperado,compartilhada:melhor.compartilhada,candidatas:comDiferenca.map(c=>c.nota)};
     // Só BR+composição bateram, quantidade muito diferente — pode ser parcial
     // genuíno (ex: OC de 100, remessa de só 80) ou vínculo errado; marca BAIXA
     // pra deixar claro que precisa de conferência manual.
-    return{nota:melhor.nota,confianca:'BAIXA',esperado:melhor.esperado,compartilhada:melhor.compartilhada};
+    return{nota:melhor.nota,confianca:'BAIXA',esperado:melhor.esperado,compartilhada:melhor.compartilhada,candidatas:comDiferenca.map(c=>c.nota)};
   },[notasRemessaInd,produtosDb]);
   // Vínculo com a Ordem de Compra: BR + fornecedor (não cod_produto — descoberto que
   // o item da OC de industrialização é o SERVIÇO em si, ex: "FORNADA DE AUTOCLAVE",
@@ -7103,6 +7155,12 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
                                   <button onClick={()=>confirmarRetornoAutomatico(rem,vinculo)} className="mt-1.5 text-[10px] font-black text-white bg-teal-600 hover:bg-teal-700 rounded-lg px-2.5 py-1">
                                     ✓ Confirmar retorno automático
                                   </button>
+                                )}
+                                {/* Confiança MEDIA/BAIXA: a matemática de proximidade não decide sozinha —
+                                    oferece analisar com IA, que olha os mesmos dados (composição, todas as
+                                    notas candidatas do BR) e devolve um julgamento, sem decidir por conta. */}
+                                {(vinculo.confianca==='MEDIA'||vinculo.confianca==='BAIXA')&&vinculo.candidatas?.length>0&&(
+                                  <AnalisarVinculoIABotao rem={rem} candidatas={vinculo.candidatas} onAnalisar={analisarVinculoComIA}/>
                                 )}
                               </div>
                             )}
