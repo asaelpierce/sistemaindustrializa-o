@@ -3798,6 +3798,40 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
     return doBR[0];
   },[ordensCompraInd]);
 
+  // Painel de risco por OC — pedido do usuário: "o fornecedor emite a nota de
+  // cobrança em cima da OC e esquece de retornar". Precisa cobrir TODA OC com nota
+  // pendente, mesmo quando NÃO existe remessa cadastrada no controle interno —
+  // achado real: 53 dos BRs com OC de industrialização não têm remessa alguma
+  // cadastrada, então o vínculo por remessa (sugerirVinculoRemessa) nunca alcança
+  // esses casos. Este painel cruza direto OC ↔ nota, por BR+fornecedor, sem
+  // depender de remessa existir.
+  const riscoOCPendente=useMemo(()=>{
+    const porOC={};
+    ordensCompraInd.forEach(oc=>{
+      const brNorm=normalizarBR(oc.br);
+      const chave=`${brNorm}|${s(oc.fornecedor).toUpperCase()}`;
+      if(!porOC[chave])porOC[chave]={br:oc.br,fornecedor:oc.fornecedor,totalPedido:0,totalProcessado:0,pedidos:[]};
+      porOC[chave].totalPedido+=Number(oc.quantidade_pedida||0);
+      porOC[chave].totalProcessado+=Number(oc.quantidade_remetida||0);
+      porOC[chave].pedidos.push(oc.numero_pedido);
+    });
+    const notasPendentesPorChave={};
+    notasRemessaInd.filter(n=>n.pendente).forEach(n=>{
+      const chave=`${normalizarBR(n.br)}|${s(n.fornecedor).toUpperCase()}`;
+      if(!notasPendentesPorChave[chave])notasPendentesPorChave[chave]=[];
+      notasPendentesPorChave[chave].push(n);
+    });
+    return Object.values(porOC)
+      .map(g=>{
+        const chave=`${normalizarBR(g.br)}|${s(g.fornecedor).toUpperCase()}`;
+        const notasPendentes=notasPendentesPorChave[chave]||[];
+        const faltaProcessar=Math.max(0,g.totalPedido-g.totalProcessado);
+        return{...g,notasPendentes,faltaProcessar,pctProcessado:g.totalPedido>0?(g.totalProcessado/g.totalPedido)*100:0};
+      })
+      .filter(g=>g.notasPendentes.length>0) // só o que tem risco real: nota emitida (cobrança) mas ainda pendente de retorno físico
+      .sort((a,b)=>b.notasPendentes.length-a.notasPendentes.length);
+  },[ordensCompraInd,notasRemessaInd]);
+
   const chatNaoLidos = chatInternoDb.filter(m=>
     m.remetente!==usuarioLogado?.nome &&
     (m.destinatario==='Geral'||m.destinatario===usuarioLogado?.nome) &&
@@ -7142,6 +7176,42 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
                 <SectionHeader title="Gestão de Retornos" subtitle="Registre o retorno físico de materiais e atualize o estoque ERP"
                   actions={<div className="relative"><Search className="w-4 h-4 absolute left-3 top-2.5 text-slate-400"/><Inp placeholder="Filtrar projeto..." className="pl-9 w-52" value={buscaForn} onChange={e=>setBuscaForn(e.target.value)}/></div>}
                 />
+
+                {/* Painel de risco: OC com cobrança emitida (nota) mas ainda pendente de
+                    retorno físico — cobre TODO BR com OC de industrialização, mesmo os
+                    que não têm remessa cadastrada no controle interno (achado real: 53
+                    dos BRs com OC não têm nenhuma remessa aqui — o fornecedor cobra pela
+                    OC direto, sem passar pelo fluxo de remessa do portal). */}
+                {riscoOCPendente.length>0&&(
+                  <div className="bg-red-50 border border-red-200 rounded-2xl overflow-hidden">
+                    <div className="px-5 py-3.5 border-b border-red-100">
+                      <p className="text-sm font-black text-red-800 flex items-center gap-1.5"><AlertTriangle className="w-4 h-4"/>{riscoOCPendente.length} fornecedor(es) com cobrança emitida, ainda sem retorno físico</p>
+                      <p className="text-[11px] text-red-600 mt-0.5">Ordem de Compra tem nota fiscal do fornecedor, mas o material ainda não voltou de verdade — inclui BRs sem remessa cadastrada no controle interno.</p>
+                    </div>
+                    <div className="divide-y divide-red-100">
+                      {riscoOCPendente.map((g,i)=>(
+                        <div key={i} className="px-5 py-3 flex items-center justify-between gap-4 flex-wrap">
+                          <div className="min-w-0">
+                            <p className="text-sm font-bold text-slate-900">{g.br} <span className="text-slate-400 font-normal">· {s(g.fornecedor)}</span></p>
+                            <p className="text-[11px] text-slate-500 mt-0.5">
+                              OC: {g.totalPedido.toLocaleString('pt-BR',{maximumFractionDigits:2})} pedido, {g.totalProcessado.toLocaleString('pt-BR',{maximumFractionDigits:2})} processado no Sankhya ({g.pctProcessado.toFixed(0)}%)
+                              {g.faltaProcessar>0&&<span className="text-amber-600 font-bold"> · falta processar {g.faltaProcessar.toLocaleString('pt-BR',{maximumFractionDigits:2})}</span>}
+                            </p>
+                          </div>
+                          <div className="flex flex-wrap gap-1.5">
+                            {g.notasPendentes.map((n,j)=>(
+                              <span key={j} className="text-[10px] font-black text-red-700 bg-white border border-red-200 rounded-full px-2.5 py-1 flex items-center gap-1">
+                                NF {n.numero_nota} pendente
+                                <BotaoAbrirSankhya nunota={n.nunota} tipmov={n.tipmov} codtipoper={n.top} label="↗" className="ml-0.5 hover:underline"/>
+                              </span>
+                            ))}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
                 <div className="space-y-4">
                   {remFora.filter(r=>!buscaForn||s(r.projeto).toUpperCase().includes(buscaForn.toUpperCase())).map(rem=>{
                     const saldo=Number(rem.quantidade_op)-Number(rem.pecas_recebidas||0);
