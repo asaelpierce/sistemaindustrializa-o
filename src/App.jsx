@@ -7178,16 +7178,16 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
                                   <BotaoAbrirSankhya nunota={vinculo.nota.nunota} tipmov={vinculo.nota.tipmov} codtipoper={vinculo.nota.top} label="ver no Sankhya ↗"
                                     className="underline hover:no-underline"/>
                                 </div>
-                                {/* Confiança ALTA + nota já retornou de verdade no Sankhya = confirma
-                                    sozinho, sem esperar o usuário clicar em "retornar" manualmente. */}
+                                {/* Monitoramento automático (cron de hora em hora) já confirma isso
+                                    sozinho — este botão só ADIANTA, sem esperar a próxima rodada. */}
                                 {vinculo.confianca==='ALTA'&&!vinculo.nota.pendente&&['ENVIADO','RETORNO_PARCIAL'].includes(rem.status)&&(
                                   <button onClick={()=>confirmarRetornoAutomatico(rem,vinculo)} className="mt-1.5 text-[10px] font-black text-white bg-teal-600 hover:bg-teal-700 rounded-lg px-2.5 py-1">
-                                    ✓ Confirmar retorno automático
+                                    ✓ Confirmar agora (ou aguarde o monitoramento automático)
                                   </button>
                                 )}
-                                {/* Confiança MEDIA/BAIXA: a matemática de proximidade não decide sozinha —
-                                    oferece analisar com IA, que olha os mesmos dados (composição, todas as
-                                    notas candidatas do BR) e devolve um julgamento, sem decidir por conta. */}
+                                {/* Confiança MEDIA/BAIXA: o monitoramento automático já tenta a IA sozinho
+                                    de hora em hora (≥80% confirma, <80% avisa no sino) — este botão só
+                                    adianta a análise na hora, sem esperar a próxima rodada do cron. */}
                                 {(vinculo.confianca==='MEDIA'||vinculo.confianca==='BAIXA')&&vinculo.candidatas?.length>0&&(
                                   <AnalisarVinculoIABotao rem={rem} candidatas={vinculo.candidatas} onAnalisar={analisarVinculoComIA}/>
                                 )}
