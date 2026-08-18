@@ -3160,17 +3160,19 @@ export default function App(){
       }
       // Dados pesados — só para perfis que precisam
       if(!isQualidadeOnly){
-        const[pR,eR,rR,rlR,nrR]=await Promise.all([
+        const[pR,eR,rR,rlR,nrR,neR]=await Promise.all([
           supabase.from('produtos').select('codigo_pa,descricao,materiais'),
           supabase.from('estoque_mp').select('codigo_mp,descricao,saldo_disponivel,unidade'),
           supabase.from('remessas').select('*').order('data_criacao',{ascending:false}).limit(200),
           supabase.from('relatorios_ia').select('*').order('data_criacao',{ascending:false}).limit(50),
-          supabase.from('notas_remessa_industrializacao').select('*')
+          supabase.from('notas_remessa_industrializacao').select('*'),
+          supabase.from('notas_entrada_retorno_industrializacao').select('*')
         ]);
         if(pR.data){const m={};pR.data.forEach(p=>{if(p.codigo_pa)m[p.codigo_pa]=p;});setProdutosDb(m);}
         if(eR.data){const m={};eR.data.forEach(e=>{if(e.codigo_mp)m[e.codigo_mp]=e;});setEstoqueDb(m);}
         if(rR.data)setRemessasDb(rR.data);
         if(nrR.data)setNotasRemessaInd(nrR.data);
+        if(neR.data)setNotasEntradaRetornoInd(neR.data);
         if(rlR.data)setRelatoriosIaDb(rlR.data);
       }
       setDbOnline(true);
@@ -3711,6 +3713,7 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
   // vazios (sem fetch ativo ainda) — a lógica de comparação já fica pronta, só
   // rodando com array vazio até os dados chegarem.
   const [notasRemessaInd,setNotasRemessaInd]=useState([]); // notas_remessa_industrializacao
+  const [notasEntradaRetornoInd,setNotasEntradaRetornoInd]=useState([]); // notas_entrada_retorno_industrializacao — confirma retorno físico de verdade
   const [ordensCompraInd,setOrdensCompraInd]=useState([]); // ordens_compra_industrializacao
   const fetchRemessaIndustrializacao=useCallback(async()=>{
     if(!supabase)return;
@@ -3819,12 +3822,25 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
   // considerar risco em OC de data_pedido >= INICIO_MONITORAMENTO_OC, senão gera
   // alarme falso pra histórico que nunca teve chance de ser cadastrado.
   const INICIO_MONITORAMENTO_OC='2026-05-01';
+  // Conjunto de BRs (normalizados) que JÁ TÊM uma nota de entrada de retorno
+  // confirmada (TOP 2409/2410) — é isso que resolve de verdade a pendência da
+  // nota de saída, confirmado pelo usuário: "o portal de compras é totalmente
+  // diferente, acompanhamos as remessas pelo portal de vendas". O campo
+  // PENDENTE da nota de SAÍDA sozinho não é confiável — vimos casos reais
+  // (BR14384/26) marcados como "já retornou" no controle interno da remessa,
+  // mas SEM nenhuma entrada correspondente no Sankhya, ou seja, ainda
+  // genuinamente pendente de retorno físico.
+  const brsComEntradaConfirmada=useMemo(()=>new Set(notasEntradaRetornoInd.filter(n=>n.br).map(n=>normalizarBR(n.br))),[notasEntradaRetornoInd]);
+  // "Pendente de verdade" = campo pendente da SAÍDA ainda true E não existe
+  // entrada confirmada pro mesmo BR. Se já existe entrada, a nota está resolvida
+  // de fato, mesmo que o campo pendente da saída ainda não tenha sido atualizado.
+  const notaRealmentePendente=nota=>nota.pendente&&!brsComEntradaConfirmada.has(normalizarBR(nota.br));
   // Contagem simples de notas de remessa AINDA PENDENTES de retorno físico —
   // usado como badge no menu (mesmo padrão já existente em "Fila de Expedição") e
   // alerta no topo da tela, pra não depender de rolar até achar o card certo.
   // Só conta a partir do início do monitoramento — nota antiga de antes do portal
   // existir não é "pendência esquecida", é histórico que nunca foi acompanhado.
-  const notasRemessaPendentesCount=useMemo(()=>notasRemessaInd.filter(n=>n.pendente&&n.data_neg>=INICIO_MONITORAMENTO_OC).length,[notasRemessaInd]);
+  const notasRemessaPendentesCount=useMemo(()=>notasRemessaInd.filter(n=>notaRealmentePendente(n)&&n.data_neg>=INICIO_MONITORAMENTO_OC).length,[notasRemessaInd,brsComEntradaConfirmada]);
 
   const riscoOCPendente=useMemo(()=>{
     const porOC={};
@@ -3837,7 +3853,7 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
       porOC[chave].pedidos.push(oc.numero_pedido);
     });
     const notasPendentesPorChave={};
-    notasRemessaInd.filter(n=>n.pendente).forEach(n=>{
+    notasRemessaInd.filter(n=>notaRealmentePendente(n)).forEach(n=>{
       const chave=`${normalizarBR(n.br)}|${s(n.fornecedor).toUpperCase()}`;
       if(!notasPendentesPorChave[chave])notasPendentesPorChave[chave]=[];
       notasPendentesPorChave[chave].push(n);
@@ -7255,7 +7271,7 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
                 <div className="space-y-4">
                   {remFora
                     .filter(r=>!buscaForn||s(r.projeto).toUpperCase().includes(buscaForn.toUpperCase()))
-                    .filter(r=>!filtroSoPendentes||sugerirVinculoRemessa(r)?.nota?.pendente)
+                    .filter(r=>!filtroSoPendentes||notaRealmentePendente(sugerirVinculoRemessa(r)?.nota||{}))
                     .map(rem=>{
                     const saldo=Number(rem.quantidade_op)-Number(rem.pecas_recebidas||0);
                     const pct=Number(rem.quantidade_op)>0?Math.min(100,(Number(rem.pecas_recebidas||0)/Number(rem.quantidade_op))*100):0;
@@ -7282,11 +7298,13 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
                                 </span>
                               )}
                             </div>
-                            {vinculo&&(
+                            {vinculo&&(()=>{
+                              const pendenteDeVerdade=notaRealmentePendente(vinculo.nota);
+                              return(
                               <div className={`text-[10px] font-bold px-2.5 py-1.5 rounded-lg border ${vinculo.confianca==='ALTA'?'bg-teal-50 text-teal-700 border-teal-200':vinculo.confianca==='MEDIA'?'bg-amber-50 text-amber-700 border-amber-200':'bg-slate-50 text-slate-500 border-slate-200'}`}>
                                 <div className="flex items-center gap-1.5 flex-wrap">
-                                  {vinculo.nota.pendente?<AlertTriangle className="w-3 h-3 flex-shrink-0"/>:<CheckCircle className="w-3 h-3 flex-shrink-0"/>}
-                                  <span>NF {vinculo.nota.numero_nota} · {s(vinculo.nota.fornecedor)} {vinculo.nota.pendente?'— PENDENTE DE RETORNO':'— já retornou no Sankhya'}</span>
+                                  {pendenteDeVerdade?<AlertTriangle className="w-3 h-3 flex-shrink-0"/>:<CheckCircle className="w-3 h-3 flex-shrink-0"/>}
+                                  <span>NF {vinculo.nota.numero_nota} · {s(vinculo.nota.fornecedor)} {pendenteDeVerdade?'— PENDENTE DE RETORNO':'— já retornou (confirmado por nota de entrada)'}</span>
                                 </div>
                                 <p className="mt-1 opacity-70 font-semibold">
                                   Confiança do vínculo: <span className={vinculo.confianca==='ALTA'?'text-teal-700':vinculo.confianca==='MEDIA'?'text-amber-700':'text-slate-600'}>{{ALTA:'alta',MEDIA:'média',BAIXA:'baixa — vale conferir'}[vinculo.confianca]}</span>
@@ -7301,7 +7319,7 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
                                 </div>
                                 {/* Monitoramento automático (cron de hora em hora) já confirma isso
                                     sozinho — este botão só ADIANTA, sem esperar a próxima rodada. */}
-                                {vinculo.confianca==='ALTA'&&!vinculo.nota.pendente&&['ENVIADO','RETORNO_PARCIAL'].includes(rem.status)&&(
+                                {vinculo.confianca==='ALTA'&&!pendenteDeVerdade&&['ENVIADO','RETORNO_PARCIAL'].includes(rem.status)&&(
                                   <button onClick={()=>confirmarRetornoAutomatico(rem,vinculo)} className="mt-1.5 text-[10px] font-black text-white bg-teal-600 hover:bg-teal-700 rounded-lg px-2.5 py-1">
                                     ✓ Confirmar agora (ou aguarde o monitoramento automático)
                                   </button>
@@ -7313,7 +7331,8 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
                                   <AnalisarVinculoIABotao rem={rem} candidatas={vinculo.candidatas} onAnalisar={analisarVinculoComIA}/>
                                 )}
                               </div>
-                            )}
+                              );
+                            })()}
                             {oc&&(
                               <div className="text-[10px] font-bold text-slate-500 bg-slate-50 border border-slate-200 rounded-lg px-2.5 py-1.5">
                                 📋 OC {oc.numero_pedido} · {s(oc.fornecedor)} · {s(oc.descricao_produto).slice(0,40)}
@@ -7360,14 +7379,15 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
                                 <CheckCircle className="w-4 h-4"/>Ciclo encerrado
                               </div>
                             )}
-                            {/* Contradição real que pode acontecer: PCP já confirmou o
-                                retorno físico (RETORNADO), mas a nota fiscal vinculada
-                                ainda consta PENDENTE no Sankhya — o material chegou, só
-                                o fiscal/financeiro ainda não deu baixa na nota. Precisa
-                                ficar visível, não escondido dentro de textos separados. */}
-                            {rem.status==='RETORNADO'&&vinculo?.nota?.pendente&&(
-                              <div className="flex items-center gap-1.5 text-amber-700 bg-amber-50 border border-amber-200 px-3 py-1.5 rounded-xl text-[10px] font-bold max-w-[200px] text-right">
-                                <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0"/>Material já retornou, mas NF {vinculo.nota.numero_nota} ainda consta pendente no Sankhya — avisar o fiscal/financeiro
+                            {/* Achado real confirmado pelo usuário: o PCP pode confirmar o retorno
+                                físico no controle interno (RETORNADO), mas isso NÃO é o que resolve
+                                a pendência de verdade — só uma nota de ENTRADA real (TOP 2409/2410)
+                                no Sankhya confirma que o material voltou de fato. Sem ela, a
+                                remessa continua genuinamente pendente, mesmo com o PCP dizendo que
+                                recebeu — por isso isso precisa ficar bem visível, não escondido. */}
+                            {rem.status==='RETORNADO'&&vinculo&&notaRealmentePendente(vinculo.nota)&&(
+                              <div className="flex items-center gap-1.5 text-red-700 bg-red-50 border border-red-200 px-3 py-1.5 rounded-xl text-[10px] font-bold max-w-[220px] text-right">
+                                <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0"/>PCP confirmou o retorno aqui, mas NÃO existe nota de entrada de retorno (TOP 2409/2410) no Sankhya pra NF {vinculo.nota.numero_nota} — o material pode não ter voltado de verdade ainda
                               </div>
                             )}
                             <span className="text-[10px] text-slate-400">Saída: {fmtDt(rem.data_envio)}</span>
