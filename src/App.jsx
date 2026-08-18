@@ -7362,7 +7362,18 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
                                 <MapPin className="w-3 h-3 text-slate-400"/>{s(rem.expedicao?.destinatario||rem.cliente||'—')}
                               </span>
                               {rem.remessa_pai_id&&<span className="text-[9px] font-bold text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded border border-indigo-100">Complemento</span>}
-                              <StatusBadge status={rem.status}/>
+                              {/* Quando o status é RETORNADO mas a nota real (Sankhya) ainda está
+                                  pendente, provavelmente foi um erro de marcação — não mostra
+                                  "Concluído" em verde confiante, sinaliza a dúvida em âmbar. Não
+                                  altera o componente StatusBadge genérico (usado em outras telas),
+                                  só sobrescreve a exibição aqui, neste card específico. */}
+                              {rem.status==='RETORNADO'&&vinculo&&notaRealmentePendente(vinculo.nota)?(
+                                <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider border bg-amber-50 text-amber-700 border-amber-200">
+                                  <span className="w-1.5 h-1.5 rounded-full bg-amber-500"/>Concluído? (a conferir)
+                                </span>
+                              ):(
+                                <StatusBadge status={rem.status}/>
+                              )}
                               {diasFora!==null&&rem.status!=='RETORNADO'&&(
                                 <span className={`text-[9px] font-black px-2 py-0.5 rounded border ${diasFora>20?'bg-red-50 text-red-600 border-red-200 animate-pulse':'bg-slate-50 text-slate-500 border-slate-200'}`}>
                                   {diasFora} dia{diasFora!==1?'s':''} no campo
@@ -7442,22 +7453,38 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
                           </div>
                           {/* Ação */}
                           <div className="flex-shrink-0 flex flex-col items-end gap-2">
-                            {rem.status!=='RETORNADO'?(
-                              <Btn variant="dark" onClick={()=>{setRemParaRet(rem);setQtdRet('');}}>
-                                <ArrowLeftRight className="w-4 h-4"/>Registrar Retorno
-                              </Btn>
-                            ):(
-                              <div className="flex items-center gap-2 text-emerald-700 bg-emerald-50 border border-emerald-200 px-4 py-2.5 rounded-xl text-xs font-bold">
-                                <CheckCircle className="w-4 h-4"/>Ciclo encerrado
-                              </div>
-                            )}
+                            {(()=>{
+                              // Contradição real: PCP marcou RETORNADO no controle interno, mas o
+                              // campo PENDENTE da própria nota de remessa no Sankhya (fonte de
+                              // verdade) ainda diz que sim, está pendente. Provavelmente foi um erro
+                              // de marcação — por isso NÃO mostra "Ciclo encerrado" em verde
+                              // confiante, mostra um selo âmbar deixando a dúvida explícita.
+                              const possivelErroDeMarcacao=rem.status==='RETORNADO'&&vinculo&&notaRealmentePendente(vinculo.nota);
+                              if(rem.status!=='RETORNADO')return(
+                                <Btn variant="dark" onClick={()=>{setRemParaRet(rem);setQtdRet('');}}>
+                                  <ArrowLeftRight className="w-4 h-4"/>Registrar Retorno
+                                </Btn>
+                              );
+                              if(possivelErroDeMarcacao)return(
+                                <div className="flex items-center gap-2 text-amber-700 bg-amber-50 border border-amber-200 px-4 py-2.5 rounded-xl text-xs font-bold">
+                                  <AlertTriangle className="w-4 h-4"/>Marcado como retornado — conferir
+                                </div>
+                              );
+                              return(
+                                <div className="flex items-center gap-2 text-emerald-700 bg-emerald-50 border border-emerald-200 px-4 py-2.5 rounded-xl text-xs font-bold">
+                                  <CheckCircle className="w-4 h-4"/>Ciclo encerrado
+                                </div>
+                              );
+                            })()}
                             {/* PCP confirmou o retorno no controle interno (RETORNADO), mas o campo
                                 PENDENTE da própria nota de remessa no Sankhya ainda diz que sim,
-                                está pendente — o Sankhya é a fonte de verdade sobre isso, então
-                                precisa ficar visível mesmo quando o controle interno já foi marcado. */}
+                                está pendente — provavelmente um erro de marcação do usuário. O
+                                Sankhya é a fonte de verdade, então isso precisa ficar visível mesmo
+                                quando o controle interno já foi marcado (selo principal já muda de
+                                verde pra âmbar acima, este é o detalhe explicando o motivo). */}
                             {rem.status==='RETORNADO'&&vinculo&&notaRealmentePendente(vinculo.nota)&&(
                               <div className="flex items-center gap-1.5 text-red-700 bg-red-50 border border-red-200 px-3 py-1.5 rounded-xl text-[10px] font-bold max-w-[220px] text-right">
-                                <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0"/>PCP confirmou o retorno aqui, mas a NF {vinculo.nota.numero_nota} ainda consta PENDENTE no Sankhya — confirme com a logística se o material já voltou de verdade
+                                <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0"/>NF {vinculo.nota.numero_nota} ainda consta PENDENTE no Sankhya — provável erro de marcação, confirme com a logística se o material voltou de verdade
                               </div>
                             )}
                             <span className="text-[10px] text-slate-400">Saída: {fmtDt(rem.data_envio)}</span>
