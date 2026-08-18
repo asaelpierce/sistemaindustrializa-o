@@ -3802,12 +3802,15 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
   // cobrança em cima da OC e esquece de retornar". Precisa cobrir TODA OC com nota
   // pendente, mesmo quando NÃO existe remessa cadastrada no controle interno —
   // achado real: 53 dos BRs com OC de industrialização não têm remessa alguma
-  // cadastrada, então o vínculo por remessa (sugerirVinculoRemessa) nunca alcança
-  // esses casos. Este painel cruza direto OC ↔ nota, por BR+fornecedor, sem
-  // depender de remessa existir.
+  // cadastrada. MAS: 38 desses 53 têm OC de ANTES do portal existir (a remessa
+  // mais antiga cadastrada é de 30/04/2026) — não é falta de cadastro, o sistema
+  // simplesmente não existia ainda quando aquilo aconteceu. Corrigido pra só
+  // considerar risco em OC de data_pedido >= INICIO_MONITORAMENTO_OC, senão gera
+  // alarme falso pra histórico que nunca teve chance de ser cadastrado.
+  const INICIO_MONITORAMENTO_OC='2026-05-01';
   const riscoOCPendente=useMemo(()=>{
     const porOC={};
-    ordensCompraInd.forEach(oc=>{
+    ordensCompraInd.filter(oc=>oc.data_pedido>=INICIO_MONITORAMENTO_OC).forEach(oc=>{
       const brNorm=normalizarBR(oc.br);
       const chave=`${brNorm}|${s(oc.fornecedor).toUpperCase()}`;
       if(!porOC[chave])porOC[chave]={br:oc.br,fornecedor:oc.fornecedor,totalPedido:0,totalProcessado:0,pedidos:[]};
