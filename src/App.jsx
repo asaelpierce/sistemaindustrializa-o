@@ -783,6 +783,7 @@ export default function App(){
   const [buscaForn,setBuscaForn]=useState('');
   const [filtroSoPendentes,setFiltroSoPendentes]=useState(false);
   const [notaItensSel,setNotaItensSel]=useState(null); // {numeroNota,fornecedor,itens:[...],carregando}
+  const [remessaItensSel,setRemessaItensSel]=useState(null); // {rem} — ver a composição (o que foi enviado) de uma remessa
   const verItensDaNota=async nota=>{
     setNotaItensSel({numeroNota:nota.numero_nota,fornecedor:nota.fornecedor,itens:[],carregando:true});
     try{
@@ -7417,6 +7418,7 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
                                 {s(rem.projeto)} <span className="text-slate-300 mx-1">·</span> <span className="text-indigo-700">{s(rem.produto_acabado)}</span>
                               </p>
                               <p className="text-xs text-slate-400 mt-0.5">{s(rem.descricao_produto||produtosDb[rem.produto_acabado]?.descricao||'')} · {s(rem.cliente)}</p>
+                              <button onClick={()=>setRemessaItensSel(rem)} className="mt-1 text-[10px] font-black text-indigo-600 hover:underline">📦 Ver o que foi enviado</button>
                             </div>
                             {/* Progresso */}
                             <div className="space-y-1.5">
@@ -9394,6 +9396,29 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
             ))}
           </div>
         )}
+      </Modal>
+
+      {/* ── MODAL: O que foi enviado numa remessa (composição do produto acabado) ── */}
+      <Modal open={!!remessaItensSel} onClose={()=>setRemessaItensSel(null)} title={`${s(remessaItensSel?.projeto)} · ${s(remessaItensSel?.produto_acabado)}`} subtitle={`${fmtD(remessaItensSel?.quantidade_op)} peça(s) enviada(s) — ${s(remessaItensSel?.expedicao?.destinatario)}`} maxWidth="max-w-xl">
+        {(()=>{
+          const materiais=produtosDb[remessaItensSel?.produto_acabado]?.materiais;
+          if(!Array.isArray(materiais)||materiais.length===0)return<div className="py-8 text-center text-sm text-slate-400">Composição não cadastrada pra esse produto.</div>;
+          const qtdOP=Number(remessaItensSel?.quantidade_op||0);
+          return(
+            <div className="divide-y divide-slate-100">
+              <p className="text-[10px] font-black text-slate-400 uppercase tracking-wider pb-2">Matéria-prima enviada (composição × quantidade)</p>
+              {materiais.map((m,i)=>(
+                <div key={i} className="py-3 flex items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="text-sm font-bold text-slate-900 truncate">{s(estoqueDb[m.codigoMP]?.descricao)||`Código ${m.codigoMP}`}</p>
+                    <p className="text-xs text-slate-500 mt-0.5">Código: {m.codigoMP} · {m.quantidade} {m.um}/peça</p>
+                  </div>
+                  <p className="text-sm font-black text-indigo-700 whitespace-nowrap">{(Number(m.quantidade||0)*qtdOP).toLocaleString('pt-BR',{maximumFractionDigits:3})} {m.um}</p>
+                </div>
+              ))}
+            </div>
+          );
+        })()}
       </Modal>
 
       {/* ── MODAL MESTRA: Detalhamento por Item e Notas Fiscais ────────── */}
