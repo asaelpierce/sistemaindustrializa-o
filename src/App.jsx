@@ -782,6 +782,7 @@ export default function App(){
   // Retorno
   const [buscaForn,setBuscaForn]=useState('');
   const [filtroSoPendentes,setFiltroSoPendentes]=useState(false);
+  const [filtroSoEmTransito,setFiltroSoEmTransito]=useState(false); // pega ENVIADO + as RETORNADO com marcação incorreta (nota real ainda pendente)
   const [notaItensSel,setNotaItensSel]=useState(null); // {numeroNota,fornecedor,itens:[...],carregando}
   const [remessaItensSel,setRemessaItensSel]=useState(null); // {rem} — ver a composição (o que foi enviado) de uma remessa
   const verItensDaNota=async nota=>{
@@ -3469,6 +3470,23 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
         return{...analise,decidiuSozinha:false};
       }
     }catch(e){addToast('Erro ao consultar IA: '+e.message,'error');return null;}
+  };
+
+  // Corrige uma remessa marcada RETORNADO por engano — o material NÃO voltou de
+  // verdade (a nota real no Sankhya ainda está pendente). Volta pro estado real:
+  // EM TRÂNSITO (status=ENVIADO), zera o que foi registrado como recebido.
+  const corrigirMarcacaoErrada=async rem=>{
+    if(!window.confirm(`Corrigir ${rem.projeto}: voltar de "Concluído" pra "Em Trânsito"?\n\nA nota fiscal real ainda está pendente no Sankhya — o material provavelmente não voltou de verdade ainda.`))return;
+    try{
+      const novosItens=(rem.itens||[]).map(it=>({...it,quantidadeRetornada:0}));
+      const{error}=await supabase.from('remessas').update({
+        status:'ENVIADO',itens:novosItens,pecas_recebidas:0,data_retorno:null,
+        recebido_por:`Corrigido de retorno indevido por ${s(usuarioLogado?.nome)} — NF ainda pendente no Sankhya`,
+      }).eq('id',rem.id);
+      if(error)throw error;
+      addToast(`${rem.projeto}: corrigido — voltou pra Em Trânsito.`);
+      fetchAll();
+    }catch(e){addToast('Erro ao corrigir: '+e.message,'error');}
   };
 
   const confirmarRetornoAutomatico=async(rem,vinculo)=>{
@@ -7259,6 +7277,10 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
                         className={`text-xs font-bold px-3 py-2 rounded-lg border whitespace-nowrap transition-colors ${filtroSoPendentes?'bg-red-600 text-white border-red-600':'bg-white text-slate-600 border-slate-200 hover:border-slate-300'}`}>
                         {filtroSoPendentes?'✓ Só pendentes':'Só pendentes'}
                       </button>
+                      <button onClick={()=>setFiltroSoEmTransito(v=>!v)}
+                        className={`text-xs font-bold px-3 py-2 rounded-lg border whitespace-nowrap transition-colors ${filtroSoEmTransito?'bg-amber-600 text-white border-amber-600':'bg-white text-slate-600 border-slate-200 hover:border-slate-300'}`}>
+                        {filtroSoEmTransito?'✓ Só em trânsito':'Só em trânsito'}
+                      </button>
                       <div className="relative"><Search className="w-4 h-4 absolute left-3 top-2.5 text-slate-400"/><Inp placeholder="Filtrar projeto..." className="pl-9 w-52" value={buscaForn} onChange={e=>setBuscaForn(e.target.value)}/></div>
                     </div>
                   }
@@ -7342,7 +7364,8 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
                   {(()=>{
                     const remessasFiltradas=remFora
                       .filter(r=>!buscaForn||s(r.projeto).toUpperCase().includes(buscaForn.toUpperCase()))
-                      .filter(r=>!filtroSoPendentes||notaRealmentePendente(sugerirVinculoRemessa(r)?.nota||{}));
+                      .filter(r=>!filtroSoPendentes||notaRealmentePendente(sugerirVinculoRemessa(r)?.nota||{}))
+                      .filter(r=>!filtroSoEmTransito||r.status==='ENVIADO'||r.status==='RETORNO_PARCIAL'||(r.status==='RETORNADO'&&notaRealmentePendente(sugerirVinculoRemessa(r)?.nota||{})));
                     return remessasFiltradas.map(rem=>{
                     const saldo=Number(rem.quantidade_op)-Number(rem.pecas_recebidas||0);
                     const pct=Number(rem.quantidade_op)>0?Math.min(100,(Number(rem.pecas_recebidas||0)/Number(rem.quantidade_op))*100):0;
@@ -7363,13 +7386,14 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
                               </span>
                               {rem.remessa_pai_id&&<span className="text-[9px] font-bold text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded border border-indigo-100">Complemento</span>}
                               {/* Quando o status é RETORNADO mas a nota real (Sankhya) ainda está
-                                  pendente, provavelmente foi um erro de marcação — não mostra
-                                  "Concluído" em verde confiante, sinaliza a dúvida em âmbar. Não
-                                  altera o componente StatusBadge genérico (usado em outras telas),
-                                  só sobrescreve a exibição aqui, neste card específico. */}
+                                  pendente, o material NÃO voltou de verdade — provavelmente foi um
+                                  erro de marcação. Não mostra "Concluído" nenhum, mostra o estado
+                                  real: EM TRÂNSITO (o material ainda está fora). Não altera o
+                                  componente StatusBadge genérico (usado em outras telas), só
+                                  sobrescreve a exibição aqui, neste card específico. */}
                               {rem.status==='RETORNADO'&&vinculo&&notaRealmentePendente(vinculo.nota)?(
                                 <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider border bg-amber-50 text-amber-700 border-amber-200">
-                                  <span className="w-1.5 h-1.5 rounded-full bg-amber-500"/>Concluído? (a conferir)
+                                  <span className="w-1.5 h-1.5 rounded-full bg-amber-500"/>Em Trânsito (marcação incorreta)
                                 </span>
                               ):(
                                 <StatusBadge status={rem.status}/>
@@ -7456,9 +7480,9 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
                             {(()=>{
                               // Contradição real: PCP marcou RETORNADO no controle interno, mas o
                               // campo PENDENTE da própria nota de remessa no Sankhya (fonte de
-                              // verdade) ainda diz que sim, está pendente. Provavelmente foi um erro
-                              // de marcação — por isso NÃO mostra "Ciclo encerrado" em verde
-                              // confiante, mostra um selo âmbar deixando a dúvida explícita.
+                              // verdade) ainda diz que sim, está pendente — o material NÃO voltou de
+                              // verdade. Provavelmente foi um erro de marcação. Oferece corrigir com
+                              // 1 clique, voltando pro estado real: EM TRÂNSITO.
                               const possivelErroDeMarcacao=rem.status==='RETORNADO'&&vinculo&&notaRealmentePendente(vinculo.nota);
                               if(rem.status!=='RETORNADO')return(
                                 <Btn variant="dark" onClick={()=>{setRemParaRet(rem);setQtdRet('');}}>
@@ -7466,9 +7490,9 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
                                 </Btn>
                               );
                               if(possivelErroDeMarcacao)return(
-                                <div className="flex items-center gap-2 text-amber-700 bg-amber-50 border border-amber-200 px-4 py-2.5 rounded-xl text-xs font-bold">
-                                  <AlertTriangle className="w-4 h-4"/>Marcado como retornado — conferir
-                                </div>
+                                <button onClick={()=>corrigirMarcacaoErrada(rem)} className="flex items-center gap-2 text-amber-700 bg-amber-50 hover:bg-amber-100 border border-amber-200 px-4 py-2.5 rounded-xl text-xs font-bold">
+                                  <AlertTriangle className="w-4 h-4"/>Corrigir p/ Em Trânsito
+                                </button>
                               );
                               return(
                                 <div className="flex items-center gap-2 text-emerald-700 bg-emerald-50 border border-emerald-200 px-4 py-2.5 rounded-xl text-xs font-bold">
@@ -7478,13 +7502,14 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
                             })()}
                             {/* PCP confirmou o retorno no controle interno (RETORNADO), mas o campo
                                 PENDENTE da própria nota de remessa no Sankhya ainda diz que sim,
-                                está pendente — provavelmente um erro de marcação do usuário. O
-                                Sankhya é a fonte de verdade, então isso precisa ficar visível mesmo
-                                quando o controle interno já foi marcado (selo principal já muda de
-                                verde pra âmbar acima, este é o detalhe explicando o motivo). */}
+                                está pendente — o material não voltou de verdade, provável erro de
+                                marcação. O Sankhya é a fonte de verdade, então isso precisa ficar
+                                visível mesmo quando o controle interno já foi marcado (selo
+                                principal já muda de verde pra âmbar acima, este é o detalhe
+                                explicando o motivo, com o botão de correção ao lado). */}
                             {rem.status==='RETORNADO'&&vinculo&&notaRealmentePendente(vinculo.nota)&&(
                               <div className="flex items-center gap-1.5 text-red-700 bg-red-50 border border-red-200 px-3 py-1.5 rounded-xl text-[10px] font-bold max-w-[220px] text-right">
-                                <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0"/>NF {vinculo.nota.numero_nota} ainda consta PENDENTE no Sankhya — provável erro de marcação, confirme com a logística se o material voltou de verdade
+                                <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0"/>NF {vinculo.nota.numero_nota} ainda consta PENDENTE no Sankhya — o material não voltou de verdade
                               </div>
                             )}
                             <span className="text-[10px] text-slate-400">Saída: {fmtDt(rem.data_envio)}</span>
@@ -7526,7 +7551,8 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
                   {(()=>{
                     const remessasFiltradas=remFora
                       .filter(r=>!buscaForn||s(r.projeto).toUpperCase().includes(buscaForn.toUpperCase()))
-                      .filter(r=>!filtroSoPendentes||notaRealmentePendente(sugerirVinculoRemessa(r)?.nota||{}));
+                      .filter(r=>!filtroSoPendentes||notaRealmentePendente(sugerirVinculoRemessa(r)?.nota||{}))
+                      .filter(r=>!filtroSoEmTransito||r.status==='ENVIADO'||r.status==='RETORNO_PARCIAL'||(r.status==='RETORNADO'&&notaRealmentePendente(sugerirVinculoRemessa(r)?.nota||{})));
                     if(remessasFiltradas.length>0)return null;
                     if(!remFora.length){
                       return(
