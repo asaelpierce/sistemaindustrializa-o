@@ -7203,9 +7203,9 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
                           </div>
                           <div className="flex flex-wrap gap-1.5">
                             {g.notasPendentes.map((n,j)=>(
-                              <span key={j} className="text-[10px] font-black text-red-700 bg-white border border-red-200 rounded-full px-2.5 py-1 flex items-center gap-1">
+                              <span key={j} className="text-[10px] font-black text-red-700 bg-white border border-red-200 rounded-full px-2.5 py-1 flex items-center gap-1.5">
                                 NF {n.numero_nota} pendente
-                                <BotaoAbrirSankhya nunota={n.nunota} tipmov={n.tipmov} codtipoper={n.top} label="↗" className="ml-0.5 hover:underline"/>
+                                <BotaoAbrirSankhya nunota={n.nunota} tipmov={n.tipmov} codtipoper={n.top} label="ver no Sankhya 🔗" className="text-indigo-600 hover:underline"/>
                               </span>
                             ))}
                           </div>
@@ -7247,10 +7247,13 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
                                 <div className="flex items-center gap-1.5 flex-wrap">
                                   {vinculo.nota.pendente?<AlertTriangle className="w-3 h-3 flex-shrink-0"/>:<CheckCircle className="w-3 h-3 flex-shrink-0"/>}
                                   <span>NF {vinculo.nota.numero_nota} · {s(vinculo.nota.fornecedor)} {vinculo.nota.pendente?'— PENDENTE DE RETORNO':'— já retornou no Sankhya'}</span>
-                                  <span className="opacity-60">({vinculo.confianca.toLowerCase()}{vinculo.compartilhada?', MP compartilhada':''})</span>
-                                  <BotaoAbrirSankhya nunota={vinculo.nota.nunota} tipmov={vinculo.nota.tipmov} codtipoper={vinculo.nota.top} label="ver no Sankhya ↗"
-                                    className="underline hover:no-underline"/>
                                 </div>
+                                <p className="mt-1 opacity-70 font-semibold">
+                                  Confiança do vínculo: <span className={vinculo.confianca==='ALTA'?'text-teal-700':vinculo.confianca==='MEDIA'?'text-amber-700':'text-slate-600'}>{{ALTA:'alta',MEDIA:'média',BAIXA:'baixa — vale conferir'}[vinculo.confianca]}</span>
+                                  {vinculo.compartilhada?' · matéria-prima compartilhada com outra remessa do mesmo BR':''}
+                                </p>
+                                <BotaoAbrirSankhya nunota={vinculo.nota.nunota} tipmov={vinculo.nota.tipmov} codtipoper={vinculo.nota.top} label="🔗 Ver esta nota no Sankhya"
+                                  className="mt-1.5 inline-flex items-center gap-1 text-[10px] font-black text-white bg-indigo-600 hover:bg-indigo-700 rounded-lg px-2.5 py-1"/>
                                 {/* Monitoramento automático (cron de hora em hora) já confirma isso
                                     sozinho — este botão só ADIANTA, sem esperar a próxima rodada. */}
                                 {vinculo.confianca==='ALTA'&&!vinculo.nota.pendente&&['ENVIADO','RETORNO_PARCIAL'].includes(rem.status)&&(
