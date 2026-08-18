@@ -3808,6 +3808,13 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
   // considerar risco em OC de data_pedido >= INICIO_MONITORAMENTO_OC, senão gera
   // alarme falso pra histórico que nunca teve chance de ser cadastrado.
   const INICIO_MONITORAMENTO_OC='2026-05-01';
+  // Contagem simples de notas de remessa AINDA PENDENTES de retorno físico —
+  // usado como badge no menu (mesmo padrão já existente em "Fila de Expedição") e
+  // alerta no topo da tela, pra não depender de rolar até achar o card certo.
+  // Só conta a partir do início do monitoramento — nota antiga de antes do portal
+  // existir não é "pendência esquecida", é histórico que nunca foi acompanhado.
+  const notasRemessaPendentesCount=useMemo(()=>notasRemessaInd.filter(n=>n.pendente&&n.data_neg>=INICIO_MONITORAMENTO_OC).length,[notasRemessaInd]);
+
   const riscoOCPendente=useMemo(()=>{
     const porOC={};
     ordensCompraInd.filter(oc=>oc.data_pedido>=INICIO_MONITORAMENTO_OC).forEach(oc=>{
@@ -4305,7 +4312,7 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
     // definida, é só reativar esta linha em vez de reconstruir tudo do zero.
     ...((isPCP||isExp)?[{id:'PRODUCAO',label:'Produção por Setor',icon:Factory,group:'PCP'}]:[]),
     ...(isPCP?[{id:'NOVA_OP',label:'Nova Remessa',icon:PackageOpen,group:'PCP'},{id:'HISTORICO_PCP',label:'Histórico de Envios',icon:History,group:'PCP'},{id:'UPLOAD_ESTOQUE',label:'Sincronizar ERP',icon:UploadCloud,group:'PCP'}]:[]),
-    ...(isExp?[{id:'EXPEDICAO',label:'Fila de Expedição',icon:Truck,group:'Logística',badge:remPend.length||null},{id:'FORNECEDORES',label:'Retorno de Peças',icon:RotateCcw,group:'Logística'},{id:'CONTROLE_GERAL',label:'Controle Geral',icon:ListChecks,group:'Logística'}]:[]),
+    ...(isExp?[{id:'EXPEDICAO',label:'Fila de Expedição',icon:Truck,group:'Logística',badge:remPend.length||null},{id:'FORNECEDORES',label:'Retorno de Peças',icon:RotateCcw,group:'Logística',badge:notasRemessaPendentesCount||null},{id:'CONTROLE_GERAL',label:'Controle Geral',icon:ListChecks,group:'Logística'}]:[]),
     ...(isAdmin?[{id:'IA_ANALISTA',label:'Analista IA',icon:Bot,group:'Inteligência'},{id:'AUDITORIA',label:'Auditoria BOM',icon:FileSearch,group:'Inteligência'},{id:'GESTAO_USUARIOS',label:'Gestão de Acessos',icon:Users,group:'Sistema'}]:[]),
     {id:'CHAT_INTERNO',label:'Chat da Equipe',icon:MessageSquare,group:'Comunicação',badge:chatNaoLidos||null},
     ...(isQual?[{id:'QUALIDADE',label:'Qualidade',icon:ShieldAlert,group:'Qualidade'},{id:'RNCS',label:'Registro de RNCs',icon:AlertOctagon,group:'Qualidade'}]:[]),
@@ -7179,6 +7186,16 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
                 <SectionHeader title="Gestão de Retornos" subtitle="Registre o retorno físico de materiais e atualize o estoque ERP"
                   actions={<div className="relative"><Search className="w-4 h-4 absolute left-3 top-2.5 text-slate-400"/><Inp placeholder="Filtrar projeto..." className="pl-9 w-52" value={buscaForn} onChange={e=>setBuscaForn(e.target.value)}/></div>}
                 />
+
+                {/* Alerta-resumo bem no topo — antes o "pendente" só aparecia dentro do
+                    card de cada remessa (precisava rolar/achar); agora avisa de cara
+                    quantas notas ainda estão sem retornar, sem precisar procurar. */}
+                {notasRemessaPendentesCount>0&&(
+                  <div className="bg-red-600 text-white rounded-2xl px-5 py-3.5 flex items-center gap-3">
+                    <AlertTriangle className="w-5 h-5 flex-shrink-0"/>
+                    <p className="text-sm font-bold">{notasRemessaPendentesCount} nota{notasRemessaPendentesCount>1?'s':''} fiscal{notasRemessaPendentesCount>1?'is':''} de industrialização ainda PENDENTE{notasRemessaPendentesCount>1?'S':''} de retorno físico — material fora, no fornecedor, sem ter voltado.</p>
+                  </div>
+                )}
 
                 {/* Painel de risco: OC com cobrança emitida (nota) mas ainda pendente de
                     retorno físico — cobre TODO BR com OC de industrialização, mesmo os
