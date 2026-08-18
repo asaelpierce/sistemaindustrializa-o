@@ -3735,19 +3735,32 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
   // nota nunca cita o código do item acabado, só os insumos da ficha técnica). Por
   // isso o vínculo passa pela composição (produtos.materiais) como ponte.
   //
-  // ACHADO IMPORTANTE (investigando os casos de confiança baixa): a mesma MP é
-  // MUITAS VEZES compartilhada entre vários itens/remessas do MESMO BR — ex:
-  // BR14169/26 tem 7 itens diferentes (19090 a 19097) todos usando MP 187, cada
-  // remessa pedindo só 2 a 12 unidades. Uma nota de 86un nunca bate com nenhuma
-  // remessa individual (por isso davam "confiança baixa" antes) — ela cobre a
-  // SOMA de várias remessas de uma vez. Corrigido: agrupa TODAS as remessas do
-  // mesmo BR que usam a mesma MP, soma a quantidade esperada do grupo inteiro, e
-  // compara essa soma com a nota — isso é o que realmente bate.
+  // ERRO REAL CORRIGIDO (apontado pelo usuário): BR14169/26 tem 3 fornecedores
+  // diferentes na mesma remessa (FNR, Lapido, Marflex), todos usando a mesma MP
+  // genérica (código 187, tipo cola/resina). O algoritmo batia só por BR+MP+
+  // quantidade, SEM olhar o fornecedor — então uma remessa que foi de verdade
+  // pra Marflex podia acabar "casando" com a nota da FNR só porque a matemática
+  // batia por coincidência. Corrigido: agora o fornecedor de destino da remessa
+  // (expedicao.destinatario) tem que bater com o fornecedor da nota ANTES de
+  // qualquer cálculo de quantidade — nunca mais cruza fornecedores diferentes.
   const normalizarBR=br=>s(br).replace(/\/\d+$/,'').toUpperCase();
-  const somaEsperadaGrupoMP=useCallback((brNorm,codMP,remessasList)=>{
+  // Normaliza nome de fornecedor pra comparação tolerante: remove pontuação/
+  // sufixo de razão social (LTDA, EPP etc.) e espaços extras, deixa só as
+  // palavras "fortes" do nome — "MARFLEX " (remessa) precisa bater com
+  // "MARFLEX REVESTIMENTOS LTDA" (nota), sem exigir string idêntica.
+  const normalizarFornecedor=nome=>s(nome).trim().toUpperCase()
+    .replace(/\b(LTDA|EPP|ME|S\/A|SA|LTD|EIRELI)\b\.?/g,'')
+    .replace(/[^\w\s]/g,'').replace(/\s+/g,' ').trim();
+  const fornecedoresBatem=(nomeRemessa,nomeNota)=>{
+    const a=normalizarFornecedor(nomeRemessa),b=normalizarFornecedor(nomeNota);
+    if(!a||!b)return false;
+    return a.includes(b)||b.includes(a)||a.split(' ')[0]===b.split(' ')[0];
+  };
+  const somaEsperadaGrupoMP=useCallback((brNorm,codMP,remessasList,fornecedorNota)=>{
     return remessasList.filter(r=>{
       if(r.status==='CANCELADO')return false;
       if(normalizarBR(r.projeto)!==brNorm)return false;
+      if(!fornecedoresBatem(r.expedicao?.destinatario,fornecedorNota))return false;
       const mats=produtosDb[r.produto_acabado]?.materiais;
       return Array.isArray(mats)&&mats.some(m=>s(m.codigoMP)===codMP);
     }).reduce((acc,r)=>{
@@ -3764,7 +3777,11 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
     const qtdPorCod={};
     materiais.forEach(m=>{qtdPorCod[s(m.codigoMP)]=Number(m.quantidade||0);});
     const qtdOP=Number(remessa.quantidade_op||0);
-    const candidatas=notasRemessaInd.filter(n=>normalizarBR(n.br)===brNorm&&codsComposicao.has(s(n.cod_produto)));
+    const fornecedorDestino=remessa.expedicao?.destinatario;
+    // Fornecedor SEMPRE obrigatório quando a remessa tem destinatário registrado —
+    // nunca cruza notas de fornecedores diferentes só porque a MP é a mesma.
+    const candidatas=notasRemessaInd.filter(n=>normalizarBR(n.br)===brNorm&&codsComposicao.has(s(n.cod_produto))
+      &&(!fornecedorDestino||fornecedoresBatem(fornecedorDestino,n.fornecedor)));
     if(candidatas.length===0)return null;
     // Confiança ALTA: a quantidade da nota bate com o esperado (qtd_por_peça × qtd_op,
     // OU a soma de todas as remessas do BR que compartilham essa MP), com folga de
@@ -3772,7 +3789,7 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
     const comDiferenca=candidatas.map(n=>{
       const cod=s(n.cod_produto);
       const esperadoIndividual=(qtdPorCod[cod]||0)*qtdOP;
-      const esperadoGrupo=somaEsperadaGrupoMP(brNorm,cod,remessasDb);
+      const esperadoGrupo=somaEsperadaGrupoMP(brNorm,cod,remessasDb,n.fornecedor);
       const difIndividual=Math.abs(Number(n.quantidade||0)-esperadoIndividual);
       const difGrupo=Math.abs(Number(n.quantidade||0)-esperadoGrupo);
       // Usa o que bater melhor: sozinho (remessa única pra essa MP) ou em grupo
