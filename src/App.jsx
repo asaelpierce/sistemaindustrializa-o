@@ -3842,6 +3842,16 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
   // existir não é "pendência esquecida", é histórico que nunca foi acompanhado.
   const notasRemessaPendentesCount=useMemo(()=>notasRemessaInd.filter(n=>notaRealmentePendente(n)&&n.data_neg>=INICIO_MONITORAMENTO_OC).length,[notasRemessaInd,brsComEntradaConfirmada]);
 
+  // Notas pendentes que NÃO batem com nenhuma remessa cadastrada no controle
+  // interno — sem BR vinculado, ou com BR mas nenhuma remessa correspondente. A
+  // tela de cards abaixo é construída em cima de REMESSA (não da nota em si),
+  // então essas notas nunca apareciam ali, mesmo contando certo no banner — o
+  // usuário clicava "Só pendentes" e a lista ficava vazia, sem explicação.
+  const notasPendentesSemRemessa=useMemo(()=>{
+    const brsComRemessa=new Set(remessasDb.filter(r=>r.status!=='CANCELADO').map(r=>normalizarBR(r.projeto)));
+    return notasRemessaInd.filter(n=>notaRealmentePendente(n)&&n.data_neg>=INICIO_MONITORAMENTO_OC&&!brsComRemessa.has(normalizarBR(n.br)));
+  },[notasRemessaInd,brsComEntradaConfirmada,remessasDb]);
+
   const riscoOCPendente=useMemo(()=>{
     const porOC={};
     ordensCompraInd.filter(oc=>oc.data_pedido>=INICIO_MONITORAMENTO_OC).forEach(oc=>{
@@ -7268,11 +7278,40 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
                   </div>
                 )}
 
+                {/* Notas pendentes SEM BR vinculado (ou sem remessa cadastrada
+                    correspondente) — não aparecem nos cards abaixo porque a tela é
+                    construída em cima de REMESSA, não da nota fiscal em si. Sem
+                    esta seção, "Só pendentes" contava certo no banner mas mostrava
+                    lista vazia, sem explicação nenhuma pro usuário. */}
+                {notasPendentesSemRemessa.length>0&&(
+                  <div className="bg-orange-50 border border-orange-200 rounded-2xl overflow-hidden">
+                    <div className="px-5 py-3.5 border-b border-orange-100">
+                      <p className="text-sm font-black text-orange-800 flex items-center gap-1.5"><AlertTriangle className="w-4 h-4"/>{notasPendentesSemRemessa.length} nota(s) pendente(s) sem BR ou remessa cadastrada</p>
+                      <p className="text-[11px] text-orange-700 mt-0.5">Essas notas não aparecem nos cards abaixo porque não têm projeto vinculado no Sankhya, ou não têm remessa correspondente cadastrada aqui no portal — não dá pra saber a qual projeto pertencem só com o que temos.</p>
+                    </div>
+                    <div className="divide-y divide-orange-100">
+                      {notasPendentesSemRemessa.map((n,i)=>(
+                        <div key={i} className="px-5 py-3 flex items-center justify-between gap-4 flex-wrap">
+                          <div className="min-w-0">
+                            <p className="text-sm font-bold text-slate-900">NF {n.numero_nota} <span className="text-slate-400 font-normal">· {s(n.fornecedor)}</span></p>
+                            <p className="text-[11px] text-slate-500 mt-0.5">{n.br?`BR ${n.br} (sem remessa cadastrada)`:'Sem BR vinculado no Sankhya'} · {n.quantidade} · {fmtDt(n.data_neg)}</p>
+                          </div>
+                          <div className="flex items-center gap-1.5">
+                            <BotaoAbrirSankhya nunota={n.nunota} tipmov={n.tipmov} codtipoper={n.top} label="ver no Sankhya 🔗" className="text-[10px] font-black text-indigo-600 hover:underline"/>
+                            <button onClick={()=>verItensDaNota(n)} className="text-[10px] font-black text-indigo-600 hover:underline">· ver itens</button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
                 <div className="space-y-4">
-                  {remFora
-                    .filter(r=>!buscaForn||s(r.projeto).toUpperCase().includes(buscaForn.toUpperCase()))
-                    .filter(r=>!filtroSoPendentes||notaRealmentePendente(sugerirVinculoRemessa(r)?.nota||{}))
-                    .map(rem=>{
+                  {(()=>{
+                    const remessasFiltradas=remFora
+                      .filter(r=>!buscaForn||s(r.projeto).toUpperCase().includes(buscaForn.toUpperCase()))
+                      .filter(r=>!filtroSoPendentes||notaRealmentePendente(sugerirVinculoRemessa(r)?.nota||{}));
+                    return remessasFiltradas.map(rem=>{
                     const saldo=Number(rem.quantidade_op)-Number(rem.pecas_recebidas||0);
                     const pct=Number(rem.quantidade_op)>0?Math.min(100,(Number(rem.pecas_recebidas||0)/Number(rem.quantidade_op))*100):0;
                     const temNota=!!(rem.obs_expedicao||rem.observacao);
@@ -7424,14 +7463,34 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
                         )}
                       </div>
                     );
-                  })}
-                  {!remFora.length&&(
-                    <div className="bg-white rounded-2xl border border-slate-200 py-20 text-center text-slate-400">
-                      <RotateCcw className="w-10 h-10 mx-auto mb-4 opacity-30"/>
-                      <p className="text-sm font-semibold">Nenhuma carga em campo</p>
-                      <p className="text-xs mt-1">Quando remessas forem enviadas pela expedição, aparecerão aqui</p>
-                    </div>
-                  )}
+                  });
+                  })()}
+                  {(()=>{
+                    const remessasFiltradas=remFora
+                      .filter(r=>!buscaForn||s(r.projeto).toUpperCase().includes(buscaForn.toUpperCase()))
+                      .filter(r=>!filtroSoPendentes||notaRealmentePendente(sugerirVinculoRemessa(r)?.nota||{}));
+                    if(remessasFiltradas.length>0)return null;
+                    if(!remFora.length){
+                      return(
+                        <div className="bg-white rounded-2xl border border-slate-200 py-20 text-center text-slate-400">
+                          <RotateCcw className="w-10 h-10 mx-auto mb-4 opacity-30"/>
+                          <p className="text-sm font-semibold">Nenhuma carga em campo</p>
+                          <p className="text-xs mt-1">Quando remessas forem enviadas pela expedição, aparecerão aqui</p>
+                        </div>
+                      );
+                    }
+                    // Existem remessas, só que nenhuma bate com o filtro atual — isso
+                    // acontece quando as notas pendentes não têm remessa cadastrada
+                    // correspondente (ver seção laranja acima, "sem BR ou remessa
+                    // cadastrada") — sem este aviso, a lista ficava vazia sem explicação.
+                    return(
+                      <div className="bg-white rounded-2xl border border-slate-200 py-16 text-center text-slate-400">
+                        <RotateCcw className="w-10 h-10 mx-auto mb-4 opacity-30"/>
+                        <p className="text-sm font-semibold">Nenhuma remessa cadastrada bate com esse filtro</p>
+                        <p className="text-xs mt-1 max-w-sm mx-auto">{filtroSoPendentes?'As notas pendentes de retorno não têm remessa cadastrada correspondente aqui no portal — confira a seção acima, "sem BR ou remessa cadastrada".':'Tenta ajustar a busca ou o filtro.'}</p>
+                      </div>
+                    );
+                  })()}
                 </div>
               </div>
             )}
