@@ -400,7 +400,7 @@ const OOHProjetoRow=React.memo(function OOHProjetoRow({p,onAndamento,onReprogram
       )}
       <td className="px-3 py-2 font-bold text-indigo-700 whitespace-nowrap">
         {p.br}
-        {p.precisaEntrarNaEsteira&&<span className="ml-1.5 text-red-500" title="Faltam 20 dias ou menos pro CP — colocar na esteira de fabricação">⚠</span>}
+        {p.precisaEntrarNaEsteira&&<span className="ml-1.5 text-red-500" title="Faltam 15 dias ou menos pro CP — colocar na esteira de fabricação">⚠</span>}
         {p.jaProduzidoViaEstoque&&<span className="ml-1.5 text-[9px] font-black text-teal-700 bg-teal-50 border border-teal-200 rounded-full px-1.5 py-0.5" title="Já existe OP concluída pra este BR (direto ou vínculo confirmado) — alerta de esteira desligado">✓ produzido</span>}
       </td>
       <td className="px-3 py-2 text-slate-700 max-w-[160px] truncate" title={txt(p.cliente)}>{txt(p.cliente)}</td>
@@ -1305,10 +1305,11 @@ export default function App(){
         else if(indicador===0)descricaoIndicador='Atendeu a data do CP';
         else descricaoIndicador='Antecipou';
       }
-      // Início do Projeto = Estimativa de Faturamento (Data Referência) − 20 dias.
+      // Início do Projeto = Estimativa de Faturamento (Data Referência) − 15 dias
+      // (reduzido de 20 pra 15, decisão do PCP).
       // É a data-limite pra entrar na esteira de fabricação — usada pra ordenar a tabela
       // por urgência (quem já devia ter começado aparece primeiro).
-      const dataInicioProjeto=dataReferencia?subtrairDiasISO(dataReferencia,20):null;
+      const dataInicioProjeto=dataReferencia?subtrairDiasISO(dataReferencia,15):null;
       // ESCOPO2: usa o que o PCP preencheu manualmente; se não tiver, deduz pelo
       // processo produtivo real do Sankhya (mais confiável, regra validada contra 87
       // BRs conhecidos) e, na falta disso (projeto ainda sem OP), pela descrição do
@@ -2445,12 +2446,13 @@ export default function App(){
         // R$28.069, desaparecia da lista inteira).
         const atendido=percentualFaturado>=0.999||andamentoManual==='FATURADO'||(r.situacaoEspecial&&(r.situacaoEspecial.status==='CANCELADO'||r.situacaoEspecial.status==='PENDENTE'));
         // Data de referência = material tem que estar pronto 5 dias antes do CP.
-        // Alerta de esteira = 20 dias antes do CP, pra entrar na fila de fabricação a tempo.
+        // Alerta de esteira = 15 dias antes do CP, pra entrar na fila de fabricação a tempo
+        // (reduzido de 20 pra 15 dias, decisão do PCP).
         // Pendente não entra na esteira nem em atrasados — está bloqueado esperando algo
         // fora do controle do PCP (aprovação de desenho, faturamento de terceiro etc.),
         // continuar cobrando prazo dele não ajuda em nada.
         const dataMPPronta=somarDias(dataVigenteOOH,-5);
-        const dataAlertaEsteira=somarDias(dataVigenteOOH,-20);
+        const dataAlertaEsteira=somarDias(dataVigenteOOH,-15);
         const aguardandoImportacao=!!importacaoPorBRooh[r.br];
         // Falta de MP nacional real (TOP 2018) — mesma ideia da importação: se o
         // material físico ainda não chegou, o atraso NÃO é responsabilidade do PCP,
@@ -2459,7 +2461,7 @@ export default function App(){
         const aguardandoMPNacional=!!mpNacionalPendentePorBR[r.br];
         // Aguardando importação não entra na esteira nem em atrasados — o material nem
         // chegou no país, cobrar prazo de produção disso não faz sentido.
-        // O ⚠ de esteira serve pra avisar "faltam ≤20 dias pro CP e isso ainda não
+        // O ⚠ de esteira serve pra avisar "faltam ≤15 dias pro CP e isso ainda não
         // entrou na fila de fabricação". Se o projeto JÁ está em andamento (ou
         // concluído), o aviso não tem função nenhuma — a produção já começou, e ficar
         // marcando como atraso só polui a tela com alarme falso.
@@ -5042,7 +5044,7 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
                           <th className="px-2 py-2" style={{minWidth:110}}>Escopo2</th>
                           <th className="px-2 py-2 text-center" style={{minWidth:90}}>Status</th>
                           <th className="px-2 py-2 text-right" style={{minWidth:90}}>Estimativa Fat. PCP</th>
-                          <th className="px-2 py-2 text-right bg-amber-50" style={{minWidth:90}} title="Estimativa de faturamento − 20 dias — data-limite pra entrar na esteira de fabricação">Início do Projeto</th>
+                          <th className="px-2 py-2 text-right bg-amber-50" style={{minWidth:90}} title="Estimativa de faturamento − 15 dias — data-limite pra entrar na esteira de fabricação">Início do Projeto</th>
                           <th className="px-2 py-2 text-center" style={{minWidth:110}}>Andamento</th>
                           <th className="px-2 py-2 text-right" style={{minWidth:80}}>Data Entrega CP</th>
                           <th className="px-2 py-2 text-right" style={{minWidth:90}}>Data Prevista</th>
@@ -5647,7 +5649,7 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
                     </div>
                     {oohResumoMes.precisamEsteira>0&&(
                       <span className="inline-flex items-center gap-1.5 text-[11px] font-bold text-red-300 bg-red-500/10 border border-red-400/30 rounded-full px-3 py-1.5">
-                        <AlertTriangle className="w-3.5 h-3.5"/>{oohResumoMes.precisamEsteira} projeto(s) precisam entrar na esteira (≤20 dias pro CP)
+                        <AlertTriangle className="w-3.5 h-3.5"/>{oohResumoMes.precisamEsteira} projeto(s) precisam entrar na esteira (≤15 dias pro CP)
                       </span>
                     )}
                   </div>
