@@ -2306,17 +2306,33 @@ export default function App(){
     if(!supabase)return;
     setOohLoading(true);setOohErro('');
     try{
-      const[pedidosItensData,planejamentoRes,andamentoRes,situacaoRes,faturamentoDatasRes]=await Promise.all([
+      const[pedidosItensData,planejamentoRes,andamentoRes,situacaoRes,faturamentoDatasRes,comprasPendMPRes]=await Promise.all([
         fetchPedidosItensCache(),
         supabase.from('ooh_planejamento').select('*'),
         supabase.from('andamento_producao').select('*'),
         supabase.from('situacao_especial_pedido').select('*'),
         supabase.from('faturamento_resumo').select('br,cliente_nome,data_neg,data_faturamento,numero_nota,valor_nota,net_offer_value').eq('tipmov','V'),
+        supabase.from('compras_pendentes').select('br,fornecedor,descricao_produto,quantidade_pendente,data_prevista_entrega,dias_atraso_entrega,numero_pedido')
+          .eq('codtipoper',2018).not('br','is',null).gt('quantidade_pendente',0), // TOP 2018 = "PEDIDO COMPRA DE MATERIA PRIMA NACIONAL" — confirmado direto no Sankhya. Só esse TOP conta como MP física bloqueando produção; industrialização (2000/2015) e serviços (2002) têm sinalização própria, não entram aqui.
       ]);
       if(planejamentoRes.error)throw planejamentoRes.error;
       if(andamentoRes.error)throw andamentoRes.error;
       if(situacaoRes.error)throw situacaoRes.error;
       if(faturamentoDatasRes.error)throw faturamentoDatasRes.error;
+      if(comprasPendMPRes.error)throw comprasPendMPRes.error;
+
+      // Agrupa por BR: falta de MP nacional real (não industrialização/serviço,
+      // TOP 2018 apenas) que ainda não chegou — pra separar do atraso "de
+      // responsabilidade do PCP" quando na real o bloqueio é falta de material.
+      const mpNacionalPendentePorBR={};
+      (comprasPendMPRes.data||[]).forEach(c=>{
+        const br=s(c.br);if(!br)return;
+        if(!mpNacionalPendentePorBR[br])mpNacionalPendentePorBR[br]={itens:[],maiorAtraso:0,dataMaisTarde:null};
+        const g=mpNacionalPendentePorBR[br];
+        g.itens.push({descricao:c.descricao_produto,fornecedor:c.fornecedor,quantidade:c.quantidade_pendente,dataPrevista:c.data_prevista_entrega,diasAtraso:c.dias_atraso_entrega,numeroPedido:c.numero_pedido});
+        if((c.dias_atraso_entrega||0)>g.maiorAtraso)g.maiorAtraso=c.dias_atraso_entrega||0;
+        if(!g.dataMaisTarde||c.data_prevista_entrega>g.dataMaisTarde)g.dataMaisTarde=c.data_prevista_entrega;
+      });
 
       // Data de faturamento real (não confundir com "previsto"/mesEfetivo) — pega a nota
       // mais recente quando o BR tem mais de uma. Usada só na aba Faturados, pra dar pro
@@ -2436,6 +2452,11 @@ export default function App(){
         const dataMPPronta=somarDias(dataVigenteOOH,-5);
         const dataAlertaEsteira=somarDias(dataVigenteOOH,-20);
         const aguardandoImportacao=!!importacaoPorBRooh[r.br];
+        // Falta de MP nacional real (TOP 2018) — mesma ideia da importação: se o
+        // material físico ainda não chegou, o atraso NÃO é responsabilidade do PCP,
+        // é falta de suprimento. Fica separado, com o motivo explícito (quais itens,
+        // de qual fornecedor, prometidos pra quando).
+        const aguardandoMPNacional=!!mpNacionalPendentePorBR[r.br];
         // Aguardando importação não entra na esteira nem em atrasados — o material nem
         // chegou no país, cobrar prazo de produção disso não faz sentido.
         // O ⚠ de esteira serve pra avisar "faltam ≤20 dias pro CP e isso ainda não
@@ -2443,7 +2464,7 @@ export default function App(){
         // concluído), o aviso não tem função nenhuma — a produção já começou, e ficar
         // marcando como atraso só polui a tela com alarme falso.
         const jaComecou=andamentoManual==='EM_ANDAMENTO'||andamentoManual==='CONCLUIDO';
-        const precisaEntrarNaEsteira=!atendido&&!pendente&&!aguardandoImportacao&&!jaComecou&&dataAlertaEsteira&&hojeOOH>=dataAlertaEsteira;
+        const precisaEntrarNaEsteira=!atendido&&!pendente&&!aguardandoImportacao&&!aguardandoMPNacional&&!jaComecou&&dataAlertaEsteira&&hojeOOH>=dataAlertaEsteira;
         // valorFaturado tem que refletir o que REALMENTE saiu. Só r.valorEntregue (base
         // em qtd_entregue) subestima quando o Sankhya não atualiza a entrega mesmo já
         // tendo nota emitida — foi o que fez "A faturar" ficar igual à "Carteira total"
@@ -2454,6 +2475,7 @@ export default function App(){
         return{...r,valorFaturado:valorFaturadoEfetivo,percentualFaturado,atendido,pendente,mesPrevisto,plano,
           andamento:andamentoManual,observacaoPendencia:observacaoPorBR[r.br]||null,
           escopo2:escopo2PorBR[r.br]||null,aguardandoImportacao,importacaoInfo:importacaoPorBRooh[r.br]||null,
+          aguardandoMPNacional,mpNacionalInfo:mpNacionalPendentePorBR[r.br]||null,
           dataFaturamento:dataFaturamentoPorBR[r.br]?.data||null,numeroNotaFaturamento:dataFaturamentoPorBR[r.br]?.numeroNota||null,
           semanaISO:semanaISODoAno(dataVigenteOOH),
           dataMPPronta,dataAlertaEsteira,precisaEntrarNaEsteira,
@@ -2612,6 +2634,14 @@ export default function App(){
   // está travado por importação.
   const oohAguardandoImportacao=useMemo(()=>oohProjetosComProducao.filter(p=>p.aguardandoImportacao&&!p.atendido),[oohProjetosComProducao]);
   const oohValorImportacao=useMemo(()=>oohAguardandoImportacao.reduce((a,p)=>a+Math.max(0,p.valorTotal-p.valorFaturado),0),[oohAguardandoImportacao]);
+  // Falta de MP nacional real (TOP 2018, confirmado no Sankhya como "PEDIDO COMPRA
+  // DE MATERIA PRIMA NACIONAL") — mesma lógica da importação: separa da conta de
+  // atraso do PCP, com o motivo explícito. Descoberta real: os TOPs 2000/2015
+  // (industrialização, Marflex/FNR) e 2002 (serviços gerais) NÃO entram aqui —
+  // industrialização tem sinalização própria (aba Retorno de Peças), e serviço não
+  // bloqueia produção física.
+  const oohAguardandoMPNacional=useMemo(()=>oohProjetosComProducao.filter(p=>p.aguardandoMPNacional&&!p.atendido),[oohProjetosComProducao]);
+  const oohValorMPNacional=useMemo(()=>oohAguardandoMPNacional.reduce((a,p)=>a+Math.max(0,p.valorTotal-p.valorFaturado),0),[oohAguardandoMPNacional]);
   // Set de BRs com faturamento parcial — usado pra sinalizar na lista de Faturados
   // que aquele projeto teve nota mas ainda não fechou 100%.
   const oohBrsParciais=useMemo(()=>new Set(oohFaturamentoParcial.map(p=>p.br)),[oohFaturamentoParcial]);
@@ -5668,6 +5698,7 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
                     {id:'REPROGRAMADOS',label:'Reprogramados',count:oohReprogramados.length},
                     {id:'PARCIAL',label:'Parcial',count:oohFaturamentoParcial.length},
                     {id:'IMPORTACAO',label:'Importação',count:oohAguardandoImportacao.length},
+                    {id:'MP_NACIONAL',label:'Falta MP',count:oohAguardandoMPNacional.length},
                     {id:'FATURADOS',label:'Faturados',count:oohFaturadosDoMes.length},
                     {id:'SERVICOS',label:'Serviços',count:oohServicos.length},
                   ].map(t=>(
@@ -5904,6 +5935,68 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
                             ))}
                           </tbody>
                         </table>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {oohVisaoAtiva==='MP_NACIONAL'&&(
+                  <div className="bg-white rounded-2xl border border-orange-200 overflow-hidden">
+                    <div className="px-5 py-3.5 border-b border-orange-100 bg-orange-50/50 flex items-center justify-between flex-wrap gap-2">
+                      <div>
+                        <p className="text-sm font-black text-orange-800">Aguardando Matéria-Prima Nacional <span className="text-orange-400 font-bold">({oohAguardandoMPNacional.length})</span></p>
+                        <p className="text-[11px] text-slate-400 mt-0.5">Compra de MP nacional real (não industrialização/serviço) ainda não chegou — não é atraso do PCP, é falta de suprimento. Em vermelho: a chegada prevista já passou da data de início do projeto (5 dias antes do CP) — risco real de furar o prazo.</p>
+                      </div>
+                      <div className="text-right">
+                        <p className="text-[10px] font-black text-orange-500 uppercase">Valor represado</p>
+                        <p className="text-lg font-black text-orange-700">{fmtMoeda(oohValorMPNacional)}</p>
+                      </div>
+                    </div>
+                    {oohAguardandoMPNacional.length===0?(
+                      <div className="px-5 py-10 text-center">
+                        <p className="text-sm text-slate-400">Nenhum projeto travado por falta de matéria-prima nacional agora.</p>
+                      </div>
+                    ):(
+                      <div className="divide-y divide-slate-100">
+                        {oohAguardandoMPNacional.map(p=>{
+                          // Estoura o planejamento quando a chegada mais tardia dos itens
+                          // pendentes é depois da data em que a MP precisava estar pronta
+                          // (5 dias antes do CP) — é esse cruzamento que dá o alerta real de
+                          // "vai furar o prazo do projeto", não só "tem atraso genérico".
+                          const estouraPlanejamento=p.mpNacionalInfo?.dataMaisTarde&&p.dataMPPronta&&p.mpNacionalInfo.dataMaisTarde>p.dataMPPronta;
+                          return(
+                            <div key={p.br} className={`px-5 py-3.5 ${estouraPlanejamento?'bg-red-50/50':''}`}>
+                              <div className="flex items-center justify-between gap-3 flex-wrap">
+                                <div className="flex items-center gap-2 flex-wrap">
+                                  <span className="font-bold text-indigo-700">{p.br}</span>
+                                  <span className="text-slate-400">·</span>
+                                  <span className="text-slate-600 text-sm truncate max-w-[200px]">{s(p.cliente)}</span>
+                                  {p.escopo2&&<span className="text-[10px] font-bold text-slate-600 bg-slate-100 border border-slate-200 rounded-full px-2 py-0.5">{p.escopo2}</span>}
+                                  {estouraPlanejamento&&(
+                                    <span className="text-[10px] font-black text-red-700 bg-red-100 border border-red-200 rounded-full px-2 py-0.5 flex items-center gap-1">
+                                      <AlertTriangle className="w-3 h-3"/>Fura o prazo — MP prevista pra depois do início necessário
+                                    </span>
+                                  )}
+                                </div>
+                                <div className="text-right flex-shrink-0">
+                                  <p className="text-[10px] text-slate-400">Precisa começar em {fmtDt(p.dataMPPronta)} · CP {fmtDt(p.dataPrevista)}</p>
+                                  <p className="text-sm font-bold text-slate-700">{fmtMoeda(Math.max(0,p.valorTotal-p.valorFaturado))}</p>
+                                </div>
+                              </div>
+                              <div className="mt-2 space-y-1">
+                                {(p.mpNacionalInfo?.itens||[]).map((it,i)=>(
+                                  <div key={i} className="flex items-center justify-between gap-3 text-xs bg-slate-50 rounded-lg px-3 py-1.5">
+                                    <span className="text-slate-600 truncate max-w-[380px]" title={s(it.descricao)}>{s(it.descricao)}</span>
+                                    <span className="text-slate-400 whitespace-nowrap">{s(it.fornecedor)}</span>
+                                    <span className={`font-bold whitespace-nowrap ${it.diasAtraso>0?'text-red-600':'text-slate-500'}`}>
+                                      {fmtDt(it.dataPrevista)}{it.diasAtraso>0?` (${it.diasAtraso}d atrasado)`:''}
+                                    </span>
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          );
+                        })}
                       </div>
                     )}
                   </div>
