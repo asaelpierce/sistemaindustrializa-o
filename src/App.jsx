@@ -594,6 +594,114 @@ function FiltroMulti({label,opcoes,selecionados,onToggle,onLimpar,aberto,onAbrir
 // matéria-prima consumida (via ficha técnica) do saldo daquele setor.
 // Botão de análise por IA pra vínculo ambíguo (confiança média/baixa) — não decide
 // sozinho, só ajuda o usuário a decidir mais rápido, mostrando o raciocínio.
+// Ferramenta de marcação sobre foto — desenha em cima da imagem (canvas), pra o
+// inspetor apontar visualmente onde está o defeito. Pedido do usuário: "uma
+// ferramenta de marcação dentro do próprio portal". Ao salvar, achata desenho +
+// foto original numa imagem só (mesma resolução da original), substituindo o b64.
+function AnotadorFoto({foto,onSalvar,onFechar}){
+  const canvasRef=React.useRef(null);
+  const imgRef=React.useRef(null);
+  const [desenhando,setDesenhando]=React.useState(false);
+  const [cor,setCor]=React.useState('#ef4444');
+  const [espessura,setEspessura]=React.useState(4);
+  const [imgCarregada,setImgCarregada]=React.useState(false);
+
+  React.useEffect(()=>{
+    const img=new Image();
+    img.onload=()=>{
+      imgRef.current=img;
+      const canvas=canvasRef.current;
+      if(!canvas)return;
+      // Limita o canvas de edição a no máx 900px de largura (performance/tela),
+      // mas guarda a escala pra desenhar de volta na resolução original ao salvar.
+      const escala=Math.min(1,900/img.width);
+      canvas.width=img.width*escala;
+      canvas.height=img.height*escala;
+      canvas.dataset.escala=escala;
+      const ctx=canvas.getContext('2d');
+      ctx.drawImage(img,0,0,canvas.width,canvas.height);
+      setImgCarregada(true);
+    };
+    img.src=`data:${foto.tipo||foto.type||'image/jpeg'};base64,${foto.b64||foto.dados}`;
+  },[foto]);
+
+  const getPos=e=>{
+    const canvas=canvasRef.current;
+    const rect=canvas.getBoundingClientRect();
+    const clientX=e.touches?e.touches[0].clientX:e.clientX;
+    const clientY=e.touches?e.touches[0].clientY:e.clientY;
+    return{x:(clientX-rect.left)*(canvas.width/rect.width),y:(clientY-rect.top)*(canvas.height/rect.height)};
+  };
+  const iniciarTraco=e=>{
+    e.preventDefault();
+    setDesenhando(true);
+    const{x,y}=getPos(e);
+    const ctx=canvasRef.current.getContext('2d');
+    ctx.beginPath();ctx.moveTo(x,y);
+    ctx.strokeStyle=cor;ctx.lineWidth=espessura;ctx.lineCap='round';ctx.lineJoin='round';
+  };
+  const continuarTraco=e=>{
+    if(!desenhando)return;
+    e.preventDefault();
+    const{x,y}=getPos(e);
+    const ctx=canvasRef.current.getContext('2d');
+    ctx.lineTo(x,y);ctx.stroke();
+  };
+  const pararTraco=()=>setDesenhando(false);
+
+  const limparDesenho=()=>{
+    const canvas=canvasRef.current;
+    const ctx=canvas.getContext('2d');
+    ctx.clearRect(0,0,canvas.width,canvas.height);
+    ctx.drawImage(imgRef.current,0,0,canvas.width,canvas.height);
+  };
+
+  const salvar=()=>{
+    const canvas=canvasRef.current;
+    // Redesenha numa resolução final = original, pra não perder qualidade —
+    // desenha a imagem original + escala o traçado do canvas de edição pra cima.
+    const finalCanvas=document.createElement('canvas');
+    finalCanvas.width=imgRef.current.width;
+    finalCanvas.height=imgRef.current.height;
+    const ctx=finalCanvas.getContext('2d');
+    ctx.drawImage(imgRef.current,0,0);
+    ctx.drawImage(canvas,0,0,finalCanvas.width,finalCanvas.height);
+    const dataUrl=finalCanvas.toDataURL('image/jpeg',0.9);
+    onSalvar(dataUrl.split(',')[1]);
+  };
+
+  return(
+    <div className="fixed inset-0 bg-black/70 z-[200] flex items-center justify-center p-4" onClick={onFechar}>
+      <div className="bg-white rounded-2xl p-4 max-w-3xl w-full" onClick={e=>e.stopPropagation()}>
+        <div className="flex items-center justify-between mb-3">
+          <p className="text-sm font-black text-slate-700">✏️ Marcar defeito na foto</p>
+          <button onClick={onFechar}><X className="w-5 h-5 text-slate-400 hover:text-slate-600"/></button>
+        </div>
+        <div className="flex items-center gap-3 mb-3 flex-wrap">
+          <div className="flex items-center gap-1.5">
+            {['#ef4444','#f59e0b','#3b82f6','#22c55e'].map(c=>(
+              <button key={c} onClick={()=>setCor(c)} className={`w-6 h-6 rounded-full border-2 ${cor===c?'border-slate-800':'border-transparent'}`} style={{background:c}}/>
+            ))}
+          </div>
+          <div className="flex items-center gap-1.5">
+            <span className="text-[10px] text-slate-400">Espessura</span>
+            <input type="range" min="2" max="12" value={espessura} onChange={e=>setEspessura(Number(e.target.value))} className="w-20"/>
+          </div>
+          <button onClick={limparDesenho} className="text-[10px] font-bold text-slate-500 border border-slate-200 rounded-lg px-2.5 py-1 hover:bg-slate-50">↺ Limpar marcações</button>
+        </div>
+        {!imgCarregada&&<div className="py-16 text-center text-sm text-slate-400">Carregando imagem...</div>}
+        <canvas ref={canvasRef} className="w-full border border-slate-200 rounded-xl cursor-crosshair touch-none"
+          onMouseDown={iniciarTraco} onMouseMove={continuarTraco} onMouseUp={pararTraco} onMouseLeave={pararTraco}
+          onTouchStart={iniciarTraco} onTouchMove={continuarTraco} onTouchEnd={pararTraco}/>
+        <div className="flex justify-end gap-2 mt-3">
+          <button onClick={onFechar} className="text-xs font-bold text-slate-500 px-4 py-2">Cancelar</button>
+          <button onClick={salvar} className="text-xs font-black text-white bg-indigo-600 hover:bg-indigo-700 rounded-lg px-4 py-2">Salvar marcação</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function AnalisarVinculoIABotao({rem,candidatas,onAnalisar}){
   const [estado,setEstado]=React.useState('ocioso'); // ocioso | carregando | pronto
   const [resultado,setResultado]=React.useState(null);
@@ -857,6 +965,7 @@ export default function App(){
   const [formInspecao,setFormInspecao]=useState({material:'',fornecedor:'',nota_fiscal:'',pedido:'',quantidade:'',unidade:'UN',observacoes:'',itens_ressalva:[],resultado:''});
   const [formRNC,setFormRNC]=useState({descricao_nc:'',causa_raiz:'',acao_corretiva:'',responsavel:'',prazo:'',gravidade:'MEDIA',email_destinatario:'',itens:[]});
   const [fotosUpload,setFotosUpload]=useState([]);
+  const [fotoAnotandoIdx,setFotoAnotandoIdx]=useState(null); // índice da foto sendo marcada/anotada agora
   const [novoItemRessalva,setNovoItemRessalva]=useState('');
   const [qualAba,setQualAba]=useState('INSPECOES');
   const [enviandoRNC,setEnviandoRNC]=useState(false);
@@ -4007,7 +4116,7 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
       const isExistente=!!inspecaoSel?.id;
       const id=isExistente?inspecaoSel.id:`INS-${Date.now()}`;
       const dataInsp=formInspecao.data_inspecao?new Date(formInspecao.data_inspecao).toISOString():new Date().toISOString();
-      const fotosData=fotosUpload.map(f=>({nome:f.name,tipo:f.type,dados:f.b64,tamanho:f.size}));
+      const fotosData=fotosUpload.map(f=>({nome:f.name,tipo:f.type,dados:f.b64,tamanho:f.size,categoria:f.categoria||null}));
       const dadosInspecao={
         material:formInspecao.material,fornecedor:formInspecao.fornecedor,
         nota_fiscal:formInspecao.nota_fiscal,pedido:formInspecao.pedido,
@@ -4026,8 +4135,11 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
       }
       if(error)throw error;
 
-      // Se reprovado, criar RNC automática com numeração dupla
-      if(resultado==='REPROVADO'){
+      // Se reprovado OU aprovado com ressalva, criar RNC automática com numeração
+      // dupla — pedido do usuário: ressalva também precisa do documento KDB143 e
+      // notificar Compras, pra eles acompanharem o item com defeito, mesmo que o
+      // material como um todo já tenha sido liberado.
+      if(resultado==='REPROVADO'||resultado==='APROVADO_RESSALVA'){
         const ano=new Date().getFullYear();
         // Numeração global sequencial
         const totalGlobal=rncsDb.length+1;
@@ -4037,11 +4149,13 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
         const numFornecedor=rncsFornecedor.length+1;
 
         const rncId=`RNC-${Date.now()}`;
+        const ehRessalva=resultado==='APROVADO_RESSALVA';
         const rnc={
           id:rncId,
           numero:numGlobal,            // campo legado compatível
           numero_global:numGlobal,     // RNC-2026-001
           numero_fornecedor:numFornecedor, // 3 (3ª RNC deste fornecedor)
+          tipo:ehRessalva?'RESSALVA':'REPROVACAO',
           inspecao_id:id,
           material:formInspecao.material,
           fornecedor:formInspecao.fornecedor,
@@ -4055,15 +4169,15 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
           itens:formInspecao.itens_ressalva,
           fotos:fotosData,
           criado_por:s(usuarioLogado?.nome),
-          gravidade:'MEDIA',
+          gravidade:ehRessalva?'BAIXA':'MEDIA',
           status:'ABERTA'
         };
         const{error:errRnc}=await supabase.from('rncs').insert([rnc]);
         if(errRnc)throw errRnc;
         await supabase.from('inspecoes').update({rnc_id:rncId}).eq('id',id);
-        addToast(`Inspeção registrada e ${numGlobal} gerada! (${numFornecedor}ª RNC de ${s(formInspecao.fornecedor).split(' ')[0]})`, 'warning');
+        addToast(`Inspeção registrada e ${numGlobal} gerada! (${ehRessalva?'ressalva':numFornecedor+'ª RNC de '+s(formInspecao.fornecedor).split(' ')[0]})`, 'warning');
         await fetchQual(); // atualiza RNCs imediatamente
-        // Auto gerar PDF de fotos ao reprovar
+        // Auto gerar PDF de fotos ao reprovar/ressalvar
         if(fotosData.length>0){
           setTimeout(()=>gerarPDFFotos({
             numero_global:numGlobal,numero:numGlobal,
@@ -4074,12 +4188,13 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
             data_abertura:new Date().toISOString(),
           },fotosData),800);
         }
-        // Notificar Teams de nova RNC
+        // Notificar Teams de nova RNC/Ressalva — Compras precisa saber pra tomar
+        // providência, mesmo quando o material já foi liberado com ressalva.
         try{
           if(qualTeamsUrl){
             await fetch(`${SUPABASE_URL}/functions/v1/qualidade-notificar`,{
               method:'POST',headers:{'Content-Type':'application/json','apikey':SUPABASE_KEY},
-              body:JSON.stringify({tipo:'RNC_GERADA',flow_url:qualTeamsUrl,dados:{
+              body:JSON.stringify({tipo:ehRessalva?'RESSALVA_GERADA':'RNC_GERADA',flow_url:qualTeamsUrl,dados:{
                 numero:numGlobal,numero_fornecedor:numFornecedor,
                 fornecedor:formInspecao.fornecedor,material:formInspecao.material,
                 nota_fiscal:formInspecao.nota_fiscal,
@@ -4174,8 +4289,14 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
             w('H6',s(rnc.nota_fiscal||'—'));
             w('B7',dataReceb);
             w('H7',rnc.qtd_reprovada?`${fmtD(rnc.qtd_reprovada)} UN`:'—');
-            const itensText=(Array.isArray(rnc.itens)&&rnc.itens.length>0)?('\n\nItens nao conformes:\n'+rnc.itens.map((it,i)=>`${i+1}. ${s(typeof it==='string'?it:it.descricao||it)}`).join('\n')):'';
-            w('A9',s(rnc.descricao_nc)+itensText);
+            // Pedido do usuário: ressalva também gera KDB143, mas o texto não pode
+            // soar como reprovação total — o material foi liberado, só um item
+            // pontual precisa de atenção/contenção. Diferencia o cabeçalho e o
+            // rótulo da lista de itens conforme o tipo.
+            const ehRessalvaDoc=rnc.tipo==='RESSALVA';
+            const cabecalhoTipo=ehRessalvaDoc?'[APROVADO COM RESSALVA — material liberado, itens abaixo precisam de contenção]\n\n':'';
+            const itensText=(Array.isArray(rnc.itens)&&rnc.itens.length>0)?(`\n\n${ehRessalvaDoc?'Itens com ressalva':'Itens nao conformes'}:\n`+rnc.itens.map((it,i)=>`${i+1}. ${s(typeof it==='string'?it:it.descricao||it)}`).join('\n')):'';
+            w('A9',cabecalhoTipo+s(rnc.descricao_nc)+itensText);
             w('B38',s(rnc.criado_por||'Sergio Malaquias'));
             w('G38',dataInsp);
             w('B45',s(rnc.responsavel||rnc.criado_por||'—'));
@@ -4240,11 +4361,33 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
     if(!fotos||fotos.length===0){addToast('Nenhuma foto para gerar o PDF.','error');return;}
     const numRNC=s(rnc.numero_global||rnc.numero||rnc.id);
     const dataStr=rnc.data_abertura?new Date(rnc.data_abertura).toLocaleDateString('pt-BR'):new Date().toLocaleDateString('pt-BR');
-    const fotosHTML=fotos.map((f,i)=>`
+    // Pedido do usuário: separar em 2 blocos quando o material é aprovado com
+    // ressalva — a foto do que está LIBERADO e a foto do que está COM DEFEITO,
+    // pra ficar claro no documento o que passou e o que precisa de atenção. Fotos
+    // sem categoria definida (comportamento anterior, ou aprovação/reprovação
+    // total, onde a separação não faz sentido) continuam num bloco único "geral".
+    const temCategorias=fotos.some(f=>f.categoria==='liberado'||f.categoria==='defeito');
+    const montarFotoHTML=(f,i)=>`
       <div style="break-inside:avoid;margin-bottom:20px;">
         <p style="margin:0 0 4px 0;font-size:10px;font-weight:bold;color:#555;">Foto ${i+1}${f.nome?` — ${f.nome}`:''}</p>
         <img src="data:${f.tipo};base64,${f.dados}" style="width:100%;max-height:320px;object-fit:contain;border:1px solid #ddd;border-radius:4px;background:#f9f9f9;"/>
-      </div>`).join('');
+      </div>`;
+    let fotosHTML;
+    if(temCategorias){
+      const liberadas=fotos.filter(f=>f.categoria==='liberado');
+      const defeito=fotos.filter(f=>f.categoria==='defeito');
+      const semCategoria=fotos.filter(f=>f.categoria!=='liberado'&&f.categoria!=='defeito');
+      const blocoTitulo=(titulo,cor,lista,offset)=>lista.length===0?'':`
+        <div style="break-before:auto;margin-bottom:12px;">
+          <h3 style="font-size:13px;font-weight:bold;color:${cor};border-bottom:2px solid ${cor};padding-bottom:4px;margin-bottom:12px;">${titulo} (${lista.length})</h3>
+          <div class="grid">${lista.map((f,i)=>montarFotoHTML(f,offset+i)).join('')}</div>
+        </div>`;
+      fotosHTML=blocoTitulo('✅ Liberado','#059669',liberadas,0)
+        +blocoTitulo('⚠️ Com Defeito — precisa de atenção','#dc2626',defeito,liberadas.length)
+        +blocoTitulo('📷 Fotos Gerais',semCategoria.length&&(liberadas.length||defeito.length)?'#6b7280':'#374151',semCategoria,liberadas.length+defeito.length);
+    }else{
+      fotosHTML=`<div class="grid">${fotos.map(montarFotoHTML).join('')}</div>`;
+    }
     const w=window.open('','_blank');
     w.document.write(`<!DOCTYPE html><html><head><meta charset="UTF-8">
     <title>Fotos RNC ${numRNC}</title>
@@ -4289,7 +4432,7 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
       </button>
     </div>
 
-    <div class="grid">${fotosHTML}</div>
+    ${fotosHTML}
 
     <div class="footer">
       Documento gerado automaticamente pelo Sistema SGQ — Kalenborn do Brasil &nbsp;·&nbsp; ${dataStr} &nbsp;·&nbsp; ${numRNC}
@@ -8063,6 +8206,11 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
                             <div className="flex-1 min-w-0">
                               <div className="flex items-center gap-2 flex-wrap mb-2">
                                 <span className="font-black text-red-700 text-sm">{s(rnc.numero||rnc.id)}</span>
+                                {rnc.tipo==='RESSALVA'?
+                                  <span className="text-[10px] font-black px-2 py-0.5 rounded-full bg-amber-100 text-amber-700 border border-amber-200">⚠️ RESSALVA — material liberado</span>
+                                :
+                                  <span className="text-[10px] font-black px-2 py-0.5 rounded-full bg-red-100 text-red-700 border border-red-200">⛔ REPROVAÇÃO</span>
+                                }
                                 <span className={`text-[10px] font-black px-2 py-0.5 rounded-full ${gravStyle}`}>{s(rnc.gravidade)}</span>
                                 <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${rnc.status==='ABERTA'?'bg-red-50 text-red-700 border-red-200 animate-pulse':rnc.status==='EM_TRATATIVA'?'bg-amber-50 text-amber-700 border-amber-200':'bg-emerald-50 text-emerald-700 border-emerald-200'}`}>{rnc.status.replace('_',' ')}</span>
                                 <span className="text-[10px] text-slate-400 ml-auto">{fmtDt(rnc.data_abertura)}</span>
@@ -8524,16 +8672,35 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
                 <input type="file" multiple accept="image/*" className="hidden" onChange={e=>handleFotoUpload(e.target.files)}/>
               </label>
               {fotosUpload.length>0&&(
-                <div className="grid grid-cols-4 sm:grid-cols-6 gap-2 mt-3">
+                <div className="grid grid-cols-3 sm:grid-cols-4 gap-2 mt-3">
                   {fotosUpload.map((f,i)=>(
                     <div key={i} className="relative group">
-                      <img src={f.preview} alt={f.name} className="w-full h-16 object-cover rounded-lg border border-slate-200"/>
+                      <img src={f.preview} alt={f.name} className="w-full h-20 object-cover rounded-lg border border-slate-200"/>
                       <button onClick={()=>setFotosUpload(p=>p.filter((_,idx)=>idx!==i))} className="absolute top-0.5 right-0.5 bg-red-500 text-white rounded-full w-4 h-4 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-all"><X className="w-2.5 h-2.5"/></button>
+                      <button onClick={()=>setFotoAnotandoIdx(i)} className="absolute bottom-0.5 right-0.5 bg-indigo-600 text-white rounded-full w-5 h-5 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-all" title="Marcar defeito na foto">✏️</button>
+                      {/* Categoria só faz sentido pra Ressalva — o material tem parte
+                          liberada e parte com defeito, precisa separar no documento. */}
+                      {insResultadoSel==='APROVADO_RESSALVA'&&(
+                        <div className="absolute bottom-0.5 left-0.5 flex gap-0.5">
+                          <button onClick={()=>setFotosUpload(p=>p.map((ff,idx)=>idx===i?{...ff,categoria:'liberado'}:ff))}
+                            className={`text-[8px] font-black px-1 py-0.5 rounded ${f.categoria==='liberado'?'bg-emerald-500 text-white':'bg-white/80 text-slate-500'}`}>OK</button>
+                          <button onClick={()=>setFotosUpload(p=>p.map((ff,idx)=>idx===i?{...ff,categoria:'defeito'}:ff))}
+                            className={`text-[8px] font-black px-1 py-0.5 rounded ${f.categoria==='defeito'?'bg-red-500 text-white':'bg-white/80 text-slate-500'}`}>DEF</button>
+                        </div>
+                      )}
                     </div>
                   ))}
                 </div>
               )}
               {fotosUpload.length===0&&<p className="text-[10px] text-red-500 font-bold mt-1.5">Pelo menos 1 foto é obrigatória</p>}
+              {fotoAnotandoIdx!==null&&fotosUpload[fotoAnotandoIdx]&&(
+                <AnotadorFoto foto={fotosUpload[fotoAnotandoIdx]}
+                  onFechar={()=>setFotoAnotandoIdx(null)}
+                  onSalvar={novoB64=>{
+                    setFotosUpload(p=>p.map((ff,idx)=>idx===fotoAnotandoIdx?{...ff,b64:novoB64,preview:`data:${ff.type};base64,${novoB64}`,anotada:true}:ff));
+                    setFotoAnotandoIdx(null);
+                  }}/>
+              )}
             </div>
 
             {/* Botões */}
@@ -8544,7 +8711,7 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
                 onClick={()=>salvarInspecao(insResultadoSel)}>
                 {isLoading?<><Loader2 className="w-4 h-4 animate-spin"/>Salvando...</>
                   :insResultadoSel==='APROVADO'?<><CheckCircle className="w-4 h-4"/>Confirmar Aprovação</>
-                  :insResultadoSel==='APROVADO_RESSALVA'?<><AlertTriangle className="w-4 h-4"/>Confirmar Ressalva</>
+                  :insResultadoSel==='APROVADO_RESSALVA'?<><AlertTriangle className="w-4 h-4"/>Confirmar Ressalva e Gerar RNC</>
                   :<><XCircle className="w-4 h-4"/>Reprovar e Gerar RNC</>}
               </Btn>
             </div>
