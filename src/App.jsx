@@ -966,6 +966,7 @@ export default function App(){
   const [formRNC,setFormRNC]=useState({descricao_nc:'',causa_raiz:'',acao_corretiva:'',responsavel:'',prazo:'',gravidade:'MEDIA',email_destinatario:'',itens:[]});
   const [fotosUpload,setFotosUpload]=useState([]);
   const [fotoAnotandoIdx,setFotoAnotandoIdx]=useState(null); // índice da foto sendo marcada/anotada agora
+  const [fotoAnotandoContexto,setFotoAnotandoContexto]=useState(null); // null = upload novo; {tabela,id} = editando inspeção/RNC já salva
   const [novoItemRessalva,setNovoItemRessalva]=useState('');
   const [qualAba,setQualAba]=useState('INSPECOES');
   const [enviandoRNC,setEnviandoRNC]=useState(false);
@@ -1046,6 +1047,23 @@ export default function App(){
   // não só na hora do upload original. Atualiza tanto na tabela local (pra refletir
   // na tela na hora) quanto no banco (tabela e id de onde a foto realmente vive —
   // pode ser 'inspecoes' ou 'rncs', dependendo de onde a foto foi carregada).
+  // Abre o modal de RNC (editar/visualizar) já preenchido — pedido do usuário:
+  // "na hora que apertar pra salvar a RNC, você tem que aparecer naquela tela de
+  // registro também, que lá eles podem editar e conseguir visualizar o que estão
+  // fazendo". Reaproveita exatamente o mesmo preenchimento já usado no botão
+  // manual "Editar RNC" da listagem, pra abrir automático assim que a RNC nasce.
+  const abrirModalRNC=rnc=>{
+    setRncSel(rnc);
+    setFormRNC({
+      descricao_nc:rnc.descricao_nc||'',descricao_material:rnc.descricao_material||rnc.descricao_produto||'',
+      data_recebimento:rnc.data_recebimento||'',data_inspecao:rnc.data_inspecao||'',
+      qtd_reprovada:rnc.qtd_reprovada||'',causa_raiz:rnc.causa_raiz||'',acao_corretiva:rnc.acao_corretiva||'',
+      responsavel:rnc.responsavel||'',prazo:rnc.prazo||'',gravidade:rnc.gravidade||'MEDIA',
+      email_destinatario:rnc.email_destinatario||'',itens:rnc.itens||[]
+    });
+    setModalRNC(true);
+  };
+
   const salvarCategoriaFoto=async(tabela,id,fotoIdx,novaCategoria,fotosAtuais,onAtualizarLocal)=>{
     try{
       const novasFotos=fotosAtuais.map((f,i)=>i===fotoIdx?{...f,categoria:novaCategoria}:f);
@@ -1054,6 +1072,19 @@ export default function App(){
       onAtualizarLocal?.(novasFotos);
       addToast('Categoria da foto atualizada.');
     }catch(e){addToast('Erro ao salvar categoria: '+e.message,'error');}
+  };
+
+  // Salva a marcação/desenho feito com AnotadorFoto direto numa foto de uma
+  // inspeção já registrada (não upload novo) — substitui o base64 da foto no
+  // banco. Usado a partir do modal de detalhe da inspeção.
+  const salvarAnotacaoFoto=async(tabela,id,fotoIdx,novoB64,fotosAtuais,onAtualizarLocal)=>{
+    try{
+      const novasFotos=fotosAtuais.map((f,i)=>i===fotoIdx?{...f,dados:novoB64,anotada:true}:f);
+      const{error}=await supabase.from(tabela).update({fotos:novasFotos}).eq('id',id);
+      if(error)throw error;
+      onAtualizarLocal?.(novasFotos);
+      addToast('Marcação salva na foto.');
+    }catch(e){addToast('Erro ao salvar marcação: '+e.message,'error');}
   };
 
   // ── Mestra PCP: agrega Pedidos de Venda + Faturamento do Portal de Engenharia por BR ──
@@ -4193,6 +4224,10 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
         await supabase.from('inspecoes').update({rnc_id:rncId}).eq('id',id);
         addToast(`Inspeção registrada e ${numGlobal} gerada! (${ehRessalva?'ressalva':numFornecedor+'ª RNC de '+s(formInspecao.fornecedor).split(' ')[0]})`, 'warning');
         await fetchQual(); // atualiza RNCs imediatamente
+        // Abre direto a tela de registro da RNC — pedido do usuário: precisa
+        // aparecer pra edição/visualização assim que gerada, não só ficar na lista
+        // esperando alguém procurar.
+        abrirModalRNC(rnc);
         // Auto gerar PDF de fotos ao reprovar/ressalvar
         if(fotosData.length>0){
           setTimeout(()=>gerarPDFFotos({
@@ -4282,6 +4317,7 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
       if(errRnc)throw errRnc;
       await supabase.from('inspecoes').update({rnc_id:rncId}).eq('id',insp.id);
       addToast(`${numGlobal} gerada retroativamente!`,'warning');
+      abrirModalRNC(rnc);
       try{
         if(qualTeamsUrl){
           await fetch(`${SUPABASE_URL}/functions/v1/qualidade-notificar`,{
@@ -8768,7 +8804,7 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
                 </div>
               )}
               {fotosUpload.length===0&&<p className="text-[10px] text-red-500 font-bold mt-1.5">Pelo menos 1 foto é obrigatória</p>}
-              {fotoAnotandoIdx!==null&&fotosUpload[fotoAnotandoIdx]&&(
+              {fotoAnotandoIdx!==null&&!fotoAnotandoContexto&&fotosUpload[fotoAnotandoIdx]&&(
                 <AnotadorFoto foto={fotosUpload[fotoAnotandoIdx]}
                   onFechar={()=>setFotoAnotandoIdx(null)}
                   onSalvar={novoB64=>{
@@ -8816,6 +8852,10 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
                   {(Array.isArray(inspecaoSel.fotos)?inspecaoSel.fotos:[]).map((f,i)=>(
                     <div key={i} className="relative group">
                       <img src={`data:${f.tipo};base64,${f.dados}`} alt={f.nome} className="w-full h-24 object-cover rounded-xl border border-slate-200 cursor-pointer hover:opacity-80 transition-opacity" onClick={()=>{const byteStr=atob(f.dados);const ab=new ArrayBuffer(byteStr.length);const ia=new Uint8Array(ab);for(let j=0;j<byteStr.length;j++)ia[j]=byteStr.charCodeAt(j);const blob=new Blob([ab],{type:f.tipo});const url=URL.createObjectURL(blob);window.open(url,'_blank');}}/>
+                      {/* Ferramenta de marcação também disponível aqui, editando uma
+                          inspeção já salva — não só no upload de foto nova. */}
+                      <button onClick={()=>{setFotoAnotandoIdx(i);setFotoAnotandoContexto({tabela:'inspecoes',id:inspecaoSel.id,fotos:inspecaoSel.fotos});}}
+                        className="absolute top-1 right-1 bg-indigo-600 text-white rounded-full w-5 h-5 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-all" title="Marcar defeito na foto">✏️</button>
                       {/* Edição de categoria depois do fato — cobre inspeções já
                           registradas antes de a categoria existir, ou casos em que o
                           inspetor não marcou na hora do upload. */}
@@ -8835,6 +8875,18 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
           </div>
         )}
       </Modal>
+
+      {/* Ferramenta de marcação — contexto de EDIÇÃO (foto de inspeção já salva,
+          fora do fluxo de upload novo). Salva direto no banco. */}
+      {fotoAnotandoIdx!==null&&fotoAnotandoContexto&&fotoAnotandoContexto.fotos?.[fotoAnotandoIdx]&&(
+        <AnotadorFoto foto={fotoAnotandoContexto.fotos[fotoAnotandoIdx]}
+          onFechar={()=>{setFotoAnotandoIdx(null);setFotoAnotandoContexto(null);}}
+          onSalvar={async novoB64=>{
+            await salvarAnotacaoFoto(fotoAnotandoContexto.tabela,fotoAnotandoContexto.id,fotoAnotandoIdx,novoB64,fotoAnotandoContexto.fotos,
+              novasFotos=>{if(fotoAnotandoContexto.tabela==='inspecoes')setInspecaoSel(p=>({...p,fotos:novasFotos}));});
+            setFotoAnotandoIdx(null);setFotoAnotandoContexto(null);
+          }}/>
+      )}
 
       {/* Modal: RNC */}
       <Modal open={modalRNC&&!!rncSel} onClose={()=>setModalRNC(false)} title={`Preencher RNC: ${s(rncSel?.numero_global||rncSel?.numero||rncSel?.id)}`} subtitle={`${s(rncSel?.material)} · ${s(rncSel?.fornecedor)} · NF: ${s(rncSel?.nota_fiscal||'—')}`} maxWidth="max-w-2xl"
