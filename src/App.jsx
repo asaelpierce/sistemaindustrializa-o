@@ -4409,52 +4409,100 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
           if(t.includes('gif'))return'gif';
           return'jpeg';
         };
-        const inserirGradeCheia=lista=>{
-          // Ocupa a área inteira (A-H), em até 4 fotos numa grade 2x2 — usado
-          // quando só existe 1 categoria (tudo defeito, ou tudo liberado): não
-          // faz sentido reservar metade vazia pra categoria que não tem foto
-          // nenhuma. Confirmado pelo usuário: "minha foto liberada não precisa
-          // ir, é só a que está com defeito que precisa — quando tudo está com
+        // Descobre a dimensão real da foto (largura/altura em pixels), usando o
+        // próprio decoder de imagem do navegador — necessário pra calcular a
+        // proporção certa, sem depender de lib externa (a lib addImage do
+        // ExcelJS NÃO mantém proporção sozinha, sempre estica pro range dado).
+        const dimensoesReais=foto=>new Promise(res=>{
+          const img=new Image();
+          img.onload=()=>res({w:img.naturalWidth||1,h:img.naturalHeight||1});
+          img.onerror=()=>res({w:1,h:1});
+          img.src=`data:${foto.tipo||'image/jpeg'};base64,${foto.dados}`;
+        });
+        // Larguras REAIS das colunas A-H do modelo (extraídas do arquivo, cada
+        // coluna é diferente — A é bem mais larga que E, por exemplo). Erro real
+        // encontrado testando antes de subir: usar uma "largura média" inventada
+        // (constante fixa por coluna) fazia a foto ficar com proporção errada,
+        // continuando esticada/cortada — o problema que o usuário reportou. A
+        // fórmula padrão do Excel pra converter largura de coluna → pixels é
+        // round(width*7+5).
+        const LARGURAS_COLUNA=[23.28515625,12.42578125,11.28515625,17.42578125,12.28515625,18.140625,15.0,15.28515625];
+        const larguraColunasEmPx=(colIniIdx,colFimIdx)=>{
+          let total=0;
+          for(let c=colIniIdx;c<colFimIdx;c++)total+=Math.round((LARGURAS_COLUNA[c]||15)*7+5);
+          return total;
+        };
+        // Insere UMA foto numa área [colIniIdx,colFimIdx) x [linIni,linFim), MANTENDO
+        // a proporção real (nunca estica/distorce) — calcula o tamanho que cabe
+        // dentro da área e centraliza. Achado real testando antes de aplicar: a
+        // API do ExcelJS só aceita {tl,br} em unidades de CÉLULA (não pixels/ext
+        // como a documentação de outras libs sugeriria) — testado e confirmado
+        // com LibreOffice antes de subir.
+        const inserirFotoProporcional=async(foto,colIniIdx,colFimIdx,linIni,linFim)=>{
+          const{w:imgW,h:imgH}=await dimensoesReais(foto);
+          const alturaLinhaPx=16.5*1.333; // aprox. px por linha (altura padrão do modelo)
+          const larguraDisponivelPx=larguraColunasEmPx(colIniIdx,colFimIdx);
+          const alturaDisponivelPx=(linFim-linIni)*alturaLinhaPx;
+          const escala=Math.min(larguraDisponivelPx/imgW,alturaDisponivelPx/imgH);
+          const larguraFinalPx=imgW*escala;
+          const alturaFinalPx=imgH*escala;
+          // Converte a largura final (px) de volta pra unidades de coluna,
+          // proporcionalmente à largura real de cada coluna no intervalo (não
+          // divide igualmente — cada coluna tem peso diferente).
+          const larguraFinalCol=(larguraFinalPx/larguraDisponivelPx)*(colFimIdx-colIniIdx);
+          const alturaFinalLin=alturaFinalPx/alturaLinhaPx;
+          const colOffset=((colFimIdx-colIniIdx)-larguraFinalCol)/2;
+          const linOffset=((linFim-linIni)-alturaFinalLin)/2;
+          const imgId=wb.addImage({base64:foto.dados,extension:extDaFoto(foto)});
+          ws.addImage(imgId,{
+            tl:{col:colIniIdx+colOffset,row:linIni+linOffset},
+            br:{col:colIniIdx+colOffset+larguraFinalCol,row:linIni+linOffset+alturaFinalLin},
+          });
+        };
+        const inserirGradeCheia=async lista=>{
+          // Ocupa a área inteira (A-H, colunas 0-8), em até 4 fotos numa grade
+          // 2x2 — usado quando só existe 1 categoria (tudo defeito, ou tudo
+          // liberado): não faz sentido reservar metade vazia pra categoria que
+          // não tem foto nenhuma. Confirmado pelo usuário: "minha foto liberada
+          // não precisa ir, é só a que está com defeito — quando tudo está com
           // defeito elas moram juntas, não precisa separar".
           const max=Math.min(lista.length,4);
-          const cols=max>1?[['A','D'],['E','H'],['A','D'],['E','H']]:[['A','H']];
+          const cols=max>1?[[0,4],[4,8],[0,4],[4,8]]:[[0,8]];
           const linhasPorLinha=max>2?9:17;
           for(let i=0;i<max;i++){
-            const linIni=20+Math.floor(i/2)*linhasPorLinha;
-            const linFim=Math.min(36,linIni+linhasPorLinha-1);
+            const linIni=19+Math.floor(i/2)*linhasPorLinha;
+            const linFim=Math.min(35,linIni+linhasPorLinha);
             const[colIni,colFim]=cols[i];
-            const imgId=wb.addImage({base64:lista[i].dados,extension:extDaFoto(lista[i])});
-            ws.addImage(imgId,`${colIni}${linIni}:${colFim}${linFim}`);
+            await inserirFotoProporcional(lista[i],colIni,colFim,linIni,linFim);
           }
         };
         if(liberadas.length>0&&defeito.length>0){
           // As duas categorias existem de fato — aí sim faz sentido dividir a
           // área em 2 colunas lado a lado, uma pra cada.
           w('A19','Fotos — ✅ Liberado (esquerda) · ⚠️ Com Defeito (direita):');
-          const inserirColuna=(lista,colIni,colFim)=>{
+          const inserirColuna=async(lista,colIniIdx,colFimIdx)=>{
             const max=Math.min(lista.length,3);
             const alturaCada=Math.floor(17/Math.max(max,1));
             for(let i=0;i<max;i++){
-              const linIni=20+i*alturaCada;
-              const linFim=Math.min(36,linIni+alturaCada-1);
-              const imgId=wb.addImage({base64:lista[i].dados,extension:extDaFoto(lista[i])});
-              ws.addImage(imgId,`${colIni}${linIni}:${colFim}${linFim}`);
+              const linIni=19+i*alturaCada;
+              const linFim=Math.min(35,linIni+alturaCada);
+              await inserirFotoProporcional(lista[i],colIniIdx,colFimIdx,linIni,linFim);
             }
           };
-          inserirColuna(liberadas,'A','D');
-          inserirColuna(defeito,'E','H');
+          await inserirColuna(liberadas,0,4);
+          await inserirColuna(defeito,4,8);
           fotosResiduais=semCategoria;
         }else if(defeito.length>0){
           w('A19','Fotos — ⚠️ Com Defeito:');
-          inserirGradeCheia(defeito);
+          await inserirGradeCheia(defeito);
           fotosResiduais=semCategoria;
         }else if(liberadas.length>0){
           w('A19','Fotos — ✅ Liberado:');
-          inserirGradeCheia(liberadas);
+          await inserirGradeCheia(liberadas);
           fotosResiduais=semCategoria;
         }else{
           w('A19','Fotos da Anomalia (anexadas no próprio documento):');
-          inserirGradeCheia(fotosParaDoc);
+          await inserirGradeCheia(fotosParaDoc);
           fotosResiduais=[];
         }
       }
@@ -9235,31 +9283,31 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
                   <>
                     <div className="flex-1 border-r border-slate-300 p-1 flex flex-wrap gap-1 content-start">
                       {liberadas.map((f,i)=>(
-                        <img key={i} src={`data:${f.tipo};base64,${f.dados}`} className="h-20 w-full object-cover rounded border border-emerald-300"/>
+                        <img key={i} src={`data:${f.tipo};base64,${f.dados}`} className="h-20 w-full object-contain bg-white rounded border border-emerald-300"/>
                       ))}
                     </div>
                     <div className="flex-1 p-1 flex flex-wrap gap-1 content-start">
                       {defeito.map((f,i)=>(
-                        <img key={i} src={`data:${f.tipo};base64,${f.dados}`} className="h-20 w-full object-cover rounded border border-red-300"/>
+                        <img key={i} src={`data:${f.tipo};base64,${f.dados}`} className="h-20 w-full object-contain bg-white rounded border border-red-300"/>
                       ))}
                     </div>
                   </>
                 ):soDefeito?(
                   <div className="flex-1 grid grid-cols-2 gap-1 p-1">
                     {defeito.slice(0,4).map((f,i)=>(
-                      <img key={i} src={`data:${f.tipo};base64,${f.dados}`} className="h-28 w-full object-cover rounded border border-red-300"/>
+                      <img key={i} src={`data:${f.tipo};base64,${f.dados}`} className="h-28 w-full object-contain bg-white rounded border border-red-300"/>
                     ))}
                   </div>
                 ):soLiberado?(
                   <div className="flex-1 grid grid-cols-2 gap-1 p-1">
                     {liberadas.slice(0,4).map((f,i)=>(
-                      <img key={i} src={`data:${f.tipo};base64,${f.dados}`} className="h-28 w-full object-cover rounded border border-emerald-300"/>
+                      <img key={i} src={`data:${f.tipo};base64,${f.dados}`} className="h-28 w-full object-contain bg-white rounded border border-emerald-300"/>
                     ))}
                   </div>
                 ):(
                   <div className="flex-1 grid grid-cols-2 gap-1 p-1">
                     {semCategoria.slice(0,4).map((f,i)=>(
-                      <img key={i} src={`data:${f.tipo};base64,${f.dados}`} className="h-28 w-full object-cover rounded border border-slate-300"/>
+                      <img key={i} src={`data:${f.tipo};base64,${f.dados}`} className="h-28 w-full object-contain bg-white rounded border border-slate-300"/>
                     ))}
                   </div>
                 )}
