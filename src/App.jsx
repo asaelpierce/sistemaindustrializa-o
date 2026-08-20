@@ -4403,14 +4403,33 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
         const liberadas=fotosParaDoc.filter(f=>f.categoria==='liberado');
         const defeito=fotosParaDoc.filter(f=>f.categoria==='defeito');
         const semCategoria=fotosParaDoc.filter(f=>f.categoria!=='liberado'&&f.categoria!=='defeito');
-        const temCategorias=liberadas.length>0||defeito.length>0;
         const extDaFoto=f=>{
           const t=s(f.tipo).toLowerCase();
           if(t.includes('png'))return'png';
           if(t.includes('gif'))return'gif';
           return'jpeg';
         };
-        if(temCategorias){
+        const inserirGradeCheia=lista=>{
+          // Ocupa a área inteira (A-H), em até 4 fotos numa grade 2x2 — usado
+          // quando só existe 1 categoria (tudo defeito, ou tudo liberado): não
+          // faz sentido reservar metade vazia pra categoria que não tem foto
+          // nenhuma. Confirmado pelo usuário: "minha foto liberada não precisa
+          // ir, é só a que está com defeito que precisa — quando tudo está com
+          // defeito elas moram juntas, não precisa separar".
+          const max=Math.min(lista.length,4);
+          const cols=max>1?[['A','D'],['E','H'],['A','D'],['E','H']]:[['A','H']];
+          const linhasPorLinha=max>2?9:17;
+          for(let i=0;i<max;i++){
+            const linIni=20+Math.floor(i/2)*linhasPorLinha;
+            const linFim=Math.min(36,linIni+linhasPorLinha-1);
+            const[colIni,colFim]=cols[i];
+            const imgId=wb.addImage({base64:lista[i].dados,extension:extDaFoto(lista[i])});
+            ws.addImage(imgId,`${colIni}${linIni}:${colFim}${linFim}`);
+          }
+        };
+        if(liberadas.length>0&&defeito.length>0){
+          // As duas categorias existem de fato — aí sim faz sentido dividir a
+          // área em 2 colunas lado a lado, uma pra cada.
           w('A19','Fotos — ✅ Liberado (esquerda) · ⚠️ Com Defeito (direita):');
           const inserirColuna=(lista,colIni,colFim)=>{
             const max=Math.min(lista.length,3);
@@ -4425,18 +4444,17 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
           inserirColuna(liberadas,'A','D');
           inserirColuna(defeito,'E','H');
           fotosResiduais=semCategoria;
+        }else if(defeito.length>0){
+          w('A19','Fotos — ⚠️ Com Defeito:');
+          inserirGradeCheia(defeito);
+          fotosResiduais=semCategoria;
+        }else if(liberadas.length>0){
+          w('A19','Fotos — ✅ Liberado:');
+          inserirGradeCheia(liberadas);
+          fotosResiduais=semCategoria;
         }else{
           w('A19','Fotos da Anomalia (anexadas no próprio documento):');
-          const max=Math.min(fotosParaDoc.length,4);
-          const cols=max>1?[['A','D'],['E','H'],['A','D'],['E','H']]:[['A','H']];
-          const linhasPorLinha=max>2?9:17;
-          for(let i=0;i<max;i++){
-            const linIni=20+Math.floor(i/2)*linhasPorLinha;
-            const linFim=Math.min(36,linIni+linhasPorLinha-1);
-            const[colIni,colFim]=cols[i];
-            const imgId=wb.addImage({base64:fotosParaDoc[i].dados,extension:extDaFoto(fotosParaDoc[i])});
-            ws.addImage(imgId,`${colIni}${linIni}:${colFim}${linFim}`);
-          }
+          inserirGradeCheia(fotosParaDoc);
           fotosResiduais=[];
         }
       }
@@ -9169,7 +9187,16 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
           const liberadas=fotosPreviewDoc.filter(f=>f.categoria==='liberado');
           const defeito=fotosPreviewDoc.filter(f=>f.categoria==='defeito');
           const semCategoria=fotosPreviewDoc.filter(f=>f.categoria!=='liberado'&&f.categoria!=='defeito');
-          const temCategorias=liberadas.length>0||defeito.length>0;
+          // Só divide em 2 colunas quando as DUAS categorias têm foto de fato —
+          // pedido do usuário: "minha foto liberada não precisa ir, é só a que
+          // está com defeito que precisa — quando tudo está com defeito elas
+          // moram juntas, não precisa separar". Antes, "defeito sem nenhum
+          // liberado" ainda mostrava a coluna Liberado vazia, com um aviso "Sem
+          // fotos liberadas" — sem sentido nenhum quando não existe essa
+          // categoria no caso.
+          const duasCategorias=liberadas.length>0&&defeito.length>0;
+          const soDefeito=!duasCategorias&&defeito.length>0;
+          const soLiberado=!duasCategorias&&liberadas.length>0&&defeito.length===0;
           const cabecalhoSecao='text-[11px] font-black text-slate-700 bg-slate-200 px-2 py-1 border border-slate-400';
           const linhaCampo='text-[11px] text-slate-800 px-2 py-1.5 border border-slate-300';
           return(
@@ -9199,24 +9226,36 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
 
               {/* Fotos */}
               <div className={cabecalhoSecao}>
-                {temCategorias?'Fotos — ✅ Liberado (esquerda) · ⚠️ Com Defeito (direita)':fotosPreviewDoc.length>0?'Fotos da Anomalia (anexadas no próprio documento)':'Fotos da Anomalia'}
+                {duasCategorias?'Fotos — ✅ Liberado (esquerda) · ⚠️ Com Defeito (direita)':soDefeito?'Fotos — ⚠️ Com Defeito':soLiberado?'Fotos — ✅ Liberado':fotosPreviewDoc.length>0?'Fotos da Anomalia (anexadas no próprio documento)':'Fotos da Anomalia'}
               </div>
               <div className="min-h-[160px] flex">
                 {fotosPreviewDoc.length===0?(
                   <div className="flex-1 flex items-center justify-center text-slate-300 text-xs py-8">Nenhuma foto anexada ainda</div>
-                ):temCategorias?(
+                ):duasCategorias?(
                   <>
                     <div className="flex-1 border-r border-slate-300 p-1 flex flex-wrap gap-1 content-start">
-                      {liberadas.length===0?<span className="text-slate-300 text-[10px] p-2">Sem fotos liberadas</span>:liberadas.map((f,i)=>(
+                      {liberadas.map((f,i)=>(
                         <img key={i} src={`data:${f.tipo};base64,${f.dados}`} className="h-20 w-full object-cover rounded border border-emerald-300"/>
                       ))}
                     </div>
                     <div className="flex-1 p-1 flex flex-wrap gap-1 content-start">
-                      {defeito.length===0?<span className="text-slate-300 text-[10px] p-2">Sem fotos de defeito</span>:defeito.map((f,i)=>(
+                      {defeito.map((f,i)=>(
                         <img key={i} src={`data:${f.tipo};base64,${f.dados}`} className="h-20 w-full object-cover rounded border border-red-300"/>
                       ))}
                     </div>
                   </>
+                ):soDefeito?(
+                  <div className="flex-1 grid grid-cols-2 gap-1 p-1">
+                    {defeito.slice(0,4).map((f,i)=>(
+                      <img key={i} src={`data:${f.tipo};base64,${f.dados}`} className="h-28 w-full object-cover rounded border border-red-300"/>
+                    ))}
+                  </div>
+                ):soLiberado?(
+                  <div className="flex-1 grid grid-cols-2 gap-1 p-1">
+                    {liberadas.slice(0,4).map((f,i)=>(
+                      <img key={i} src={`data:${f.tipo};base64,${f.dados}`} className="h-28 w-full object-cover rounded border border-emerald-300"/>
+                    ))}
+                  </div>
                 ):(
                   <div className="flex-1 grid grid-cols-2 gap-1 p-1">
                     {semCategoria.slice(0,4).map((f,i)=>(
