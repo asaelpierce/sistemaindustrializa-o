@@ -971,6 +971,8 @@ export default function App(){
   const [qualAba,setQualAba]=useState('INSPECOES');
   const [enviandoRNC,setEnviandoRNC]=useState(false);
   const [modalPreviewRNC,setModalPreviewRNC]=useState(false);
+  const [modalVisualDoc,setModalVisualDoc]=useState(false); // "Ver como vai ficar" — visualização fiel ao layout do KdB143, sem sair do portal
+  const [fotosPreviewDoc,setFotosPreviewDoc]=useState([]); // fotos carregadas pra essa visualização
   const [previewRNCData,setPreviewRNCData]=useState(null);
   const [plannerQualUrl,setPlannerQualUrl]=useState('');
   const [qualEmailUrl,setQualEmailUrl]=useState('');
@@ -4342,6 +4344,101 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
     }catch(e){addToast('Erro ao gerar RNC: '+e.message,'error');}
   };
 
+  // Monta o workbook KdB143 completo (cabeçalho, dados, causa/ação, fotos
+  // embutidas por categoria) — FONTE ÚNICA usada em TODOS os lugares que geram
+  // esse documento: envio de email, download direto (gerarExcelRNC) e a nova
+  // pré-visualização. Antes existiam 2 cópias dessa lógica (uma no envio de
+  // email, outra em gerarExcelRNC) que já tinham divergido — a segunda nunca
+  // ganhou nem o cabeçalho de ressalva nem as fotos embutidas. Extraído pra
+  // nunca mais acontecer.
+  const montarWorkbookKdB143=async(rnc,fotos)=>{
+    if(!window.ExcelJS||!RNC_MODELO_B64)throw new Error('ExcelJS ou modelo não carregado.');
+    const binStr=atob(RNC_MODELO_B64);
+    const buf=new ArrayBuffer(binStr.length);
+    const bytes=new Uint8Array(buf);
+    for(let i=0;i<binStr.length;i++) bytes[i]=binStr.charCodeAt(i);
+    const wb=new window.ExcelJS.Workbook();
+    await wb.xlsx.load(buf);
+    const ws=wb.getWorksheet('Plan1');
+    const ws3=wb.getWorksheet('Plan3');
+    const w=(cell,val)=>{try{ws.getCell(cell).value=val;}catch(_){}};
+    const dataAb=rnc.data_abertura?new Date(rnc.data_abertura).toLocaleDateString('pt-BR'):new Date().toLocaleDateString('pt-BR');
+    const dataInsp=rnc.data_inspecao?new Date(rnc.data_inspecao).toLocaleDateString('pt-BR'):dataAb;
+    const dataReceb=rnc.data_recebimento?new Date(rnc.data_recebimento).toLocaleDateString('pt-BR'):dataAb;
+    const numSeq=String(rnc.numero_fornecedor||rncsDb.findIndex(r=>r.id===rnc.id)+1||1);
+    w('G2',numSeq);
+    w('B5',s(rnc.fornecedor));
+    w('D6',s(rnc.descricao_material||rnc.descricao_produto||rnc.material));
+    w('H6',s(rnc.nota_fiscal||'—'));
+    w('B7',dataReceb);
+    w('H7',rnc.qtd_reprovada?`${fmtD(rnc.qtd_reprovada)} UN`:'—');
+    const ehRessalvaDoc=rnc.tipo==='RESSALVA';
+    const cabecalhoTipo=ehRessalvaDoc?'[APROVADO COM RESSALVA — material liberado, itens abaixo precisam de contenção]\n\n':'';
+    const itensText=(Array.isArray(rnc.itens)&&rnc.itens.length>0)?(`\n\n${ehRessalvaDoc?'Itens com ressalva':'Itens nao conformes'}:\n`+rnc.itens.map((it,i)=>`${i+1}. ${s(typeof it==='string'?it:it.descricao||it)}`).join('\n')):'';
+    w('A9',cabecalhoTipo+s(rnc.descricao_nc)+itensText);
+    w('B38',s(rnc.criado_por||usuarioLogado?.nome||'Sergio Malaquias'));
+    w('G38',dataInsp);
+    w('B45',s(rnc.responsavel||rnc.criado_por||'—'));
+    w('G45',rnc.prazo?new Date(rnc.prazo).toLocaleDateString('pt-BR'):dataInsp);
+    if(rnc.causa_raiz) w('A41',s(rnc.causa_raiz));
+    if(rnc.acao_corretiva) w('A43',s(rnc.acao_corretiva));
+    if(rnc.comentario_fornecedor) w('A47',s(rnc.comentario_fornecedor));
+    if(ws3){let nr=2;while(ws3.getCell(`A${nr}`).value)nr++;ws3.getCell(`A${nr}`).value=s(rnc.fornecedor);ws3.getCell(`B${nr}`).value=s(rnc.material);ws3.getCell(`C${nr}`).value=s(rnc.numero_global||rnc.numero);ws3.getCell(`D${nr}`).value=s(rnc.nota_fiscal||'—');ws3.getCell(`F${nr}`).value=dataAb;}
+
+    // Fotos embutidas no próprio documento, separadas por categoria (Liberado /
+    // Com Defeito) — pedido do usuário: têm que estar dentro do arquivo, não
+    // soltas como anexo. Retorna as fotos residuais (sem categoria, se houver
+    // fotos categorizadas junto) pra quem chamou decidir se ainda quer anexar.
+    let fotosResiduais=[];
+    try{
+      const fotosParaDoc=fotos||[];
+      if(fotosParaDoc.length>0){
+        ws.getCell('A20').value=null; // remove o texto "FOTOS ENVIADAS EM ANEXO"
+        const liberadas=fotosParaDoc.filter(f=>f.categoria==='liberado');
+        const defeito=fotosParaDoc.filter(f=>f.categoria==='defeito');
+        const semCategoria=fotosParaDoc.filter(f=>f.categoria!=='liberado'&&f.categoria!=='defeito');
+        const temCategorias=liberadas.length>0||defeito.length>0;
+        const extDaFoto=f=>{
+          const t=s(f.tipo).toLowerCase();
+          if(t.includes('png'))return'png';
+          if(t.includes('gif'))return'gif';
+          return'jpeg';
+        };
+        if(temCategorias){
+          w('A19','Fotos — ✅ Liberado (esquerda) · ⚠️ Com Defeito (direita):');
+          const inserirColuna=(lista,colIni,colFim)=>{
+            const max=Math.min(lista.length,3);
+            const alturaCada=Math.floor(17/Math.max(max,1));
+            for(let i=0;i<max;i++){
+              const linIni=20+i*alturaCada;
+              const linFim=Math.min(36,linIni+alturaCada-1);
+              const imgId=wb.addImage({base64:lista[i].dados,extension:extDaFoto(lista[i])});
+              ws.addImage(imgId,`${colIni}${linIni}:${colFim}${linFim}`);
+            }
+          };
+          inserirColuna(liberadas,'A','D');
+          inserirColuna(defeito,'E','H');
+          fotosResiduais=semCategoria;
+        }else{
+          w('A19','Fotos da Anomalia (anexadas no próprio documento):');
+          const max=Math.min(fotosParaDoc.length,4);
+          const cols=max>1?[['A','D'],['E','H'],['A','D'],['E','H']]:[['A','H']];
+          const linhasPorLinha=max>2?9:17;
+          for(let i=0;i<max;i++){
+            const linIni=20+Math.floor(i/2)*linhasPorLinha;
+            const linFim=Math.min(36,linIni+linhasPorLinha-1);
+            const[colIni,colFim]=cols[i];
+            const imgId=wb.addImage({base64:fotosParaDoc[i].dados,extension:extDaFoto(fotosParaDoc[i])});
+            ws.addImage(imgId,`${colIni}${linIni}:${colFim}${linFim}`);
+          }
+          fotosResiduais=[];
+        }
+      }
+    }catch(fotoErr){console.warn('Erro ao embutir fotos no Excel:',fotoErr);}
+
+    return{wb,fotosResiduais};
+  };
+
   const encerrarRNC = async(rncId) => {
     if(!window.confirm('Confirma o encerramento desta RNC?'))return;
     const rnc=rncsDb.find(r=>r.id===rncId);
@@ -4377,117 +4474,22 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
         const insp=inspecoesDb.find(i=>i.rnc_id===rncId);
         const fotos=insp?await buscarFotos('inspecoes',insp.id):[];
 
-        // Gerar Excel em memória para anexar no email
+        // Gerar Excel em memória para anexar no email — usa a fonte única
+        // montarWorkbookKdB143 (cabeçalho, dados, fotos embutidas por categoria).
         let xlsBase64='';
         let xlsNome=`KdB143_${s(rnc.numero_global||rnc.numero)}.xlsx`;
+        let fotosResiduais=fotos;
         try{
-          if(window.ExcelJS&&RNC_MODELO_B64){
-            const binStr=atob(RNC_MODELO_B64);
-            const buf=new ArrayBuffer(binStr.length);
-            const bytes=new Uint8Array(buf);
-            for(let i=0;i<binStr.length;i++) bytes[i]=binStr.charCodeAt(i);
-            const wb=new window.ExcelJS.Workbook();
-            await wb.xlsx.load(buf);
-            const ws=wb.getWorksheet('Plan1');
-            const ws3=wb.getWorksheet('Plan3');
-            const w=(cell,val)=>{try{ws.getCell(cell).value=val;}catch(_){}};
-            const dataAb=rnc.data_abertura?new Date(rnc.data_abertura).toLocaleDateString('pt-BR'):new Date().toLocaleDateString('pt-BR');
-            const dataInsp=rnc.data_inspecao?new Date(rnc.data_inspecao).toLocaleDateString('pt-BR'):dataAb;
-            const dataReceb=rnc.data_recebimento?new Date(rnc.data_recebimento).toLocaleDateString('pt-BR'):dataAb;
-            const numSeq=String(rnc.numero_fornecedor||rncsDb.findIndex(r=>r.id===rncId)+1||1);
-            w('G2',numSeq);
-            w('B5',s(rnc.fornecedor));
-            w('D6',s(rnc.descricao_material||rnc.descricao_produto||rnc.material));
-            w('H6',s(rnc.nota_fiscal||'—'));
-            w('B7',dataReceb);
-            w('H7',rnc.qtd_reprovada?`${fmtD(rnc.qtd_reprovada)} UN`:'—');
-            // Pedido do usuário: ressalva também gera KDB143, mas o texto não pode
-            // soar como reprovação total — o material foi liberado, só um item
-            // pontual precisa de atenção/contenção. Diferencia o cabeçalho e o
-            // rótulo da lista de itens conforme o tipo.
-            const ehRessalvaDoc=rnc.tipo==='RESSALVA';
-            const cabecalhoTipo=ehRessalvaDoc?'[APROVADO COM RESSALVA — material liberado, itens abaixo precisam de contenção]\n\n':'';
-            const itensText=(Array.isArray(rnc.itens)&&rnc.itens.length>0)?(`\n\n${ehRessalvaDoc?'Itens com ressalva':'Itens nao conformes'}:\n`+rnc.itens.map((it,i)=>`${i+1}. ${s(typeof it==='string'?it:it.descricao||it)}`).join('\n')):'';
-            w('A9',cabecalhoTipo+s(rnc.descricao_nc)+itensText);
-            w('B38',s(rnc.criado_por||'Sergio Malaquias'));
-            w('G38',dataInsp);
-            w('B45',s(rnc.responsavel||rnc.criado_por||'—'));
-            w('G45',rnc.prazo?new Date(rnc.prazo).toLocaleDateString('pt-BR'):dataInsp);
-            if(rnc.causa_raiz) w('A41',s(rnc.causa_raiz));
-            if(rnc.acao_corretiva) w('A43',s(rnc.acao_corretiva));
-            if(ws3){let nr=2;while(ws3.getCell(`A${nr}`).value)nr++;ws3.getCell(`A${nr}`).value=s(rnc.fornecedor);ws3.getCell(`B${nr}`).value=s(rnc.material);ws3.getCell(`C${nr}`).value=s(rnc.numero_global||rnc.numero);ws3.getCell(`D${nr}`).value=s(rnc.nota_fiscal||'—');ws3.getCell(`F${nr}`).value=dataAb;}
-
-            // Pedido do usuário: fotos têm que ir DENTRO do mesmo arquivo, num campo
-            // próprio pra isso — não soltas como anexo de email separado. O modelo já
-            // reserva a área A19:H36 ("Fotos da Anomalia anexo ao email" / "FOTOS
-            // ENVIADAS EM ANEXO") pra isso — confirmado tecnicamente que dá pra
-            // embutir imagem real numa célula via ws.addImage(). Limpa o texto de
-            // placeholder e insere as fotos de verdade, empilhadas dentro da área.
-            try{
-              const fotosParaDoc=fotos||[];
-              if(fotosParaDoc.length>0){
-                ws.getCell('A20').value=null; // remove o texto "FOTOS ENVIADAS EM ANEXO"
-                const liberadas=fotosParaDoc.filter(f=>f.categoria==='liberado');
-                const defeito=fotosParaDoc.filter(f=>f.categoria==='defeito');
-                const semCategoria=fotosParaDoc.filter(f=>f.categoria!=='liberado'&&f.categoria!=='defeito');
-                const temCategorias=liberadas.length>0||defeito.length>0;
-
-                // Extensão a partir do mime type — addImage exige extension correta.
-                const extDaFoto=f=>{
-                  const t=s(f.tipo).toLowerCase();
-                  if(t.includes('png'))return'png';
-                  if(t.includes('gif'))return'gif';
-                  return'jpeg';
-                };
-
-                if(temCategorias){
-                  w('A19','Fotos — ✅ Liberado (esquerda) · ⚠️ Com Defeito (direita):');
-                  // Empilha até 3 fotos por coluna (17 linhas de altura ÷ 3 ≈ 5-6
-                  // linhas cada, o suficiente pra não ficar minúsculo).
-                  const inserirColuna=(lista,colIni,colFim)=>{
-                    const max=Math.min(lista.length,3);
-                    const alturaCada=Math.floor(17/Math.max(max,1));
-                    for(let i=0;i<max;i++){
-                      const linIni=20+i*alturaCada;
-                      const linFim=Math.min(36,linIni+alturaCada-1);
-                      const imgId=wb.addImage({base64:lista[i].dados,extension:extDaFoto(lista[i])});
-                      ws.addImage(imgId,`${colIni}${linIni}:${colFim}${linFim}`);
-                    }
-                  };
-                  inserirColuna(liberadas,'A','D');
-                  inserirColuna(defeito,'E','H');
-                  // Fotos sem categoria (raro, mas cobre o caso) — anexo à parte
-                  // continua existindo só pra esse subconjunto residual.
-                  fotosParaDoc.length=0; // já tratadas, não duplica no anexo solto
-                  fotosParaDoc.push(...semCategoria);
-                }else{
-                  w('A19','Fotos da Anomalia (anexadas no próprio documento):');
-                  // Sem categoria — reprovação total ou ressalva não categorizada:
-                  // 1 foto grande, ou até 4 numa grade 2x2 se houver mais de uma.
-                  const max=Math.min(fotosParaDoc.length,4);
-                  const cols=max>1?[['A','D'],['E','H'],['A','D'],['E','H']]:[['A','H']];
-                  const linhasPorLinha=max>2?9:17;
-                  for(let i=0;i<max;i++){
-                    const linIni=20+Math.floor(i/2)*linhasPorLinha;
-                    const linFim=Math.min(36,linIni+linhasPorLinha-1);
-                    const[colIni,colFim]=cols[i];
-                    const imgId=wb.addImage({base64:fotosParaDoc[i].dados,extension:extDaFoto(fotosParaDoc[i])});
-                    ws.addImage(imgId,`${colIni}${linIni}:${colFim}${linFim}`);
-                  }
-                  fotosParaDoc.length=0; // já embutidas, nada sobra pro anexo solto
-                }
-              }
-            }catch(fotoErr){console.warn('Erro ao embutir fotos no Excel:',fotoErr);}
-
-            const xlsBuf=await wb.xlsx.writeBuffer();
-            xlsBase64=await new Promise(res=>{const r=new FileReader();r.onload=e=>res(e.target.result.split(',')[1]);r.readAsDataURL(new Blob([xlsBuf],{type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'}));});
-          }
+          const{wb,fotosResiduais:residuais}=await montarWorkbookKdB143(rnc,fotos);
+          fotosResiduais=residuais;
+          const xlsBuf=await wb.xlsx.writeBuffer();
+          xlsBase64=await new Promise(res=>{const r=new FileReader();r.onload=e=>res(e.target.result.split(',')[1]);r.readAsDataURL(new Blob([xlsBuf],{type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'}));});
         }catch(excelErr){console.warn('Erro ao gerar Excel para email:',excelErr);}
 
         // Fotos que sobraram (sem categoria, quando já havia categorizadas, ou se o
         // Excel falhou ao gerar) continuam como anexo solto — fallback, não é mais
         // o caminho principal agora que elas vão embutidas no documento.
-        const fotosAnexos=fotos.slice(0,5).map((f,i)=>({nome:`Foto_${i+1}_${f.nome||'foto.jpg'}`,conteudo:f.dados,tipo:f.tipo||'image/jpeg'}));
+        const fotosAnexos=fotosResiduais.slice(0,5).map((f,i)=>({nome:`Foto_${i+1}_${f.nome||'foto.jpg'}`,conteudo:f.dados,tipo:f.tipo||'image/jpeg'}));
 
         await fetch(`${SUPABASE_URL}/functions/v1/qualidade-notificar`,{
           method:'POST',headers:{'Content-Type':'application/json','apikey':SUPABASE_KEY},
@@ -4620,56 +4622,13 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
 
   const gerarExcelRNC = async(rnc) => {
     try{
-      // Load ExcelJS
-      if(!window.ExcelJS) return addToast('ExcelJS não carregado.','error');
-
-      // Decode the model template from base64
-      const binStr=atob(RNC_MODELO_B64);
-      const buf=new ArrayBuffer(binStr.length);
-      const bytes=new Uint8Array(buf);
-      for(let i=0;i<binStr.length;i++) bytes[i]=binStr.charCodeAt(i);
-
-      const wb=new window.ExcelJS.Workbook();
-      await wb.xlsx.load(buf);
-
-      const ws=wb.getWorksheet('Plan1');
-      const ws3=wb.getWorksheet('Plan3');
-
-      // Helper: write to a cell safely (ExcelJS handles merged cells fine)
-      const w=(cell,val)=>{ try{ ws.getCell(cell).value=val; }catch(_){} };
-
-      const dataAbertura=rnc.data_abertura?new Date(rnc.data_abertura).toLocaleDateString('pt-BR'):new Date().toLocaleDateString('pt-BR');
-
-      // Plan1 — KdB143 v2 cell mapping
-      const dataInsp=rnc.data_inspecao?new Date(rnc.data_inspecao).toLocaleDateString('pt-BR'):dataAbertura;
-      const dataReceb=rnc.data_recebimento?new Date(rnc.data_recebimento).toLocaleDateString('pt-BR'):dataAbertura;
-      const numSeq=String(rnc.numero_fornecedor||rncsDb.findIndex(r=>r.id===rnc.id)+1||1);
       const numRNC=s(rnc.numero_global||rnc.numero||rnc.id);
-      w('G2', numSeq);                                                      // Nº R.R.F sequencial simples
-      w('B5', s(rnc.fornecedor));                                           // Fornecedor (B5:H5 merged)
-      w('D6', s(rnc.descricao_material||rnc.descricao_produto||rnc.material)); // D6:F6 — O que é o material
-      w('H6', s(rnc.nota_fiscal||'—'));                                     // NF
-      w('B7', dataReceb);                                                   // B7:D7 — Data recebimento
-      w('H7', rnc.qtd_reprovada?`${fmtD(rnc.qtd_reprovada)} UN`:'—');      // H7 — Qtd reprovada
-      const itensText=(Array.isArray(rnc.itens)&&rnc.itens.length>0)?('\n\nItens nao conformes:\n'+rnc.itens.map((it,i)=>`${i+1}. ${s(typeof it==='string'?it:it.descricao||it)}`).join('\n')):'';
-      w('A9', s(rnc.descricao_nc)+itensText);                               // A9:H17 — Relato NC
-      w('B38', s(rnc.criado_por||usuarioLogado?.nome||'Sergio Malaquias')); // B38:D38 — Responsável Qualidade
-      w('G38', dataInsp);                                                   // G38:H38 — Data inspeção
-      w('B45', s(rnc.responsavel||rnc.criado_por||'—'));
-      w('G45', rnc.prazo?new Date(rnc.prazo).toLocaleDateString('pt-BR'):dataInsp);
-      if(rnc.comentario_fornecedor) w('A47', s(rnc.comentario_fornecedor));
+      // Busca as fotos (não vinham na listagem, só sob demanda) — antes esta
+      // função nem incluía fotos no documento baixado.
+      let fotos=(rnc.qtd_fotos||0)>0?await buscarFotos('rncs',rnc.id):[];
+      if(!fotos.length){const insp=inspecoesDb.find(i=>i.rnc_id===rnc.id);if(insp)fotos=await buscarFotos('inspecoes',insp.id);}
 
-      // Plan3 — Registro de controle (adiciona nova linha)
-      if(ws3){
-        let nextRow=2;
-        while(ws3.getCell(`A${nextRow}`).value) nextRow++;
-        ws3.getCell(`A${nextRow}`).value=s(rnc.fornecedor);
-        ws3.getCell(`B${nextRow}`).value=s(rnc.material);
-        ws3.getCell(`C${nextRow}`).value=numRNC;
-        ws3.getCell(`D${nextRow}`).value=s(rnc.nota_fiscal||'—');
-        ws3.getCell(`F${nextRow}`).value=dataAbertura;
-      }
-
+      const{wb}=await montarWorkbookKdB143(rnc,fotos);
       const xlsBuf=await wb.xlsx.writeBuffer();
       const blob=new Blob([xlsBuf],{type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'});
       const a=document.createElement('a');
@@ -9102,6 +9061,13 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
         footer={<div className="flex justify-between">
           <Btn variant="secondary" onClick={()=>setModalPreviewRNC(false)}>Cancelar</Btn>
           <div className="flex gap-2">
+            <Btn variant="ghost" onClick={async()=>{
+              let fotos=(previewRNCData?.qtd_fotos||0)>0?await buscarFotos('rncs',previewRNCData.id):[];
+              if(!fotos.length){const insp=inspecoesDb.find(i=>i.rnc_id===previewRNCData?.id);if(insp)fotos=await buscarFotos('inspecoes',insp.id);}
+              setFotosPreviewDoc(fotos);setModalVisualDoc(true);
+            }}>
+              👁 Ver como vai ficar
+            </Btn>
             {((previewRNCData?.qtd_fotos||0)>0||(inspecoesDb.find(i=>i.rnc_id===previewRNCData?.id)?.qtd_fotos||0)>0)&&(
               <Btn variant="ghost" onClick={async()=>{let fotos=(previewRNCData?.qtd_fotos||0)>0?await buscarFotos('rncs',previewRNCData.id):[];if(!fotos.length){const insp=inspecoesDb.find(i=>i.rnc_id===previewRNCData?.id);if(insp)fotos=await buscarFotos('inspecoes',insp.id);}gerarPDFFotos(previewRNCData,fotos);}}>
                 <Camera className="w-4 h-4"/>PDF Fotos
@@ -9177,6 +9143,101 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
             )}
           </div>
         )}
+      </Modal>
+
+      {/* Modal: Visualização fiel do KdB143 — reconstrói o layout do modelo em
+          HTML/CSS (cabeçalhos cinza, áreas de texto, fotos por categoria),
+          usando os mesmos dados que vão pro Excel real. Não é o arquivo em si
+          (não roda LibreOffice no navegador), mas é fiel o bastante pra dar
+          confiança de como vai ficar, sem precisar baixar/abrir nada. */}
+      <Modal open={modalVisualDoc&&!!previewRNCData} onClose={()=>setModalVisualDoc(false)} title="👁 Como vai ficar o KdB143" subtitle="Visualização fiel ao layout — o arquivo real terá exatamente esta aparência" maxWidth="max-w-2xl">
+        {previewRNCData&&(()=>{
+          const d=previewRNCData;
+          const ehRessalvaDoc=d.tipo==='RESSALVA';
+          const dataAb=d.data_abertura?new Date(d.data_abertura).toLocaleDateString('pt-BR'):new Date().toLocaleDateString('pt-BR');
+          const dataInsp=d.data_inspecao?new Date(d.data_inspecao).toLocaleDateString('pt-BR'):dataAb;
+          const dataReceb=d.data_recebimento?new Date(d.data_recebimento).toLocaleDateString('pt-BR'):dataAb;
+          const numSeq=String(d.numero_fornecedor||rncsDb.findIndex(r=>r.id===d.id)+1||1);
+          const cabecalhoTipo=ehRessalvaDoc?'[APROVADO COM RESSALVA — material liberado, itens abaixo precisam de contenção]\n\n':'';
+          const itensText=(Array.isArray(d.itens)&&d.itens.length>0)?(`\n\n${ehRessalvaDoc?'Itens com ressalva':'Itens nao conformes'}:\n`+d.itens.map((it,i)=>`${i+1}. ${s(typeof it==='string'?it:it.descricao||it)}`).join('\n')):'';
+          const liberadas=fotosPreviewDoc.filter(f=>f.categoria==='liberado');
+          const defeito=fotosPreviewDoc.filter(f=>f.categoria==='defeito');
+          const semCategoria=fotosPreviewDoc.filter(f=>f.categoria!=='liberado'&&f.categoria!=='defeito');
+          const temCategorias=liberadas.length>0||defeito.length>0;
+          const cabecalhoSecao='text-[11px] font-black text-slate-700 bg-slate-200 px-2 py-1 border border-slate-400';
+          const linhaCampo='text-[11px] text-slate-800 px-2 py-1.5 border border-slate-300';
+          return(
+            <div className="border-2 border-slate-400 text-[11px] font-sans" style={{fontFamily:'Arial, sans-serif'}}>
+              {/* Cabeçalho */}
+              <div className="flex border-b-2 border-slate-400">
+                <div className="flex-1 px-3 py-2 border-r-2 border-slate-400">
+                  <p className="font-black text-sm">KdB143 - RELATÓRIO DE RECLAMAÇÃO DE FORNECIMENTO</p>
+                </div>
+                <div className="w-32">
+                  <div className="font-black text-center py-1 border-b border-slate-400">Nº R.R.F</div>
+                  <div className="text-center py-1 font-bold">{numSeq}</div>
+                </div>
+              </div>
+              <div className={cabecalhoSecao}>Dados de Origem</div>
+              <div className={linhaCampo}><strong>Fornecedor:</strong> {s(d.fornecedor)}</div>
+              <div className="flex">
+                <div className={linhaCampo+' flex-1'}><strong>Descrição do Produto/Equipamento:</strong> {s(d.descricao_material||d.descricao_produto||d.material)}</div>
+                <div className={linhaCampo+' w-40'}><strong>Nota Fiscal:</strong> {s(d.nota_fiscal||'—')}</div>
+              </div>
+              <div className="flex">
+                <div className={linhaCampo+' flex-1'}><strong>Data Recebimento:</strong> {dataReceb}</div>
+                <div className={linhaCampo+' w-40'}><strong>Qtd Reprovada:</strong> {d.qtd_reprovada?`${fmtD(d.qtd_reprovada)} UN`:'—'}</div>
+              </div>
+              <div className={cabecalhoSecao}>Descrição da Não Conformidade</div>
+              <div className={linhaCampo+' whitespace-pre-wrap min-h-[80px]'}>{cabecalhoTipo}{s(d.descricao_nc)||<span className="text-slate-400">(preencha a descrição)</span>}{itensText}</div>
+
+              {/* Fotos */}
+              <div className={cabecalhoSecao}>
+                {temCategorias?'Fotos — ✅ Liberado (esquerda) · ⚠️ Com Defeito (direita)':fotosPreviewDoc.length>0?'Fotos da Anomalia (anexadas no próprio documento)':'Fotos da Anomalia'}
+              </div>
+              <div className="min-h-[160px] flex">
+                {fotosPreviewDoc.length===0?(
+                  <div className="flex-1 flex items-center justify-center text-slate-300 text-xs py-8">Nenhuma foto anexada ainda</div>
+                ):temCategorias?(
+                  <>
+                    <div className="flex-1 border-r border-slate-300 p-1 flex flex-wrap gap-1 content-start">
+                      {liberadas.length===0?<span className="text-slate-300 text-[10px] p-2">Sem fotos liberadas</span>:liberadas.map((f,i)=>(
+                        <img key={i} src={`data:${f.tipo};base64,${f.dados}`} className="h-20 w-full object-cover rounded border border-emerald-300"/>
+                      ))}
+                    </div>
+                    <div className="flex-1 p-1 flex flex-wrap gap-1 content-start">
+                      {defeito.length===0?<span className="text-slate-300 text-[10px] p-2">Sem fotos de defeito</span>:defeito.map((f,i)=>(
+                        <img key={i} src={`data:${f.tipo};base64,${f.dados}`} className="h-20 w-full object-cover rounded border border-red-300"/>
+                      ))}
+                    </div>
+                  </>
+                ):(
+                  <div className="flex-1 grid grid-cols-2 gap-1 p-1">
+                    {semCategoria.slice(0,4).map((f,i)=>(
+                      <img key={i} src={`data:${f.tipo};base64,${f.dados}`} className="h-28 w-full object-cover rounded border border-slate-300"/>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              <div className={cabecalhoSecao}>Controle de Qualidade</div>
+              <div className="flex">
+                <div className={linhaCampo+' flex-1'}><strong>Responsável:</strong> {s(d.criado_por||usuarioLogado?.nome||'—')}</div>
+                <div className={linhaCampo+' w-32'}><strong>Data:</strong> {dataInsp}</div>
+              </div>
+              <div className={cabecalhoSecao}>Responsável pela Ação de Contenção</div>
+              <div className={linhaCampo+' min-h-[50px] whitespace-pre-wrap'}>{s(d.causa_raiz)}{d.acao_corretiva?`\n\nAção corretiva: ${s(d.acao_corretiva)}`:''}{!d.causa_raiz&&!d.acao_corretiva&&<span className="text-slate-400">(preencha causa raiz e ação corretiva)</span>}</div>
+              <div className="flex">
+                <div className={linhaCampo+' flex-1'}><strong>Responsável:</strong> {s(d.responsavel||d.criado_por||'—')}</div>
+                <div className={linhaCampo+' w-32'}><strong>Data:</strong> {d.prazo?new Date(d.prazo).toLocaleDateString('pt-BR'):dataInsp}</div>
+              </div>
+              {d.comentario_fornecedor&&(<>
+                <div className={cabecalhoSecao}>Comentários do Fornecedor</div>
+                <div className={linhaCampo}>{s(d.comentario_fornecedor)}</div>
+              </>)}
+            </div>
+          );
+        })()}
       </Modal>
 
       {/* Modal: Atrasos */}
