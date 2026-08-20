@@ -963,7 +963,7 @@ export default function App(){
   const [rncSel,setRncSel]=useState(null);
   const [filtroQual,setFiltroQual]=useState({status:'',resultado:'',busca:''});
   const [formInspecao,setFormInspecao]=useState({material:'',fornecedor:'',nota_fiscal:'',pedido:'',quantidade:'',unidade:'UN',observacoes:'',itens_ressalva:[],resultado:''});
-  const [formRNC,setFormRNC]=useState({descricao_nc:'',causa_raiz:'',acao_corretiva:'',responsavel:'',prazo:'',gravidade:'MEDIA',email_destinatario:'',itens:[]});
+  const [formRNC,setFormRNC]=useState({descricao_nc:'',causa_raiz:'',acao_corretiva:'',responsavel:'',prazo:'',gravidade:'MEDIA',email_destinatario:'',itens:[],resolucao:''});
   const [fotosUpload,setFotosUpload]=useState([]);
   const [fotoAnotandoIdx,setFotoAnotandoIdx]=useState(null); // índice da foto sendo marcada/anotada agora
   const [fotoAnotandoContexto,setFotoAnotandoContexto]=useState(null); // null = upload novo; {tabela,id} = editando inspeção/RNC já salva
@@ -1059,7 +1059,7 @@ export default function App(){
       data_recebimento:rnc.data_recebimento||'',data_inspecao:rnc.data_inspecao||'',
       qtd_reprovada:rnc.qtd_reprovada||'',causa_raiz:rnc.causa_raiz||'',acao_corretiva:rnc.acao_corretiva||'',
       responsavel:rnc.responsavel||'',prazo:rnc.prazo||'',gravidade:rnc.gravidade||'MEDIA',
-      email_destinatario:rnc.email_destinatario||'',itens:rnc.itens||[]
+      email_destinatario:rnc.email_destinatario||'',itens:rnc.itens||[],resolucao:rnc.resolucao||''
     });
     setModalRNC(true);
   };
@@ -4217,6 +4217,11 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
           fotos:fotosData,
           criado_por:s(usuarioLogado?.nome),
           gravidade:ehRessalva?'BAIXA':'MEDIA',
+          // Reprovação = SEMPRE devolução total (100%), nunca usa resolucao.
+          // Ressalva = Interno (resolvido sem devolver) ou Parcial (devolução
+          // parcial) — campo que já existia na inspeção mas nunca chegava até a
+          // RNC/documento. Confirmado com o usuário, corrigido aqui.
+          resolucao:ehRessalva?(formInspecao.resolucao||null):null,
           status:'ABERTA'
         };
         const{error:errRnc}=await supabase.from('rncs').insert([rnc]);
@@ -4311,7 +4316,9 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
         data_inspecao:insp.data_inspecao||new Date().toISOString().split('T')[0],
         qtd_reprovada:insp.quantidade||0,itens:insp.itens_ressalva,
         fotos:insp.fotos||[],criado_por:s(insp.inspetor||usuarioLogado?.nome),
-        gravidade:ehRessalva?'BAIXA':'MEDIA',status:'ABERTA'
+        gravidade:ehRessalva?'BAIXA':'MEDIA',
+        resolucao:ehRessalva?(insp.resolucao||null):null,
+        status:'ABERTA'
       };
       const{error:errRnc}=await supabase.from('rncs').insert([rnc]);
       if(errRnc)throw errRnc;
@@ -4409,12 +4416,77 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
             if(rnc.causa_raiz) w('A41',s(rnc.causa_raiz));
             if(rnc.acao_corretiva) w('A43',s(rnc.acao_corretiva));
             if(ws3){let nr=2;while(ws3.getCell(`A${nr}`).value)nr++;ws3.getCell(`A${nr}`).value=s(rnc.fornecedor);ws3.getCell(`B${nr}`).value=s(rnc.material);ws3.getCell(`C${nr}`).value=s(rnc.numero_global||rnc.numero);ws3.getCell(`D${nr}`).value=s(rnc.nota_fiscal||'—');ws3.getCell(`F${nr}`).value=dataAb;}
+
+            // Pedido do usuário: fotos têm que ir DENTRO do mesmo arquivo, num campo
+            // próprio pra isso — não soltas como anexo de email separado. O modelo já
+            // reserva a área A19:H36 ("Fotos da Anomalia anexo ao email" / "FOTOS
+            // ENVIADAS EM ANEXO") pra isso — confirmado tecnicamente que dá pra
+            // embutir imagem real numa célula via ws.addImage(). Limpa o texto de
+            // placeholder e insere as fotos de verdade, empilhadas dentro da área.
+            try{
+              const fotosParaDoc=fotos||[];
+              if(fotosParaDoc.length>0){
+                ws.getCell('A20').value=null; // remove o texto "FOTOS ENVIADAS EM ANEXO"
+                const liberadas=fotosParaDoc.filter(f=>f.categoria==='liberado');
+                const defeito=fotosParaDoc.filter(f=>f.categoria==='defeito');
+                const semCategoria=fotosParaDoc.filter(f=>f.categoria!=='liberado'&&f.categoria!=='defeito');
+                const temCategorias=liberadas.length>0||defeito.length>0;
+
+                // Extensão a partir do mime type — addImage exige extension correta.
+                const extDaFoto=f=>{
+                  const t=s(f.tipo).toLowerCase();
+                  if(t.includes('png'))return'png';
+                  if(t.includes('gif'))return'gif';
+                  return'jpeg';
+                };
+
+                if(temCategorias){
+                  w('A19','Fotos — ✅ Liberado (esquerda) · ⚠️ Com Defeito (direita):');
+                  // Empilha até 3 fotos por coluna (17 linhas de altura ÷ 3 ≈ 5-6
+                  // linhas cada, o suficiente pra não ficar minúsculo).
+                  const inserirColuna=(lista,colIni,colFim)=>{
+                    const max=Math.min(lista.length,3);
+                    const alturaCada=Math.floor(17/Math.max(max,1));
+                    for(let i=0;i<max;i++){
+                      const linIni=20+i*alturaCada;
+                      const linFim=Math.min(36,linIni+alturaCada-1);
+                      const imgId=wb.addImage({base64:lista[i].dados,extension:extDaFoto(lista[i])});
+                      ws.addImage(imgId,`${colIni}${linIni}:${colFim}${linFim}`);
+                    }
+                  };
+                  inserirColuna(liberadas,'A','D');
+                  inserirColuna(defeito,'E','H');
+                  // Fotos sem categoria (raro, mas cobre o caso) — anexo à parte
+                  // continua existindo só pra esse subconjunto residual.
+                  fotosParaDoc.length=0; // já tratadas, não duplica no anexo solto
+                  fotosParaDoc.push(...semCategoria);
+                }else{
+                  w('A19','Fotos da Anomalia (anexadas no próprio documento):');
+                  // Sem categoria — reprovação total ou ressalva não categorizada:
+                  // 1 foto grande, ou até 4 numa grade 2x2 se houver mais de uma.
+                  const max=Math.min(fotosParaDoc.length,4);
+                  const cols=max>1?[['A','D'],['E','H'],['A','D'],['E','H']]:[['A','H']];
+                  const linhasPorLinha=max>2?9:17;
+                  for(let i=0;i<max;i++){
+                    const linIni=20+Math.floor(i/2)*linhasPorLinha;
+                    const linFim=Math.min(36,linIni+linhasPorLinha-1);
+                    const[colIni,colFim]=cols[i];
+                    const imgId=wb.addImage({base64:fotosParaDoc[i].dados,extension:extDaFoto(fotosParaDoc[i])});
+                    ws.addImage(imgId,`${colIni}${linIni}:${colFim}${linFim}`);
+                  }
+                  fotosParaDoc.length=0; // já embutidas, nada sobra pro anexo solto
+                }
+              }
+            }catch(fotoErr){console.warn('Erro ao embutir fotos no Excel:',fotoErr);}
+
             const xlsBuf=await wb.xlsx.writeBuffer();
             xlsBase64=await new Promise(res=>{const r=new FileReader();r.onload=e=>res(e.target.result.split(',')[1]);r.readAsDataURL(new Blob([xlsBuf],{type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'}));});
           }
         }catch(excelErr){console.warn('Erro ao gerar Excel para email:',excelErr);}
 
-        // Montar anexos: KdB143 + fotos
+        // Fotos que sobraram (sem categoria, quando já havia categorizadas, ou se o
+        // Excel falhou ao gerar) continuam como anexo solto — fallback, não é mais
+        // o caminho principal agora que elas vão embutidas no documento.
         const fotosAnexos=fotos.slice(0,5).map((f,i)=>({nome:`Foto_${i+1}_${f.nome||'foto.jpg'}`,conteudo:f.dados,tipo:f.tipo||'image/jpeg'}));
 
         await fetch(`${SUPABASE_URL}/functions/v1/qualidade-notificar`,{
@@ -8345,7 +8417,7 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
                                   <Camera className="w-3.5 h-3.5 text-indigo-500"/>Fotos
                                 </Btn>
                               )}
-                              <Btn variant="secondary" size="sm" onClick={()=>{setRncSel(rnc);setFormRNC({descricao_nc:rnc.descricao_nc||'',descricao_material:rnc.descricao_material||rnc.descricao_produto||'',data_recebimento:rnc.data_recebimento||'',data_inspecao:rnc.data_inspecao||'',qtd_reprovada:rnc.qtd_reprovada||'',causa_raiz:rnc.causa_raiz||'',acao_corretiva:rnc.acao_corretiva||'',responsavel:rnc.responsavel||'',prazo:rnc.prazo||'',gravidade:rnc.gravidade||'MEDIA',email_destinatario:rnc.email_destinatario||'',itens:rnc.itens||[]});setModalRNC(true);}}>
+                              <Btn variant="secondary" size="sm" onClick={()=>abrirModalRNC(rnc)}>
                                 <Edit3 className="w-3.5 h-3.5"/>Editar
                               </Btn>
                               {rnc.status!=='ENCERRADA'&&(()=>{
@@ -8911,6 +8983,7 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
                   data_recebimento:formRNC.data_recebimento||null,
                   data_inspecao:formRNC.data_inspecao||null,
                   qtd_reprovada:parseFloat(formRNC.qtd_reprovada)||0,
+                  resolucao:rncSel.tipo==='RESSALVA'?(formRNC.resolucao||null):null,
                   status:novoStatus
                 }).eq('id',rncSel.id);
                 addToast(pronto?'RNC salva — pronta para encerrar e enviar email!':'RNC salva! Complete os campos obrigatórios para liberar o envio.');
@@ -8946,6 +9019,29 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
                 </div>
               );
             })()}
+
+            {/* Semântica crítica: Reprovação SEMPRE é devolução total (100%) — nunca
+                tem escolha de resolução. Ressalva pode ser resolvida internamente OU
+                com devolução parcial — confirmado pelo usuário, esse campo já existia
+                na inspeção mas nunca aparecia aqui nem chegava no documento. */}
+            {rncSel.tipo==='RESSALVA'?(
+              <div className="bg-amber-50 border border-amber-200 rounded-xl p-4">
+                <p className="text-xs font-black text-amber-800 mb-1">⚠️ RESSALVA — material já liberado</p>
+                <p className="text-[11px] text-amber-700 mb-3">Diferente de reprovação (100% volta ao fornecedor): aqui só uma parte precisa de atenção. Confirme como será tratado:</p>
+                <div className="grid grid-cols-2 gap-2">
+                  {[{val:'Interno',label:'🏭 Resolveremos Internamente'},{val:'Parcial',label:'↩️ Devolução Parcial ao Fornecedor'}].map(op=>(
+                    <button key={op.val} onClick={()=>setFormRNC({...formRNC,resolucao:op.val})}
+                      className={`text-xs font-bold rounded-lg p-2.5 border-2 text-left ${formRNC.resolucao===op.val?'bg-white border-amber-500 text-amber-900':'bg-white/50 border-amber-200 text-amber-700'}`}>
+                      {op.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            ):(
+              <div className="bg-red-50 border border-red-200 rounded-xl p-4">
+                <p className="text-xs font-black text-red-800">⛔ REPROVAÇÃO — 100% do material deve retornar ao fornecedor</p>
+              </div>
+            )}
 
             {/* Dados do documento (para o KdB143) */}
             <div className="bg-slate-50 rounded-xl border border-slate-200 p-4 space-y-3">
