@@ -1040,6 +1040,22 @@ export default function App(){
     }catch(e){return[];}
   },[supabase]);
 
+  // Marca a categoria (liberado/defeito) de uma foto DEPOIS do fato — pedido do
+  // usuário: já existe inspeção "Aprovado com Ressalva" registrada sem categoria
+  // nenhuma nas fotos (feita antes dessa opção existir), precisa dar pra editar,
+  // não só na hora do upload original. Atualiza tanto na tabela local (pra refletir
+  // na tela na hora) quanto no banco (tabela e id de onde a foto realmente vive —
+  // pode ser 'inspecoes' ou 'rncs', dependendo de onde a foto foi carregada).
+  const salvarCategoriaFoto=async(tabela,id,fotoIdx,novaCategoria,fotosAtuais,onAtualizarLocal)=>{
+    try{
+      const novasFotos=fotosAtuais.map((f,i)=>i===fotoIdx?{...f,categoria:novaCategoria}:f);
+      const{error}=await supabase.from(tabela).update({fotos:novasFotos}).eq('id',id);
+      if(error)throw error;
+      onAtualizarLocal?.(novasFotos);
+      addToast('Categoria da foto atualizada.');
+    }catch(e){addToast('Erro ao salvar categoria: '+e.message,'error');}
+  };
+
   // ── Mestra PCP: agrega Pedidos de Venda + Faturamento do Portal de Engenharia por BR ──
   // Cache compartilhado de pedidos_itens — Mestra e OOH usam os mesmos dados brutos;
   // sem isso, trocar de aba disparava a mesma busca (777+ linhas) de novo do zero.
@@ -4190,15 +4206,20 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
         }
         // Notificar Teams de nova RNC/Ressalva — Compras precisa saber pra tomar
         // providência, mesmo quando o material já foi liberado com ressalva.
+        // Usa o MESMO tipo 'RNC_GERADA' já reconhecido pela automação existente
+        // (não confirmado se ela trataria um tipo novo 'RESSALVA_GERADA' certo) —
+        // a diferença Ressalva/Reprovação vai dentro do payload (campo "tipo_rnc"),
+        // disponível caso queiram tratar diferente no Power Automate depois.
         try{
           if(qualTeamsUrl){
             await fetch(`${SUPABASE_URL}/functions/v1/qualidade-notificar`,{
               method:'POST',headers:{'Content-Type':'application/json','apikey':SUPABASE_KEY},
-              body:JSON.stringify({tipo:ehRessalva?'RESSALVA_GERADA':'RNC_GERADA',flow_url:qualTeamsUrl,dados:{
+              body:JSON.stringify({tipo:'RNC_GERADA',flow_url:qualTeamsUrl,dados:{
                 numero:numGlobal,numero_fornecedor:numFornecedor,
                 fornecedor:formInspecao.fornecedor,material:formInspecao.material,
                 nota_fiscal:formInspecao.nota_fiscal,
                 descricao_nc:formInspecao.observacoes,
+                tipo_rnc:ehRessalva?'RESSALVA':'REPROVACAO',
                 inspetor:s(usuarioLogado?.nome),data:new Date().toISOString()
               }})
             });
@@ -4228,6 +4249,54 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
       setFotosUpload([]);
       fetchAll();
     }catch(e){addToast('Erro: '+e.message,'error');}finally{setIsLoading(false);}
+  };
+
+  // Gera a RNC pra uma inspeção que JÁ EXISTE mas ficou sem (caso real: inspeções
+  // de Ressalva feitas antes da correção que passou a gerar RNC também pra
+  // ressalva, não só reprovação — ficaram com rnc_id null e nunca notificaram
+  // Compras nem geraram o KdB143). Não duplica a lógica de criação de inspeção
+  // nova, só monta a RNC em cima do que já está salvo.
+  const gerarRNCParaInspecaoAntiga=async insp=>{
+    if(!window.confirm(`Gerar RNC/KdB143 agora pra esta inspeção (${s(insp.resultado==='APROVADO_RESSALVA'?'ressalva':'reprovação')})? Isso vai notificar Compras.`))return;
+    try{
+      const ano=new Date().getFullYear();
+      const totalGlobal=rncsDb.length+1;
+      const numGlobal=`RNC-${ano}-${String(totalGlobal).padStart(3,'0')}`;
+      const rncsFornecedor=rncsDb.filter(r=>s(r.fornecedor).toLowerCase()===s(insp.fornecedor).toLowerCase());
+      const numFornecedor=rncsFornecedor.length+1;
+      const rncId=`RNC-${Date.now()}`;
+      const ehRessalva=insp.resultado==='APROVADO_RESSALVA';
+      const rnc={
+        id:rncId,numero:numGlobal,numero_global:numGlobal,numero_fornecedor:numFornecedor,
+        tipo:ehRessalva?'RESSALVA':'REPROVACAO',
+        inspecao_id:insp.id,material:insp.material,fornecedor:insp.fornecedor,nota_fiscal:insp.nota_fiscal,
+        descricao_nc:insp.observacoes||'Ver detalhes da inspeção',
+        descricao_material:insp.descricao_material||'',descricao_produto:insp.material,
+        data_recebimento:insp.data_inspecao||new Date().toISOString().split('T')[0],
+        data_inspecao:insp.data_inspecao||new Date().toISOString().split('T')[0],
+        qtd_reprovada:insp.quantidade||0,itens:insp.itens_ressalva,
+        fotos:insp.fotos||[],criado_por:s(insp.inspetor||usuarioLogado?.nome),
+        gravidade:ehRessalva?'BAIXA':'MEDIA',status:'ABERTA'
+      };
+      const{error:errRnc}=await supabase.from('rncs').insert([rnc]);
+      if(errRnc)throw errRnc;
+      await supabase.from('inspecoes').update({rnc_id:rncId}).eq('id',insp.id);
+      addToast(`${numGlobal} gerada retroativamente!`,'warning');
+      try{
+        if(qualTeamsUrl){
+          await fetch(`${SUPABASE_URL}/functions/v1/qualidade-notificar`,{
+            method:'POST',headers:{'Content-Type':'application/json','apikey':SUPABASE_KEY},
+            body:JSON.stringify({tipo:'RNC_GERADA',flow_url:qualTeamsUrl,dados:{
+              numero:numGlobal,numero_fornecedor:numFornecedor,fornecedor:insp.fornecedor,material:insp.material,
+              nota_fiscal:insp.nota_fiscal,descricao_nc:insp.observacoes,
+              tipo_rnc:ehRessalva?'RESSALVA':'REPROVACAO',
+              inspetor:s(insp.inspetor||usuarioLogado?.nome),data:new Date().toISOString()
+            }})
+          });
+        }
+      }catch(e){}
+      fetchAll();
+    }catch(e){addToast('Erro ao gerar RNC: '+e.message,'error');}
   };
 
   const encerrarRNC = async(rncId) => {
@@ -8122,6 +8191,12 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
                                     :<span className="bg-blue-50 text-blue-700 text-[10px] font-bold px-2.5 py-1 rounded-full border border-blue-200">Pendente</span>
                                   }
                                   {ins.rnc_id&&<p className="text-[9px] text-red-500 font-bold mt-1">RNC gerada</p>}
+                                  {/* Inspeções antigas de ressalva/reprovado feitas antes de
+                                      "ressalva também gerar RNC" existir — ficaram sem
+                                      rnc_id e sem nunca notificar Compras. */}
+                                  {!ins.rnc_id&&(ins.resultado==='APROVADO_RESSALVA'||ins.resultado==='REPROVADO')&&(
+                                    <button onClick={()=>gerarRNCParaInspecaoAntiga(ins)} className="text-[9px] font-black text-white bg-amber-600 hover:bg-amber-700 rounded-full px-2 py-0.5 mt-1">Gerar RNC</button>
+                                  )}
                                 </td>
                                 <td className="px-5 py-3.5 text-xs text-slate-600">{s(ins.inspetor||'—')}</td>
                                 <td className="px-5 py-3.5 text-center">
@@ -8731,7 +8806,32 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
             </div>
             {inspecaoSel.observacoes&&<div><p className="text-xs font-black text-slate-600 uppercase tracking-wider mb-2">Observações</p><p className="text-sm text-slate-700 bg-slate-50 rounded-xl p-4 border border-slate-100 leading-relaxed">{s(inspecaoSel.observacoes)}</p></div>}
             {inspecaoSel.itens_ressalva?.length>0&&<div><p className="text-xs font-black text-amber-700 uppercase tracking-wider mb-2">Itens com Ressalva</p><div className="flex flex-wrap gap-2">{(Array.isArray(inspecaoSel.itens_ressalva)?inspecaoSel.itens_ressalva:[]).map((item,i)=><span key={i} className="bg-amber-50 border border-amber-200 text-amber-800 text-xs font-medium px-3 py-1.5 rounded-lg">{s(typeof item==='string'?item:item)}</span>)}</div></div>}
-            {inspecaoSel.fotos?.length>0&&<div><p className="text-xs font-black text-slate-600 uppercase tracking-wider mb-2">Fotos da Inspeção ({inspecaoSel.fotos.length})</p><div className="grid grid-cols-3 sm:grid-cols-5 gap-2">{(Array.isArray(inspecaoSel.fotos)?inspecaoSel.fotos:[]).map((f,i)=><img key={i} src={`data:${f.tipo};base64,${f.dados}`} alt={f.nome} className="w-full h-24 object-cover rounded-xl border border-slate-200 cursor-pointer hover:opacity-80 transition-opacity" onClick={()=>{const byteStr=atob(f.dados);const ab=new ArrayBuffer(byteStr.length);const ia=new Uint8Array(ab);for(let j=0;j<byteStr.length;j++)ia[j]=byteStr.charCodeAt(j);const blob=new Blob([ab],{type:f.tipo});const url=URL.createObjectURL(blob);window.open(url,'_blank');}}/>)}</div></div>}
+            {inspecaoSel.fotos?.length>0&&(
+              <div>
+                <div className="flex items-center justify-between mb-2">
+                  <p className="text-xs font-black text-slate-600 uppercase tracking-wider">Fotos da Inspeção ({inspecaoSel.fotos.length})</p>
+                  {inspecaoSel.resultado==='APROVADO_RESSALVA'&&<p className="text-[10px] text-amber-600 font-bold">Marque qual foto é do defeito e qual está liberada</p>}
+                </div>
+                <div className="grid grid-cols-3 sm:grid-cols-5 gap-2">
+                  {(Array.isArray(inspecaoSel.fotos)?inspecaoSel.fotos:[]).map((f,i)=>(
+                    <div key={i} className="relative group">
+                      <img src={`data:${f.tipo};base64,${f.dados}`} alt={f.nome} className="w-full h-24 object-cover rounded-xl border border-slate-200 cursor-pointer hover:opacity-80 transition-opacity" onClick={()=>{const byteStr=atob(f.dados);const ab=new ArrayBuffer(byteStr.length);const ia=new Uint8Array(ab);for(let j=0;j<byteStr.length;j++)ia[j]=byteStr.charCodeAt(j);const blob=new Blob([ab],{type:f.tipo});const url=URL.createObjectURL(blob);window.open(url,'_blank');}}/>
+                      {/* Edição de categoria depois do fato — cobre inspeções já
+                          registradas antes de a categoria existir, ou casos em que o
+                          inspetor não marcou na hora do upload. */}
+                      {inspecaoSel.resultado==='APROVADO_RESSALVA'&&(
+                        <div className="absolute bottom-1 left-1 right-1 flex gap-1">
+                          <button onClick={()=>salvarCategoriaFoto('inspecoes',inspecaoSel.id,i,'liberado',inspecaoSel.fotos,novasFotos=>setInspecaoSel(p=>({...p,fotos:novasFotos})))}
+                            className={`flex-1 text-[9px] font-black py-1 rounded ${f.categoria==='liberado'?'bg-emerald-500 text-white':'bg-white/90 text-slate-500 hover:bg-emerald-50'}`}>OK</button>
+                          <button onClick={()=>salvarCategoriaFoto('inspecoes',inspecaoSel.id,i,'defeito',inspecaoSel.fotos,novasFotos=>setInspecaoSel(p=>({...p,fotos:novasFotos})))}
+                            className={`flex-1 text-[9px] font-black py-1 rounded ${f.categoria==='defeito'?'bg-red-500 text-white':'bg-white/90 text-slate-500 hover:bg-red-50'}`}>DEFEITO</button>
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
         )}
       </Modal>
