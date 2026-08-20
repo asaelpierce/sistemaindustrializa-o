@@ -4376,6 +4376,12 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
     const cabecalhoTipo=ehRessalvaDoc?'[APROVADO COM RESSALVA — material liberado, itens abaixo precisam de contenção]\n\n':'';
     const itensText=(Array.isArray(rnc.itens)&&rnc.itens.length>0)?(`\n\n${ehRessalvaDoc?'Itens com ressalva':'Itens nao conformes'}:\n`+rnc.itens.map((it,i)=>`${i+1}. ${s(typeof it==='string'?it:it.descricao||it)}`).join('\n')):'';
     w('A9',cabecalhoTipo+s(rnc.descricao_nc)+itensText);
+    // Achado real testando o resultado: a célula A9 não tinha wrapText ativo nem
+    // alinhamento correto — o texto com \n ficava tudo colado numa linha só,
+    // ilegível quando havia cabeçalho de ressalva + itens. O modelo original só
+    // teria texto curto (sem cabeçalho/itens concatenados), então nunca precisou
+    // disso antes.
+    try{ws.getCell('A9').alignment={wrapText:true,vertical:'top',horizontal:'left'};}catch(_){}
     w('B38',s(rnc.criado_por||usuarioLogado?.nome||'Sergio Malaquias'));
     w('G38',dataInsp);
     w('B45',s(rnc.responsavel||rnc.criado_por||'—'));
