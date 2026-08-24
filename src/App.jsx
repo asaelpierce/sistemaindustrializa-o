@@ -862,6 +862,7 @@ export default function App(){
   const [brBuscaRelatorio,setBrBuscaRelatorio]=useState('');
   const [buscandoRelatorioBR,setBuscandoRelatorioBR]=useState(false);
   const [dadosRelatorioBR,setDadosRelatorioBR]=useState(null); // {br,ops:[{nroOP,codProdutoAcabado,descricaoProdutoAcabado,itens:[{codMP,descricao,quantidade,unidade}]}]}
+  const [qtdPecasRelatorio,setQtdPecasRelatorio]=useState(''); // quantidade de peças que o PCP informa — usada pra calcular a quantidade certa de MP (composição × peças) e comparar com o apontamento bruto da OP
   const [formRelatorioTerceiros,setFormRelatorioTerceiros]=useState({transportadora:'',codigoTransportadora:'',placa:'',quantidade:'',pesoTotal:'',destinatario:'',dataSaida:new Date().toISOString().split('T')[0],pallet:'',observacoes:'',remessaPara:''});
   const [projeto,setProjeto]=useState('');
   const [cliente,setCliente]=useState('');
@@ -3435,24 +3436,49 @@ export default function App(){
   const buscarRelatorioTerceirosPorBR=async()=>{
     const br=s(brBuscaRelatorio).toUpperCase().trim();
     if(!br)return addToast('Digite o número do BR.','error');
-    setBuscandoRelatorioBR(true);setDadosRelatorioBR(null);
+    setBuscandoRelatorioBR(true);setDadosRelatorioBR(null);setQtdPecasRelatorio('');
     try{
       const{data,error}=await supabase.from('ordens_producao_sankhya').select('*')
         .or(`br.eq.${br},br_confirmado.eq.${br}`)
         .order('nro_ordem_producao').order('seq_mp');
       if(error)throw error;
       if(!data||data.length===0){addToast(`Nenhuma OP encontrada para o BR ${br}. Confira se o BR está certo ou se já foi sincronizado.`,'error');setBuscandoRelatorioBR(false);return;}
-      // Agrupa por OP (um BR pode ter mais de uma OP — produto composto)
+      // Agrupa por OP (um BR pode ter mais de uma OP — produto composto). Cada
+      // item de MP guarda também a composição cadastrada (produtos.materiais)
+      // desse produto acabado — pedido do usuário: "quando ele digitar o BR,
+      // puxa a composição certinho, e compara com a quantidade de peças
+      // informada pra ver se bate com o que está apontado na OP".
       const porOP={};
       data.forEach(it=>{
         const nro=s(it.nro_ordem_producao);
-        if(!porOP[nro])porOP[nro]={nroOP:nro,codProdutoAcabado:s(it.cod_produto_acabado),descricaoProdutoAcabado:s(it.produto_acabado_descricao),itens:[]};
-        if(it.cod_materia_prima)porOP[nro].itens.push({codMP:s(it.cod_materia_prima),descricao:s(it.materia_prima_descricao),quantidade:Number(it.quantidade_mp||0),unidade:s(estoqueDb[it.cod_materia_prima]?.unidade||'UN')});
+        const codPA=s(it.cod_produto_acabado);
+        if(!porOP[nro])porOP[nro]={nroOP:nro,codProdutoAcabado:codPA,descricaoProdutoAcabado:s(it.produto_acabado_descricao),composicao:produtosDb[codPA]?.materiais||[],itens:[]};
+        if(it.cod_materia_prima)porOP[nro].itens.push({codMP:s(it.cod_materia_prima),descricao:s(it.materia_prima_descricao),quantidadeApontada:Number(it.quantidade_mp||0),unidade:s(estoqueDb[it.cod_materia_prima]?.unidade||'UN')});
       });
       setDadosRelatorioBR({br,ops:Object.values(porOP)});
       addToast(`${Object.keys(porOP).length} OP(s) encontrada(s) para o BR ${br}.`);
     }catch(e){addToast('Erro ao buscar OP: '+e.message,'error');}
     finally{setBuscandoRelatorioBR(false);}
+  };
+
+  // Calcula, pra cada item de MP de uma OP, a quantidade ESPERADA (composição
+  // cadastrada × quantidade de peças informada) e compara com a quantidade
+  // APONTADA de verdade na OP — pedido do usuário: "tem que bater com o que
+  // está na ordem de produção... na hora de gerar o documento, já gera na
+  // quantidade certinha que ele precisa". Quando a peça informada é vazia, usa
+  // a quantidade apontada como fallback (comportamento anterior, sem cálculo).
+  const calcularItensComparados=(op,qtdPecas)=>{
+    const qtd=Number(qtdPecas)||0;
+    return op.itens.map(it=>{
+      const itemComposicao=(op.composicao||[]).find(m=>s(m.codigoMP)===it.codMP);
+      const quantidadeEsperada=itemComposicao&&qtd>0?Number((itemComposicao.quantidade*qtd).toFixed(4)):null;
+      const diferenca=quantidadeEsperada!==null?Math.abs(quantidadeEsperada-it.quantidadeApontada):null;
+      const pctDiferenca=quantidadeEsperada!==null&&quantidadeEsperada>0?diferenca/quantidadeEsperada:null;
+      // Bate quando a diferença é pequena (até 30%, mesma folga já usada em
+      // outras comparações do sistema pra cobrir arredondamento/sobra normal).
+      const bate=pctDiferenca===null?null:pctDiferenca<=0.30;
+      return{...it,quantidadeEsperada,bate,temNaComposicao:!!itemComposicao};
+    });
   };
 
   // Gera o "Relatório de Matéria Prima para Terceiros" (modelo real fornecido
@@ -3473,12 +3499,15 @@ export default function App(){
       const f=formRelatorioTerceiros;
       // Junta todas as OPs do BR num relatório só — cabeçalho usa a primeira OP
       // como referência (produto principal), a lista de itens junta a MP de
-      // TODAS as OPs (cobre o caso de produto composto com várias OPs).
+      // TODAS as OPs (cobre o caso de produto composto com várias OPs). Usa a
+      // quantidade CALCULADA (composição × peças informadas) quando disponível
+      // — pedido do usuário: "na hora de gerar o documento, já gera na
+      // quantidade certinha que ele precisa, não a bruta que está na OP".
       const opsOrdenadas=dadosRelatorioBR.ops;
       const primeiraOP=opsOrdenadas[0];
-      const todosItens=opsOrdenadas.flatMap(op=>op.itens);
+      const todosItens=opsOrdenadas.flatMap(op=>calcularItensComparados(op,qtdPecasRelatorio));
       ws.getCell('B4').value=opsOrdenadas.length>1?opsOrdenadas.map(o=>`OP${o.nroOP}`).join(', '):`OP${primeiraOP.nroOP}`;
-      ws.getCell('E4').value=`${s(dadosRelatorioBR.br)} — ${s(primeiraOP.descricaoProdutoAcabado)}`;
+      ws.getCell('E4').value=qtdPecasRelatorio?`${fmtD(qtdPecasRelatorio)} peças - ${s(primeiraOP.descricaoProdutoAcabado)}`:`${s(dadosRelatorioBR.br)} — ${s(primeiraOP.descricaoProdutoAcabado)}`;
       ws.getCell('G4').value=s(primeiraOP.codProdutoAcabado);
       ws.getCell('C5').value=s(f.transportadora);
       ws.getCell('E5').value=s(f.codigoTransportadora);
@@ -3512,7 +3541,9 @@ export default function App(){
         ws.getCell(`C${r}`).value=s(it.codMP);
         ws.getCell(`D${r}`).value=s(dadosRelatorioBR.br);
         ws.getCell(`E${r}`).value=s(it.descricao);
-        ws.getCell(`F${r}`).value=it.quantidade;
+        // Usa a quantidade calculada (composição×peças) quando existe e o item
+        // está na composição cadastrada; senão cai no valor bruto apontado.
+        ws.getCell(`F${r}`).value=it.quantidadeEsperada!==null?it.quantidadeEsperada:it.quantidadeApontada;
         ws.getCell(`G${r}`).value=s(it.unidade);
         ws.getCell(`H${r}`).value='EM PROCESSAMENTO';
       });
@@ -6899,26 +6930,56 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
 
                   {dadosRelatorioBR&&(
                     <div className="mt-6 space-y-5">
-                      {/* Preview das OPs e materiais encontrados */}
+                      {/* Quantidade de peças — pedido do usuário: "informa a
+                          quantidade de peças, pra comparar com o que está na OP" —
+                          é esse número que multiplica a composição cadastrada pra
+                          calcular a quantidade certa de cada material. */}
+                      <div className="bg-indigo-50 border border-indigo-200 rounded-xl p-4">
+                        <Field label="Quantidade de peças desta remessa" required>
+                          <Inp type="number" placeholder="Ex: 4" value={qtdPecasRelatorio} onChange={e=>setQtdPecasRelatorio(e.target.value)} className="max-w-xs"/>
+                        </Field>
+                        <p className="text-[11px] text-indigo-700 mt-1.5">Usada pra calcular a quantidade certa de cada material (composição × peças) — comparada com o que está apontado na OP.</p>
+                      </div>
+
+                      {/* Preview das OPs e materiais encontrados, com a
+                          comparação: quantidade calculada (composição×peças) vs
+                          quantidade apontada de verdade na OP. */}
                       <div className="bg-white rounded-xl border border-slate-200 p-4">
                         <p className="text-[10px] font-black text-slate-500 uppercase tracking-widest mb-3">
                           {dadosRelatorioBR.ops.length} OP(s) encontrada(s) para {dadosRelatorioBR.br}
                         </p>
                         <div className="space-y-3">
-                          {dadosRelatorioBR.ops.map(op=>(
+                          {dadosRelatorioBR.ops.map(op=>{
+                            const itensComparados=calcularItensComparados(op,qtdPecasRelatorio);
+                            return(
                             <div key={op.nroOP} className="border border-slate-100 rounded-lg p-3">
                               <p className="text-xs font-bold text-indigo-700">OP{op.nroOP} — {s(op.codProdutoAcabado)}</p>
                               <p className="text-[11px] text-slate-500 truncate mb-2">{s(op.descricaoProdutoAcabado)}</p>
-                              <div className="grid grid-cols-2 sm:grid-cols-3 gap-1.5">
-                                {op.itens.map((it,i)=>(
-                                  <div key={i} className="bg-slate-50 rounded px-2 py-1 text-[10px]">
-                                    <span className="font-bold text-slate-700">{it.codMP}</span> — {fmtD(it.quantidade)} {it.unidade}
+                              <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
+                                {itensComparados.map((it,i)=>(
+                                  <div key={i} className={`rounded px-2 py-1.5 text-[10px] ${it.bate===false?'bg-amber-50 border border-amber-200':'bg-slate-50'}`}>
+                                    <div className="flex items-center justify-between gap-2">
+                                      <span className="font-bold text-slate-700">{it.codMP} — {s(it.descricao).substring(0,30)}</span>
+                                      {it.bate===false&&<AlertTriangle className="w-3 h-3 text-amber-500 flex-shrink-0"/>}
+                                      {it.bate===true&&<CheckCircle className="w-3 h-3 text-emerald-500 flex-shrink-0"/>}
+                                    </div>
+                                    <div className="mt-0.5">
+                                      {it.quantidadeEsperada!==null?(
+                                        <span>
+                                          <span className="font-black text-indigo-700">{fmtD(it.quantidadeEsperada)} {it.unidade}</span>
+                                          <span className="text-slate-400"> (calculado) · apontado: {fmtD(it.quantidadeApontada)} {it.unidade}</span>
+                                        </span>
+                                      ):(
+                                        <span className="font-black text-slate-700">{fmtD(it.quantidadeApontada)} {it.unidade} <span className="text-slate-400 font-normal">(apontado — {it.temNaComposicao?'informe a quantidade de peças pra calcular':'não está na composição cadastrada'})</span></span>
+                                      )}
+                                    </div>
                                   </div>
                                 ))}
                                 {op.itens.length===0&&<span className="text-[10px] text-amber-600">Nenhuma matéria-prima apontada nessa OP</span>}
                               </div>
                             </div>
-                          ))}
+                            );
+                          })}
                         </div>
                       </div>
 
