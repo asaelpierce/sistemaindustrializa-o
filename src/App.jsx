@@ -1356,6 +1356,16 @@ export default function App(){
   const [novoItemCompra,setNovoItemCompra]=useState({descricao:'',link:'',quantidade:1,unidade:'UN',observacao:''});
   const [fotosManutencaoUpload,setFotosManutencaoUpload]=useState([]);
   const [buscandoCompraSankhya,setBuscandoCompraSankhya]=useState(null); // id do item sendo buscado
+  // Sub-abas do módulo: demandas (kanban/calendário), equipamentos,
+  // preventivas e indicadores.
+  const [manutencaoSubAba,setManutencaoSubAba]=useState('DEMANDAS'); // DEMANDAS | EQUIPAMENTOS | PREVENTIVAS | INDICADORES
+  const [equipamentosDb,setEquipamentosDb]=useState([]);
+  const [preventivasDb,setPreventivasDb]=useState([]);
+  const [modalEquipamento,setModalEquipamento]=useState(null); // null | 'novo' | objeto
+  const [formEquipamento,setFormEquipamento]=useState({codigo:'',nome:'',tipo:'MAQUINA',setor:'',fabricante:'',modelo:'',numero_serie:'',criticidade:'MEDIA',observacoes:''});
+  const [modalPreventiva,setModalPreventiva]=useState(null);
+  const [formPreventiva,setFormPreventiva]=useState({titulo:'',descricao:'',equipamento_id:'',tipo:'MAQUINA',periodicidade_dias:30,proxima_execucao:new Date().toISOString().split('T')[0],responsavel:'',urgencia:'NORMAL'});
+  const [equipamentoHist,setEquipamentoHist]=useState(null); // equipamento com histórico aberto
   const [formRotina,setFormRotina]=useState({tipo:'MAQUINA',categoria:'PREVENTIVA',titulo:'',descricao:'',local:'',urgencia:'NORMAL',responsavel:'',data_inicio:new Date().toISOString().split('T')[0],data_fim_prevista:''});
   const linkPublicoManutencao=typeof window!=='undefined'?`${window.location.origin}${window.location.pathname}?manutencao=solicitar`:'';
   const [modalNovaInspecao,setModalNovaInspecao]=useState(false);
@@ -1456,6 +1466,72 @@ export default function App(){
       setManutencaoHistoricoDb(prev=>({...prev,[solicitacaoId]:data||[]}));
     }catch(e){console.warn('Erro ao buscar histórico:',e);}
   },[supabase]);
+
+  // Equipamentos e planos de preventiva — carregados junto com as demandas.
+  const fetchEquipamentosPreventivas=useCallback(async()=>{
+    if(!supabase)return;
+    try{
+      const[eq,pv]=await Promise.all([
+        supabase.from('manutencao_equipamentos').select('*').order('nome'),
+        supabase.from('manutencao_preventivas').select('*').order('proxima_execucao'),
+      ]);
+      if(eq.data)setEquipamentosDb(eq.data);
+      if(pv.data)setPreventivasDb(pv.data);
+    }catch(e){console.warn('Erro ao buscar equipamentos/preventivas:',e);}
+  },[supabase]);
+
+  const salvarEquipamento=async()=>{
+    if(!formEquipamento.nome.trim())return addToast('Informe o nome do equipamento.','error');
+    try{
+      const payload={...formEquipamento,codigo:formEquipamento.codigo.trim()||null};
+      const{error}=modalEquipamento==='novo'
+        ? await supabase.from('manutencao_equipamentos').insert([payload])
+        : await supabase.from('manutencao_equipamentos').update(payload).eq('id',modalEquipamento.id);
+      if(error)throw error;
+      addToast(modalEquipamento==='novo'?'Equipamento cadastrado!':'Equipamento atualizado!');
+      setModalEquipamento(null);
+      fetchEquipamentosPreventivas();
+    }catch(e){addToast('Erro ao salvar: '+e.message,'error');}
+  };
+
+  const salvarPreventiva=async()=>{
+    if(!formPreventiva.titulo.trim())return addToast('Informe o que deve ser feito.','error');
+    try{
+      const payload={
+        ...formPreventiva,
+        equipamento_id:formPreventiva.equipamento_id?Number(formPreventiva.equipamento_id):null,
+        periodicidade_dias:Number(formPreventiva.periodicidade_dias)||30,
+        criado_por:s(usuarioLogado?.nome),
+      };
+      const{error}=modalPreventiva==='novo'
+        ? await supabase.from('manutencao_preventivas').insert([payload])
+        : await supabase.from('manutencao_preventivas').update(payload).eq('id',modalPreventiva.id);
+      if(error)throw error;
+      addToast(modalPreventiva==='novo'?'Plano de preventiva criado!':'Plano atualizado!');
+      setModalPreventiva(null);
+      fetchEquipamentosPreventivas();
+    }catch(e){addToast('Erro ao salvar: '+e.message,'error');}
+  };
+
+  const alternarPreventiva=async pv=>{
+    try{
+      await supabase.from('manutencao_preventivas').update({ativo:!pv.ativo}).eq('id',pv.id);
+      addToast(pv.ativo?'Plano pausado.':'Plano reativado.');
+      fetchEquipamentosPreventivas();
+    }catch(e){addToast('Erro: '+e.message,'error');}
+  };
+
+  const gerarPreventivasAgora=async()=>{
+    try{
+      addToast('Verificando planos...');
+      const res=await fetch(`${SUPABASE_URL}/functions/v1/manutencao-gerar-preventivas`,{
+        method:'POST',headers:{'Content-Type':'application/json','apikey':SUPABASE_KEY},body:JSON.stringify({})
+      });
+      const json=await res.json();
+      addToast(json.geradas>0?`${json.geradas} preventiva(s) gerada(s)!`:'Nenhum plano vencido no momento.');
+      fetchManutencao();fetchEquipamentosPreventivas();
+    }catch(e){addToast('Erro: '+e.message,'error');}
+  };
 
   // Busca fotos (pesadas) sob demanda — só quando o usuário realmente precisa ver/usar as fotos
   const buscarFotos=useCallback(async(tabela,id)=>{
@@ -3795,7 +3871,7 @@ export default function App(){
   },[supabase,usuarioLogado?.perfil]);
 
   // fetchAll na inicialização + a cada 60s (dados pesados)
-  useEffect(()=>{if(supabase){fetchAll();fetchQual();fetchManutencao();const iv=setInterval(fetchAll,90000);return()=>clearInterval(iv);}},[supabase]);
+  useEffect(()=>{if(supabase){fetchAll();fetchQual();fetchManutencao();fetchEquipamentosPreventivas();const iv=setInterval(fetchAll,90000);return()=>clearInterval(iv);}},[supabase]);
 
   // Bug real encontrado: como o logout não recarrega a página (só limpa
   // usuarioLogado), filtros deixados marcados numa sessão (ex: "Predial")
@@ -9469,6 +9545,22 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
                   </div>
                 </div>
 
+                {/* Sub-abas do módulo */}
+                <div className="flex items-center gap-1 overflow-x-auto bg-slate-100 rounded-xl p-1">
+                  {[
+                    {v:'DEMANDAS',l:'📋 Demandas'},
+                    {v:'EQUIPAMENTOS',l:`⚙️ Equipamentos (${equipamentosDb.length})`},
+                    {v:'PREVENTIVAS',l:`🔁 Preventivas (${preventivasDb.filter(p=>p.ativo).length})`},
+                    {v:'INDICADORES',l:'📊 Indicadores'},
+                  ].map(o=>(
+                    <button key={o.v} onClick={()=>setManutencaoSubAba(o.v)}
+                      className={`text-xs font-bold px-4 py-2 rounded-lg whitespace-nowrap transition-colors ${manutencaoSubAba===o.v?'bg-white text-slate-800 shadow-sm':'text-slate-500 hover:text-slate-700'}`}>
+                      {o.l}
+                    </button>
+                  ))}
+                </div>
+
+                {manutencaoSubAba==='DEMANDAS'&&(<>
                 {/* Painel de destaque — o que realmente importa saber de cara */}
                 <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
                   <div className={`rounded-2xl border-2 p-4 ${atrasadas.length>0?'bg-red-50 border-red-300':'bg-white border-slate-200'}`}>
@@ -9705,6 +9797,211 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
                     <p className="text-xs text-slate-400 mt-1">Compartilhe o link de solicitação ou registre uma atividade de rotina.</p>
                   </div>
                 )}
+                </>)}
+
+                {/* ══ EQUIPAMENTOS ══════════════════════════════════════════
+                    Cadastro de ativos: sem isso, "local" é texto livre e não
+                    dá pra medir nada por máquina. */}
+                {manutencaoSubAba==='EQUIPAMENTOS'&&(
+                  <div className="space-y-4">
+                    <div className="flex items-center justify-between">
+                      <p className="text-sm text-slate-500">Cadastre as máquinas e ativos prediais pra ter histórico e indicadores por equipamento.</p>
+                      {isManutencao&&(
+                        <Btn variant="dark" onClick={()=>{setFormEquipamento({codigo:'',nome:'',tipo:'MAQUINA',setor:'',fabricante:'',modelo:'',numero_serie:'',criticidade:'MEDIA',observacoes:''});setModalEquipamento('novo');}}>
+                          <PackageOpen className="w-4 h-4"/>Novo equipamento
+                        </Btn>
+                      )}
+                    </div>
+                    <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
+                      {equipamentosDb.map(eq=>{
+                        const demandasEq=manutencaoDb.filter(m=>m.equipamento_id===eq.id);
+                        const abertasEq=demandasEq.filter(m=>!['CONCLUIDA','CANCELADA'].includes(m.status));
+                        const critCor={BAIXA:'bg-slate-100 text-slate-500',MEDIA:'bg-amber-100 text-amber-700',ALTA:'bg-red-100 text-red-700'}[eq.criticidade]||'bg-slate-100 text-slate-500';
+                        return(
+                          <div key={eq.id} className={`bg-white rounded-2xl border p-4 ${eq.ativo?'border-slate-200':'border-slate-100 opacity-60'}`}>
+                            <div className="flex items-start justify-between gap-2">
+                              <div className="min-w-0">
+                                <p className="text-sm font-black text-slate-800">{s(eq.nome)}</p>
+                                <p className="text-[11px] text-slate-400">{eq.codigo?`${s(eq.codigo)} · `:''}{s(eq.setor)||'sem setor'}</p>
+                              </div>
+                              <span className={`text-[9px] font-black px-2 py-0.5 rounded-full flex-shrink-0 ${critCor}`}>{s(eq.criticidade)}</span>
+                            </div>
+                            <p className="text-[11px] text-slate-500 mt-1.5">{eq.tipo==='MAQUINA'?'⚙️ Máquina':'🏢 Predial'}{eq.fabricante?` · ${s(eq.fabricante)}`:''}{eq.modelo?` ${s(eq.modelo)}`:''}</p>
+                            <div className="flex items-center gap-3 mt-3 pt-3 border-t border-slate-50">
+                              <div><p className="text-lg font-black text-slate-800">{demandasEq.length}</p><p className="text-[9px] text-slate-400 uppercase font-bold">Total</p></div>
+                              <div><p className={`text-lg font-black ${abertasEq.length>0?'text-amber-600':'text-slate-300'}`}>{abertasEq.length}</p><p className="text-[9px] text-slate-400 uppercase font-bold">Em aberto</p></div>
+                              <div className="ml-auto flex gap-1.5">
+                                <button onClick={()=>setEquipamentoHist(eq)} className="text-[10px] font-black text-indigo-600 hover:underline">Histórico</button>
+                                {isManutencao&&<button onClick={()=>{setFormEquipamento({codigo:s(eq.codigo),nome:s(eq.nome),tipo:eq.tipo,setor:s(eq.setor),fabricante:s(eq.fabricante),modelo:s(eq.modelo),numero_serie:s(eq.numero_serie),criticidade:eq.criticidade,observacoes:s(eq.observacoes)});setModalEquipamento(eq);}} className="text-[10px] font-black text-slate-500 hover:underline">Editar</button>}
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                    {equipamentosDb.length===0&&(
+                      <div className="bg-white rounded-2xl border border-slate-200 py-16 text-center">
+                        <PackageOpen className="w-10 h-10 mx-auto mb-3 text-slate-200"/>
+                        <p className="text-sm font-semibold text-slate-400">Nenhum equipamento cadastrado</p>
+                        <p className="text-xs text-slate-400 mt-1">Cadastre as máquinas pra acompanhar o histórico de cada uma.</p>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* ══ PREVENTIVAS ═══════════════════════════════════════════ */}
+                {manutencaoSubAba==='PREVENTIVAS'&&(
+                  <div className="space-y-4">
+                    <div className="flex items-center justify-between flex-wrap gap-2">
+                      <p className="text-sm text-slate-500">Tarefas que se repetem sozinhas — o sistema gera a demanda automaticamente quando chega a data.</p>
+                      <div className="flex gap-2">
+                        {isManutencao&&<Btn variant="secondary" onClick={gerarPreventivasAgora}><RefreshCw className="w-4 h-4"/>Verificar agora</Btn>}
+                        {isManutencao&&(
+                          <Btn variant="dark" onClick={()=>{setFormPreventiva({titulo:'',descricao:'',equipamento_id:'',tipo:'MAQUINA',periodicidade_dias:30,proxima_execucao:new Date().toISOString().split('T')[0],responsavel:'',urgencia:'NORMAL'});setModalPreventiva('novo');}}>
+                            <RotateCcw className="w-4 h-4"/>Novo plano
+                          </Btn>
+                        )}
+                      </div>
+                    </div>
+                    <div className="space-y-2">
+                      {preventivasDb.map(pv=>{
+                        const eq=equipamentosDb.find(e=>e.id===pv.equipamento_id);
+                        const venceu=pv.proxima_execucao<=hojeStr;
+                        const periodoLabel={7:'Semanal',14:'Quinzenal',30:'Mensal',90:'Trimestral',180:'Semestral',365:'Anual'}[pv.periodicidade_dias]||`A cada ${pv.periodicidade_dias} dias`;
+                        return(
+                          <div key={pv.id} className={`bg-white rounded-2xl border p-4 ${!pv.ativo?'opacity-50 border-slate-100':venceu?'border-amber-300':'border-slate-200'}`}>
+                            <div className="flex items-start justify-between gap-3 flex-wrap">
+                              <div className="min-w-0 flex-1">
+                                <div className="flex items-center gap-2 flex-wrap">
+                                  <p className="text-sm font-black text-slate-800">{s(pv.titulo)}</p>
+                                  <span className="text-[9px] font-black px-2 py-0.5 rounded-full bg-indigo-100 text-indigo-700">{periodoLabel}</span>
+                                  {!pv.ativo&&<span className="text-[9px] font-black px-2 py-0.5 rounded-full bg-slate-200 text-slate-500">PAUSADO</span>}
+                                </div>
+                                <p className="text-[11px] text-slate-500 mt-0.5">{eq?`${s(eq.nome)}${eq.codigo?` (${s(eq.codigo)})`:''}`:s(pv.local)||'—'}{pv.responsavel?` · ${s(pv.responsavel)}`:''}</p>
+                                {pv.descricao&&<p className="text-[11px] text-slate-400 mt-1">{s(pv.descricao)}</p>}
+                              </div>
+                              <div className="text-right flex-shrink-0">
+                                <p className="text-[10px] text-slate-400 uppercase font-bold">Próxima</p>
+                                <p className={`text-sm font-black ${venceu&&pv.ativo?'text-amber-600':'text-slate-700'}`}>{fmtDt(pv.proxima_execucao)}</p>
+                                {pv.ultima_execucao&&<p className="text-[10px] text-slate-400">última: {fmtDt(pv.ultima_execucao)}</p>}
+                              </div>
+                            </div>
+                            {isManutencao&&(
+                              <div className="flex gap-2 mt-3 pt-3 border-t border-slate-50">
+                                <button onClick={()=>{setFormPreventiva({titulo:s(pv.titulo),descricao:s(pv.descricao),equipamento_id:pv.equipamento_id||'',tipo:pv.tipo,periodicidade_dias:pv.periodicidade_dias,proxima_execucao:pv.proxima_execucao,responsavel:s(pv.responsavel),urgencia:pv.urgencia});setModalPreventiva(pv);}}
+                                  className="text-[10px] font-black text-indigo-600 hover:underline">Editar</button>
+                                <button onClick={()=>alternarPreventiva(pv)} className="text-[10px] font-black text-slate-500 hover:underline">{pv.ativo?'Pausar':'Reativar'}</button>
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                    {preventivasDb.length===0&&(
+                      <div className="bg-white rounded-2xl border border-slate-200 py-16 text-center">
+                        <RotateCcw className="w-10 h-10 mx-auto mb-3 text-slate-200"/>
+                        <p className="text-sm font-semibold text-slate-400">Nenhum plano de preventiva</p>
+                        <p className="text-xs text-slate-400 mt-1">Crie planos que se repetem sozinhos (lubrificação semanal, revisão mensal...).</p>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* ══ INDICADORES ═══════════════════════════════════════════ */}
+                {manutencaoSubAba==='INDICADORES'&&(()=>{
+                  const concluidas=manutencaoDb.filter(m=>m.status==='CONCLUIDA'&&m.data_conclusao&&m.criado_em);
+                  // Tempo médio de atendimento: da abertura até a conclusão.
+                  const diasAtendimento=concluidas.map(m=>{
+                    const ini=new Date(String(m.criado_em).slice(0,10));
+                    const fim=new Date(m.data_conclusao);
+                    return Math.max(0,Math.round((fim-ini)/864e5));
+                  });
+                  const tempoMedio=diasAtendimento.length?(diasAtendimento.reduce((a,b)=>a+b,0)/diasAtendimento.length):null;
+                  // Taxa de atraso: das que tinham prazo, quantas passaram dele.
+                  const comPrazo=manutencaoDb.filter(m=>m.data_fim_prevista);
+                  const atrasadasTotal=comPrazo.filter(m=>{
+                    const ref=m.data_conclusao||hojeStr;
+                    return ref>m.data_fim_prevista;
+                  });
+                  const taxaAtraso=comPrazo.length?(atrasadasTotal.length/comPrazo.length*100):null;
+                  // Ranking por equipamento (só os que têm equipamento vinculado).
+                  const porEquip={};
+                  manutencaoDb.filter(m=>m.equipamento_id).forEach(m=>{
+                    if(!porEquip[m.equipamento_id])porEquip[m.equipamento_id]={total:0,abertas:0};
+                    porEquip[m.equipamento_id].total++;
+                    if(!['CONCLUIDA','CANCELADA'].includes(m.status))porEquip[m.equipamento_id].abertas++;
+                  });
+                  const ranking=Object.entries(porEquip).map(([id,v])=>({eq:equipamentosDb.find(e=>e.id===Number(id)),...v})).filter(r=>r.eq).sort((a,b)=>b.total-a.total).slice(0,8);
+                  // Distribuição por tipo/categoria.
+                  const porCategoria={};
+                  manutencaoDb.forEach(m=>{const c=s(m.categoria)||'OUTRO';porCategoria[c]=(porCategoria[c]||0)+1;});
+                  const semEquipamento=manutencaoDb.filter(m=>!m.equipamento_id).length;
+                  return(
+                    <div className="space-y-4">
+                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                        <div className="bg-white rounded-2xl border border-slate-200 p-5">
+                          <p className="text-[10px] font-black text-slate-400 uppercase tracking-wider">Tempo médio de atendimento</p>
+                          <p className="text-4xl font-black text-indigo-600 mt-1">{tempoMedio!==null?tempoMedio.toFixed(1):'—'}<span className="text-lg text-slate-400 ml-1">dias</span></p>
+                          <p className="text-[10px] text-slate-400 mt-1">Da abertura até a conclusão · {concluidas.length} concluída(s)</p>
+                        </div>
+                        <div className="bg-white rounded-2xl border border-slate-200 p-5">
+                          <p className="text-[10px] font-black text-slate-400 uppercase tracking-wider">Taxa de atraso</p>
+                          <p className={`text-4xl font-black mt-1 ${taxaAtraso===null?'text-slate-300':taxaAtraso>30?'text-red-600':taxaAtraso>15?'text-amber-600':'text-emerald-600'}`}>{taxaAtraso!==null?taxaAtraso.toFixed(0):'—'}<span className="text-lg text-slate-400 ml-1">%</span></p>
+                          <p className="text-[10px] text-slate-400 mt-1">{atrasadasTotal.length} de {comPrazo.length} com prazo definido</p>
+                        </div>
+                        <div className="bg-white rounded-2xl border border-slate-200 p-5">
+                          <p className="text-[10px] font-black text-slate-400 uppercase tracking-wider">Total de demandas</p>
+                          <p className="text-4xl font-black text-slate-800 mt-1">{manutencaoDb.length}</p>
+                          <p className="text-[10px] text-slate-400 mt-1">{manutencaoDb.filter(m=>(m.origem||'SOLICITACAO')==='SOLICITACAO').length} solicitações · {manutencaoDb.filter(m=>m.origem==='ROTINA').length} rotina</p>
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                        <div className="bg-white rounded-2xl border border-slate-200 p-5">
+                          <p className="text-xs font-black text-slate-600 uppercase tracking-wider mb-3">Equipamentos que mais dão problema</p>
+                          {ranking.length===0?(
+                            <p className="text-xs text-slate-300 py-6 text-center">Vincule as demandas a equipamentos pra ver este ranking.</p>
+                          ):(
+                            <div className="space-y-2">
+                              {ranking.map((r,i)=>{
+                                const pct=(r.total/ranking[0].total)*100;
+                                return(
+                                  <div key={r.eq.id}>
+                                    <div className="flex items-center justify-between text-xs mb-0.5">
+                                      <span className="font-bold text-slate-700">{i+1}. {s(r.eq.nome)}</span>
+                                      <span className="text-slate-500">{r.total}{r.abertas>0&&<span className="text-amber-600 font-bold"> ({r.abertas} em aberto)</span>}</span>
+                                    </div>
+                                    <div className="h-2 bg-slate-100 rounded-full overflow-hidden"><div className="h-full bg-indigo-400 rounded-full" style={{width:`${pct}%`}}/></div>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          )}
+                          {semEquipamento>0&&<p className="text-[10px] text-slate-400 mt-3 flex items-center gap-1"><Info className="w-3 h-3"/>{semEquipamento} demanda(s) sem equipamento vinculado ficam fora deste ranking.</p>}
+                        </div>
+
+                        <div className="bg-white rounded-2xl border border-slate-200 p-5">
+                          <p className="text-xs font-black text-slate-600 uppercase tracking-wider mb-3">Por tipo de serviço</p>
+                          <div className="space-y-2">
+                            {Object.entries(porCategoria).sort((a,b)=>b[1]-a[1]).map(([cat,qtd])=>{
+                              const pct=(qtd/manutencaoDb.length)*100;
+                              return(
+                                <div key={cat}>
+                                  <div className="flex items-center justify-between text-xs mb-0.5">
+                                    <span className="font-bold text-slate-700">{cat.replace('_',' ')}</span>
+                                    <span className="text-slate-500">{qtd} ({pct.toFixed(0)}%)</span>
+                                  </div>
+                                  <div className="h-2 bg-slate-100 rounded-full overflow-hidden"><div className="h-full bg-emerald-400 rounded-full" style={{width:`${pct}%`}}/></div>
+                                </div>
+                              );
+                            })}
+                            {manutencaoDb.length===0&&<p className="text-xs text-slate-300 py-6 text-center">Sem dados ainda.</p>}
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })()}
               </div>
               );
             })()}
@@ -10566,6 +10863,135 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
         })()}
       </Modal>
 
+      {/* Modal: Equipamento (novo/editar) */}
+      <Modal open={!!modalEquipamento} onClose={()=>setModalEquipamento(null)} title={modalEquipamento==='novo'?'⚙️ Novo equipamento':'⚙️ Editar equipamento'} subtitle="Cadastro de ativo — permite histórico e indicadores por máquina" maxWidth="max-w-lg"
+        footer={<div className="flex justify-between">
+          <Btn variant="secondary" onClick={()=>setModalEquipamento(null)}>Cancelar</Btn>
+          <Btn variant="dark" onClick={salvarEquipamento} disabled={!formEquipamento.nome.trim()}><Save className="w-4 h-4"/>Salvar</Btn>
+        </div>}>
+        <div className="space-y-3">
+          <div className="grid grid-cols-2 gap-2">
+            {[{v:'MAQUINA',l:'⚙️ Máquina'},{v:'PREDIAL',l:'🏢 Predial'}].map(o=>(
+              <button key={o.v} onClick={()=>setFormEquipamento({...formEquipamento,tipo:o.v})}
+                className={`text-sm font-bold rounded-xl p-2.5 border-2 ${formEquipamento.tipo===o.v?'bg-indigo-50 border-indigo-500 text-indigo-700':'bg-slate-50 border-slate-200 text-slate-500'}`}>{o.l}</button>
+            ))}
+          </div>
+          <div className="grid grid-cols-3 gap-3">
+            <Field label="Código/Tag"><Inp placeholder="PR-002" value={formEquipamento.codigo} onChange={e=>setFormEquipamento({...formEquipamento,codigo:e.target.value})}/></Field>
+            <Field label="Nome" required className="col-span-2"><Inp placeholder="Prensa Hidráulica 2" value={formEquipamento.nome} onChange={e=>setFormEquipamento({...formEquipamento,nome:e.target.value})}/></Field>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="Setor"><Inp placeholder="Corte" value={formEquipamento.setor} onChange={e=>setFormEquipamento({...formEquipamento,setor:e.target.value})}/></Field>
+            <Field label="Criticidade">
+              <select value={formEquipamento.criticidade} onChange={e=>setFormEquipamento({...formEquipamento,criticidade:e.target.value})}
+                className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm outline-none focus:border-indigo-400">
+                <option value="BAIXA">Baixa — parada não impacta</option>
+                <option value="MEDIA">Média</option>
+                <option value="ALTA">Alta — para a produção</option>
+              </select>
+            </Field>
+          </div>
+          <div className="grid grid-cols-3 gap-3">
+            <Field label="Fabricante"><Inp value={formEquipamento.fabricante} onChange={e=>setFormEquipamento({...formEquipamento,fabricante:e.target.value})}/></Field>
+            <Field label="Modelo"><Inp value={formEquipamento.modelo} onChange={e=>setFormEquipamento({...formEquipamento,modelo:e.target.value})}/></Field>
+            <Field label="Nº de série"><Inp value={formEquipamento.numero_serie} onChange={e=>setFormEquipamento({...formEquipamento,numero_serie:e.target.value})}/></Field>
+          </div>
+          <Field label="Observações">
+            <textarea rows={2} value={formEquipamento.observacoes} onChange={e=>setFormEquipamento({...formEquipamento,observacoes:e.target.value})}
+              className="w-full border border-slate-200 rounded-xl px-3 py-2 text-sm outline-none focus:border-indigo-400 resize-none"/>
+          </Field>
+        </div>
+      </Modal>
+
+      {/* Modal: Plano de Preventiva */}
+      <Modal open={!!modalPreventiva} onClose={()=>setModalPreventiva(null)} title={modalPreventiva==='novo'?'🔁 Novo plano de preventiva':'🔁 Editar plano'} subtitle="O sistema gera a demanda sozinho quando chegar a data" maxWidth="max-w-lg"
+        footer={<div className="flex justify-between">
+          <Btn variant="secondary" onClick={()=>setModalPreventiva(null)}>Cancelar</Btn>
+          <Btn variant="dark" onClick={salvarPreventiva} disabled={!formPreventiva.titulo.trim()}><Save className="w-4 h-4"/>Salvar</Btn>
+        </div>}>
+        <div className="space-y-3">
+          <Field label="O que deve ser feito" required>
+            <Inp placeholder="Ex: Lubrificação semanal da prensa" value={formPreventiva.titulo} onChange={e=>setFormPreventiva({...formPreventiva,titulo:e.target.value})}/>
+          </Field>
+          <Field label="Detalhes / passo a passo">
+            <textarea rows={2} placeholder="Lubrificar guias, verificar nível de óleo..." value={formPreventiva.descricao} onChange={e=>setFormPreventiva({...formPreventiva,descricao:e.target.value})}
+              className="w-full border border-slate-200 rounded-xl px-3 py-2 text-sm outline-none focus:border-indigo-400 resize-none"/>
+          </Field>
+          <Field label="Equipamento">
+            <select value={formPreventiva.equipamento_id} onChange={e=>setFormPreventiva({...formPreventiva,equipamento_id:e.target.value})}
+              className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm outline-none focus:border-indigo-400">
+              <option value="">— sem equipamento cadastrado —</option>
+              {equipamentosDb.filter(e=>e.ativo).map(e=><option key={e.id} value={e.id}>{s(e.nome)}{e.codigo?` (${s(e.codigo)})`:''}</option>)}
+            </select>
+          </Field>
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="Com que frequência" required>
+              <select value={formPreventiva.periodicidade_dias} onChange={e=>setFormPreventiva({...formPreventiva,periodicidade_dias:e.target.value})}
+                className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm outline-none focus:border-indigo-400">
+                <option value={7}>Toda semana</option>
+                <option value={14}>A cada 15 dias</option>
+                <option value={30}>Todo mês</option>
+                <option value={90}>A cada 3 meses</option>
+                <option value={180}>A cada 6 meses</option>
+                <option value={365}>Uma vez por ano</option>
+              </select>
+            </Field>
+            <Field label="Primeira execução" required>
+              <Inp type="date" value={formPreventiva.proxima_execucao} onChange={e=>setFormPreventiva({...formPreventiva,proxima_execucao:e.target.value})}/>
+            </Field>
+          </div>
+          <Field label="Responsável"><Inp placeholder="Quem executa normalmente" value={formPreventiva.responsavel} onChange={e=>setFormPreventiva({...formPreventiva,responsavel:e.target.value})}/></Field>
+          <p className="text-[11px] text-slate-400 bg-slate-50 rounded-lg p-2.5">💡 O plano gera uma demanda nova só quando a anterior for concluída — não acumula tarefa repetida na fila.</p>
+        </div>
+      </Modal>
+
+      {/* Modal: Histórico do equipamento */}
+      <Modal open={!!equipamentoHist} onClose={()=>setEquipamentoHist(null)} title={equipamentoHist?`⚙️ ${s(equipamentoHist.nome)}`:''} subtitle={equipamentoHist?`${equipamentoHist.codigo?`${s(equipamentoHist.codigo)} · `:''}${s(equipamentoHist.setor)||'sem setor'} · Histórico completo`:''} maxWidth="max-w-2xl">
+        {equipamentoHist&&(()=>{
+          const demandas=manutencaoDb.filter(m=>m.equipamento_id===equipamentoHist.id).sort((a,b)=>String(b.criado_em).localeCompare(String(a.criado_em)));
+          const concl=demandas.filter(m=>m.status==='CONCLUIDA');
+          const planos=preventivasDb.filter(p=>p.equipamento_id===equipamentoHist.id);
+          return(
+            <div className="space-y-4">
+              <div className="grid grid-cols-3 gap-3">
+                <div className="bg-slate-50 rounded-xl p-3 text-center"><p className="text-2xl font-black text-slate-800">{demandas.length}</p><p className="text-[10px] font-bold text-slate-400 uppercase">Total</p></div>
+                <div className="bg-amber-50 rounded-xl p-3 text-center"><p className="text-2xl font-black text-amber-600">{demandas.filter(m=>!['CONCLUIDA','CANCELADA'].includes(m.status)).length}</p><p className="text-[10px] font-bold text-slate-400 uppercase">Em aberto</p></div>
+                <div className="bg-emerald-50 rounded-xl p-3 text-center"><p className="text-2xl font-black text-emerald-600">{concl.length}</p><p className="text-[10px] font-bold text-slate-400 uppercase">Concluídas</p></div>
+              </div>
+              {planos.length>0&&(
+                <div>
+                  <p className="text-[10px] font-black text-slate-400 uppercase tracking-wider mb-2">Preventivas programadas</p>
+                  <div className="space-y-1.5">
+                    {planos.map(p=>(
+                      <div key={p.id} className="bg-indigo-50 rounded-lg px-3 py-2 flex items-center justify-between">
+                        <span className="text-xs font-bold text-indigo-800">{s(p.titulo)}</span>
+                        <span className="text-[10px] text-indigo-600">próxima: {fmtDt(p.proxima_execucao)}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+              <div>
+                <p className="text-[10px] font-black text-slate-400 uppercase tracking-wider mb-2">Todas as demandas</p>
+                <div className="space-y-2 max-h-80 overflow-y-auto custom-scrollbar">
+                  {demandas.map(m=>(
+                    <button key={m.id} onClick={()=>{setEquipamentoHist(null);setManutencaoSel(m);buscarHistoricoManutencao(m.id);buscarItensCompra(m.id);}}
+                      className="w-full text-left bg-slate-50 hover:bg-slate-100 rounded-xl p-3 transition-colors">
+                      <div className="flex items-center justify-between gap-2">
+                        <p className="text-sm font-bold text-slate-800">#{m.numero} {s(m.titulo)}</p>
+                        <span className="text-[9px] font-black px-2 py-0.5 rounded-full bg-white text-slate-500 flex-shrink-0">{s(m.status).replace('_',' ')}</span>
+                      </div>
+                      <p className="text-[11px] text-slate-500 mt-0.5">{fmtDt(m.criado_em)}{m.data_conclusao?` → concluída ${fmtDt(m.data_conclusao)}`:''} · {s(m.categoria).replace('_',' ')}</p>
+                    </button>
+                  ))}
+                  {demandas.length===0&&<p className="text-xs text-slate-300 text-center py-6">Nenhuma demanda registrada pra este equipamento ainda.</p>}
+                </div>
+              </div>
+            </div>
+          );
+        })()}
+      </Modal>
+
       {/* Modal: Configurar Lembrete Automático de Manutenção */}
       <Modal open={modalLembreteManutencao} onClose={()=>setModalLembreteManutencao(false)} title="🔔 Lembrete automático" subtitle="Aviso diário do que está atrasado, vence hoje ou aguarda aprovação" maxWidth="max-w-lg"
         footer={<div className="flex justify-between">
@@ -10746,8 +11172,17 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
                 {sol.motivo_recusa&&<p className="text-[11px] text-red-600 mt-2"><strong>Motivo:</strong> {s(sol.motivo_recusa)}</p>}
               </div>
 
-              {/* Responsável pela execução — quem da manutenção está tocando */}
-              <div className="border-t border-slate-100 pt-4">
+              {/* Equipamento + responsável — o vínculo com o ativo é o que
+                  permite histórico e indicadores por máquina depois. */}
+              <div className="border-t border-slate-100 pt-4 grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <Field label="Equipamento">
+                  <select disabled={!isManutencao} value={sol.equipamento_id||''}
+                    onChange={e=>salvarDatasManutencao(sol,{equipamento_id:e.target.value?Number(e.target.value):null}).then(()=>setManutencaoSel(p=>({...p,equipamento_id:e.target.value?Number(e.target.value):null})))}
+                    className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm outline-none focus:border-indigo-400 disabled:bg-slate-50">
+                    <option value="">— não vinculado —</option>
+                    {equipamentosDb.filter(e=>e.ativo).map(e=><option key={e.id} value={e.id}>{s(e.nome)}{e.codigo?` (${s(e.codigo)})`:''}</option>)}
+                  </select>
+                </Field>
                 <Field label="Responsável pela execução">
                   <Inp disabled={!isManutencao} defaultValue={sol.responsavel||''} placeholder="Quem está executando"
                     onBlur={e=>e.target.value!==(sol.responsavel||'')&&salvarDatasManutencao(sol,{responsavel:e.target.value})}/>
