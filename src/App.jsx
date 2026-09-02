@@ -3552,6 +3552,13 @@ export default function App(){
 
   // fetchAll na inicialização + a cada 60s (dados pesados)
   useEffect(()=>{if(supabase){fetchAll();fetchQual();fetchManutencao();const iv=setInterval(fetchAll,90000);return()=>clearInterval(iv);}},[supabase]);
+
+  // Bug real encontrado: como o logout não recarrega a página (só limpa
+  // usuarioLogado), filtros deixados marcados numa sessão (ex: "Predial")
+  // ficavam "grudados" pra próxima pessoa que logasse no mesmo navegador/aba —
+  // parecia que o kanban de Manutenção estava vazio/quebrado, quando na
+  // verdade só o filtro escondia tudo. Reseta ao trocar de usuário.
+  useEffect(()=>{setManutencaoFiltroTipo('TODOS');},[usuarioLogado?.email]);
   // fetchQual a cada 20s (leve: inspeções, RNCs, chat)
   useEffect(()=>{if(supabase){const iv=setInterval(fetchQual,20000);return()=>clearInterval(iv);}},[supabase,fetchQual]);
   useEffect(()=>{if(chatEndRef.current)chatEndRef.current.scrollIntoView({behavior:'smooth'});},[chatInternoDb,chatEqOpen]);
