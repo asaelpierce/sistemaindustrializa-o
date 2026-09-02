@@ -599,6 +599,158 @@ function FiltroMulti({label,opcoes,selecionados,onToggle,onLimpar,aberto,onAbrir
 // inspetor apontar visualmente onde está o defeito. Pedido do usuário: "uma
 // ferramenta de marcação dentro do próprio portal". Ao salvar, achata desenho +
 // foto original numa imagem só (mesma resolução da original), substituindo o b64.
+// Página pública de acompanhamento de chamado — acessada pelo link com token
+// (?manutencao=acompanhar&t=XXX), SEM login. O solicitante vê o status atual,
+// a linha do tempo e pode trocar mensagens com a equipe de manutenção.
+// Resolve o buraco: antes, quem abria pelo link nunca mais recebia retorno.
+function AcompanhamentoPublicoManutencao({supabase,token}){
+  const [carregando,setCarregando]=useState(true);
+  const [sol,setSol]=useState(null);
+  const [historico,setHistorico]=useState([]);
+  const [msg,setMsg]=useState('');
+  const [enviando,setEnviando]=useState(false);
+  const [erro,setErro]=useState('');
+
+  const carregar=async()=>{
+    if(!supabase)return;
+    try{
+      const{data,error}=await supabase.from('manutencao_solicitacoes').select('*').eq('token_acompanhamento',token).maybeSingle();
+      if(error)throw error;
+      if(!data){setErro('Chamado não encontrado. Confira se o link está completo.');setCarregando(false);return;}
+      setSol(data);
+      const{data:hist}=await supabase.from('manutencao_historico').select('*').eq('solicitacao_id',data.id).order('criado_em');
+      setHistorico(hist||[]);
+    }catch(e){setErro('Não foi possível carregar o chamado. Tente de novo em instantes.');}
+    finally{setCarregando(false);}
+  };
+  useEffect(()=>{if(supabase)carregar();},[supabase,token]);
+
+  const enviarMsg=async()=>{
+    if(!msg.trim()||!sol)return;
+    setEnviando(true);
+    try{
+      await supabase.from('manutencao_historico').insert([{
+        solicitacao_id:sol.id,tipo:'MENSAGEM_SOLICITANTE',
+        autor:sol.solicitante_nome||'Solicitante',mensagem:msg.trim(),
+      }]);
+      setMsg('');
+      carregar();
+    }catch(e){setErro('Não foi possível enviar a mensagem.');}
+    finally{setEnviando(false);}
+  };
+
+  const STATUS_INFO={
+    ABERTA:{l:'Aberta',d:'Recebemos seu pedido, aguardando análise da equipe.',cor:'bg-slate-100 text-slate-700',passo:1},
+    EM_APROVACAO:{l:'Em Aprovação',d:'Está sendo avaliada pela equipe de manutenção.',cor:'bg-amber-100 text-amber-700',passo:2},
+    APROVADA:{l:'Aprovada',d:'Foi aprovada! Em breve entra na fila de execução.',cor:'bg-sky-100 text-sky-700',passo:3},
+    EM_ANDAMENTO:{l:'Em Andamento',d:'A equipe já está trabalhando nisso.',cor:'bg-indigo-100 text-indigo-700',passo:4},
+    CONCLUIDA:{l:'Concluída',d:'Serviço finalizado. Qualquer coisa, é só avisar.',cor:'bg-emerald-100 text-emerald-700',passo:5},
+    CANCELADA:{l:'Cancelada',d:'Este chamado foi cancelado.',cor:'bg-red-100 text-red-700',passo:0},
+  };
+  const fmt=iso=>{if(!iso)return'—';const d=new Date(iso);return d.toLocaleDateString('pt-BR')+' '+d.toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'});};
+  const fmtData=iso=>{if(!iso)return'—';const[y,m,d]=String(iso).slice(0,10).split('-');return`${d}/${m}/${y}`;};
+
+  if(carregando)return(
+    <div className="min-h-screen flex items-center justify-center" style={{background:'linear-gradient(135deg,#0f172a 0%,#1e1b4b 60%,#0f172a 100%)'}}>
+      <div className="text-center"><Loader2 className="w-8 h-8 text-white animate-spin mx-auto mb-3"/><p className="text-sm text-slate-300">Carregando seu chamado...</p></div>
+    </div>
+  );
+  if(erro||!sol)return(
+    <div className="min-h-screen flex items-center justify-center p-4" style={{background:'linear-gradient(135deg,#0f172a 0%,#1e1b4b 60%,#0f172a 100%)'}}>
+      <div className="bg-white rounded-3xl p-8 max-w-md w-full text-center shadow-2xl">
+        <AlertTriangle className="w-10 h-10 text-amber-500 mx-auto mb-3"/>
+        <p className="text-sm font-bold text-slate-700">{erro||'Chamado não encontrado.'}</p>
+      </div>
+    </div>
+  );
+
+  const info=STATUS_INFO[sol.status]||STATUS_INFO.ABERTA;
+  const passos=[{n:1,l:'Aberta'},{n:2,l:'Em análise'},{n:3,l:'Aprovada'},{n:4,l:'Em andamento'},{n:5,l:'Concluída'}];
+
+  return(
+    <div className="min-h-screen p-4 py-8" style={{background:'linear-gradient(135deg,#0f172a 0%,#1e1b4b 60%,#0f172a 100%)'}}>
+      <div className="max-w-lg mx-auto space-y-4">
+        {/* Cabeçalho com protocolo */}
+        <div className="bg-white rounded-3xl p-6 shadow-2xl">
+          <div className="flex items-start justify-between gap-3 mb-3">
+            <div>
+              <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Protocolo</p>
+              <p className="text-2xl font-black text-slate-800">#{sol.numero}</p>
+            </div>
+            <span className={`text-xs font-black px-3 py-1.5 rounded-full ${info.cor}`}>{info.l}</span>
+          </div>
+          <h1 className="text-lg font-black text-slate-800 leading-tight">{sol.titulo}</h1>
+          <p className="text-sm text-slate-500 mt-1">{info.d}</p>
+
+          {/* Trilha de progresso */}
+          {sol.status!=='CANCELADA'&&(
+            <div className="flex items-center gap-1 mt-5">
+              {passos.map((p,i)=>(
+                <div key={p.n} className="flex-1">
+                  <div className={`h-1.5 rounded-full ${info.passo>=p.n?'bg-indigo-500':'bg-slate-200'}`}/>
+                  <p className={`text-[9px] mt-1 font-bold ${info.passo>=p.n?'text-indigo-600':'text-slate-300'}`}>{p.l}</p>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* Detalhes */}
+        <div className="bg-white rounded-3xl p-6 shadow-2xl space-y-3">
+          {sol.descricao&&<div><p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">O que foi pedido</p><p className="text-sm text-slate-700 whitespace-pre-wrap">{sol.descricao}</p></div>}
+          <div className="grid grid-cols-2 gap-3 text-sm">
+            <div><p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Local</p><p className="text-slate-700">{sol.local||'—'}</p></div>
+            <div><p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Aberto em</p><p className="text-slate-700">{fmtData(sol.criado_em)}</p></div>
+            {sol.responsavel&&<div><p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Responsável</p><p className="text-slate-700">{sol.responsavel}</p></div>}
+            {sol.data_fim_prevista&&<div><p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Previsão</p><p className="text-slate-700">{fmtData(sol.data_fim_prevista)}</p></div>}
+          </div>
+          {Array.isArray(sol.fotos)&&sol.fotos.length>0&&(
+            <div>
+              <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Fotos</p>
+              <div className="grid grid-cols-4 gap-2">
+                {sol.fotos.map((f,i)=><img key={i} src={`data:${f.tipo};base64,${f.dados}`} className="w-full h-16 object-cover rounded-lg border border-slate-200"/>)}
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Conversa com a equipe */}
+        <div className="bg-white rounded-3xl p-6 shadow-2xl">
+          <p className="text-sm font-black text-slate-700 mb-3 flex items-center gap-1.5"><MessageSquare className="w-4 h-4"/>Conversa com a manutenção</p>
+          <div className="space-y-2 max-h-72 overflow-y-auto mb-3">
+            {historico.filter(h=>['MENSAGEM_SOLICITANTE','MENSAGEM_EQUIPE','COMENTARIO','STATUS_ALTERADO','APROVACAO'].includes(h.tipo)).map(h=>{
+              const doSolicitante=h.tipo==='MENSAGEM_SOLICITANTE';
+              const ehSistema=['STATUS_ALTERADO','APROVACAO'].includes(h.tipo);
+              if(ehSistema)return(
+                <p key={h.id} className="text-[11px] text-slate-400 text-center py-1">{h.mensagem} · {fmt(h.criado_em)}</p>
+              );
+              return(
+                <div key={h.id} className={`max-w-[85%] rounded-2xl px-3.5 py-2 ${doSolicitante?'ml-auto bg-indigo-600 text-white':'bg-slate-100 text-slate-700'}`}>
+                  <p className={`text-[10px] font-bold ${doSolicitante?'text-indigo-200':'text-slate-400'}`}>{h.autor||'Manutenção'}</p>
+                  <p className="text-sm whitespace-pre-wrap">{h.mensagem}</p>
+                  <p className={`text-[9px] mt-0.5 ${doSolicitante?'text-indigo-200':'text-slate-400'}`}>{fmt(h.criado_em)}</p>
+                </div>
+              );
+            })}
+            {historico.length===0&&<p className="text-xs text-slate-300 text-center py-4">Nenhuma mensagem ainda. Precisa complementar alguma informação? Escreva abaixo.</p>}
+          </div>
+          <div className="flex gap-2">
+            <input value={msg} onChange={e=>setMsg(e.target.value)} placeholder="Escreva uma mensagem..."
+              onKeyDown={e=>{if(e.key==='Enter'){e.preventDefault();enviarMsg();}}}
+              className="flex-1 border-2 border-slate-200 rounded-xl px-3 py-2.5 text-sm outline-none focus:border-indigo-500"/>
+            <button onClick={enviarMsg} disabled={enviando||!msg.trim()}
+              className="bg-indigo-600 hover:bg-indigo-700 disabled:opacity-40 text-white rounded-xl px-4 flex items-center justify-center">
+              {enviando?<Loader2 className="w-4 h-4 animate-spin"/>:<Send className="w-4 h-4"/>}
+            </button>
+          </div>
+        </div>
+
+        <p className="text-center text-[11px] text-slate-400">Guarde este link pra acompanhar seu chamado a qualquer momento.</p>
+      </div>
+    </div>
+  );
+}
+
 // Formulário público de solicitação de manutenção — acessível via
 // ?manutencao=solicitar, SEM precisar de login. Qualquer pessoa da empresa
 // (produção, chão de fábrica, escritório) pode abrir e pedir um reparo ou
@@ -609,6 +761,7 @@ function FormularioPublicoManutencao({supabase}){
   const [enviado,setEnviado]=useState(false);
   const [erro,setErro]=useState('');
   const [fotos,setFotos]=useState([]);
+  const [protocolo,setProtocolo]=useState(null); // {numero, token_acompanhamento} devolvidos ao enviar
   const [form,setForm]=useState({tipo:'MAQUINA',categoria:'REPARO',titulo:'',descricao:'',local:'',urgencia:'NORMAL',solicitante_nome:'',solicitante_setor:'',solicitante_contato:''});
 
   // Comprime a foto antes de enviar — no chão de fábrica a pessoa tira do
@@ -642,8 +795,9 @@ function FormularioPublicoManutencao({supabase}){
     if(!supabase)return setErro('Sistema ainda carregando, aguarde alguns segundos e tente de novo.');
     setEnviando(true);setErro('');
     try{
-      const{error}=await supabase.from('manutencao_solicitacoes').insert([{...form,status:'ABERTA',fotos}]);
+      const{data,error}=await supabase.from('manutencao_solicitacoes').insert([{...form,status:'ABERTA',fotos}]).select('numero,token_acompanhamento').single();
       if(error)throw error;
+      setProtocolo(data);
       setEnviado(true);
     }catch(err){setErro('Não foi possível enviar. Tente novamente em instantes. ('+err.message+')');}
     finally{setEnviando(false);}
@@ -655,9 +809,33 @@ function FormularioPublicoManutencao({supabase}){
         <div className="w-16 h-16 bg-emerald-100 rounded-full flex items-center justify-center mx-auto mb-4">
           <CheckCircle className="w-9 h-9 text-emerald-600"/>
         </div>
-        <h1 className="text-xl font-black text-slate-800 mb-2">Solicitação enviada!</h1>
-        <p className="text-sm text-slate-500 mb-6">A equipe de manutenção já recebeu seu pedido e vai avaliar em breve.</p>
-        <button onClick={()=>{setEnviado(false);setForm({tipo:'MAQUINA',categoria:'REPARO',titulo:'',descricao:'',local:'',urgencia:'NORMAL',solicitante_nome:'',solicitante_setor:'',solicitante_contato:''});}}
+        <h1 className="text-xl font-black text-slate-800 mb-1">Solicitação enviada!</h1>
+        {protocolo?.numero&&(
+          <>
+            <p className="text-sm text-slate-500 mb-4">A equipe de manutenção já recebeu seu pedido.</p>
+            <div className="bg-slate-50 border-2 border-slate-200 rounded-2xl p-4 mb-4">
+              <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Seu protocolo</p>
+              <p className="text-3xl font-black text-slate-800">#{protocolo.numero}</p>
+            </div>
+            {/* Link de acompanhamento — é assim que a pessoa vai conseguir ver
+                o andamento e conversar com a manutenção depois, sem ter login. */}
+            {protocolo.token_acompanhamento&&(()=>{
+              const link=`${window.location.origin}${window.location.pathname}?manutencao=acompanhar&t=${protocolo.token_acompanhamento}`;
+              return(
+                <div className="bg-indigo-50 border border-indigo-200 rounded-2xl p-4 mb-4 text-left">
+                  <p className="text-xs font-black text-indigo-800 mb-1.5">📌 Guarde este link</p>
+                  <p className="text-[11px] text-indigo-700 mb-2">Use pra acompanhar o andamento e conversar com a equipe.</p>
+                  <div className="flex gap-2">
+                    <a href={link} className="flex-1 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold rounded-lg px-3 py-2 text-center">Acompanhar agora</a>
+                    <button onClick={()=>{navigator.clipboard.writeText(link);alert('Link copiado!');}}
+                      className="bg-white border border-indigo-200 text-indigo-700 text-xs font-bold rounded-lg px-3 py-2">Copiar</button>
+                  </div>
+                </div>
+              );
+            })()}
+          </>
+        )}
+        <button onClick={()=>{setEnviado(false);setProtocolo(null);setFotos([]);setForm({tipo:'MAQUINA',categoria:'REPARO',titulo:'',descricao:'',local:'',urgencia:'NORMAL',solicitante_nome:'',solicitante_setor:'',solicitante_contato:''});}}
           className="text-sm font-bold text-indigo-600 hover:underline">Fazer outra solicitação</button>
       </div>
     </div>
@@ -5444,7 +5622,15 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
   // (o app inteiro é uma SPA sem react-router). Funciona mesmo se a pessoa
   // nunca fez login no portal — supabase (anon key) já está disponível antes
   // do login, e a política RLS permite INSERT público nessa tabela específica.
-  const ehFormularioPublicoManutencao=typeof window!=='undefined'&&new URLSearchParams(window.location.search).get('manutencao')==='solicitar';
+  const paramsUrlManut=typeof window!=='undefined'?new URLSearchParams(window.location.search):null;
+  const ehFormularioPublicoManutencao=paramsUrlManut?.get('manutencao')==='solicitar';
+  // Página pública de acompanhamento: o solicitante (que não tem login) abre
+  // pelo link com o token e vê o status do chamado + troca mensagens com a
+  // equipe. Padrão de service desk — resolve o buraco de comunicação.
+  const tokenAcompanhamento=paramsUrlManut?.get('manutencao')==='acompanhar'?paramsUrlManut.get('t'):null;
+  if(tokenAcompanhamento){
+    return <AcompanhamentoPublicoManutencao supabase={supabase} token={tokenAcompanhamento}/>;
+  }
   if(ehFormularioPublicoManutencao){
     return <FormularioPublicoManutencao supabase={supabase}/>;
   }
