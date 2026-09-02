@@ -1117,6 +1117,13 @@ export default function App(){
   // público) do trabalho de rotina que a própria equipe registra.
   const [manutencaoFiltroOrigem,setManutencaoFiltroOrigem]=useState('TODOS'); // TODOS | SOLICITACAO | ROTINA
   const [modalNovaRotina,setModalNovaRotina]=useState(false);
+  // Calendário: visão por dia das demandas (pedido do usuário — "enxergar o que
+  // tem de demanda por dia, quantas demandas tem por dia").
+  const [manutencaoVisaoTela,setManutencaoVisaoTela]=useState('KANBAN'); // KANBAN | CALENDARIO
+  const [manutencaoMesRef,setManutencaoMesRef]=useState(()=>{const d=new Date();return{ano:d.getFullYear(),mes:d.getMonth()};});
+  const [manutencaoDiaSel,setManutencaoDiaSel]=useState(null); // dia clicado no calendário (ISO)
+  const [modalLembreteManutencao,setModalLembreteManutencao]=useState(false);
+  const [cfgLembrete,setCfgLembrete]=useState({ativo:false,flow_url:'',hora:7,dias_antes_prazo:1});
   const [formRotina,setFormRotina]=useState({tipo:'MAQUINA',categoria:'PREVENTIVA',titulo:'',descricao:'',local:'',urgencia:'NORMAL',responsavel:'',data_inicio:new Date().toISOString().split('T')[0],data_fim_prevista:''});
   const linkPublicoManutencao=typeof window!=='undefined'?`${window.location.origin}${window.location.pathname}?manutencao=solicitar`:'';
   const [modalNovaInspecao,setModalNovaInspecao]=useState(false);
@@ -4847,6 +4854,36 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
   // registra pra controlar o dia a dia. Diferente das solicitações que chegam
   // pelo formulário público, não passa por aprovação (nasce já EM_ANDAMENTO),
   // porque quem cria é justamente quem executa.
+  // Configuração do lembrete automático de manutenção — carrega ao abrir o
+  // modal e salva em configuracoes (mesma tabela usada pelas outras
+  // integrações do sistema).
+  const carregarCfgLembrete=async()=>{
+    try{
+      const{data}=await supabase.from('configuracoes').select('valor_json').eq('chave','manutencao_lembrete').maybeSingle();
+      if(data?.valor_json)setCfgLembrete({ativo:false,flow_url:'',hora:7,dias_antes_prazo:1,...data.valor_json});
+    }catch(e){}
+  };
+  const salvarCfgLembrete=async()=>{
+    try{
+      const{error}=await supabase.from('configuracoes').upsert({chave:'manutencao_lembrete',valor_json:cfgLembrete},{onConflict:'chave'});
+      if(error)throw error;
+      addToast(cfgLembrete.ativo?'Lembrete automático ativado!':'Lembrete desativado.');
+      setModalLembreteManutencao(false);
+    }catch(e){addToast('Erro ao salvar: '+e.message,'error');}
+  };
+  const testarLembreteManutencao=async()=>{
+    try{
+      addToast('Enviando lembrete de teste...');
+      const res=await fetch(`${SUPABASE_URL}/functions/v1/manutencao-lembrete`,{
+        method:'POST',headers:{'Content-Type':'application/json','apikey':SUPABASE_KEY},
+        body:JSON.stringify({forcar:true})
+      });
+      const json=await res.json();
+      if(json.enviado)addToast(`Lembrete enviado! ${json.resumo.atrasadas} atrasada(s), ${json.resumo.aguardando_aprovacao} aguardando aprovação. Confira o sino.`);
+      else addToast('Nada pendente pra lembrar hoje — nenhum aviso enviado.','warning');
+    }catch(e){addToast('Erro ao testar: '+e.message,'error');}
+  };
+
   const criarRotinaManutencao=async()=>{
     if(!formRotina.titulo.trim())return addToast('Descreva o que está sendo feito.','error');
     try{
@@ -9043,6 +9080,12 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
                       <Link2 className="w-3.5 h-3.5"/>Link de solicitação
                     </button>
                     {isManutencao&&(
+                      <button onClick={()=>{carregarCfgLembrete();setModalLembreteManutencao(true);}}
+                        className="text-xs font-bold text-slate-600 bg-white border border-slate-200 hover:border-slate-300 rounded-lg px-3 py-2 flex items-center gap-1.5">
+                        <Bell className="w-3.5 h-3.5"/>Lembrete
+                      </button>
+                    )}
+                    {isManutencao&&(
                       <Btn variant="dark" onClick={()=>setModalNovaRotina(true)}>
                         <Wrench className="w-4 h-4"/>Registrar atividade
                       </Btn>
@@ -9110,7 +9153,122 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
                   {!isManutencao&&<span className="ml-auto text-[11px] text-slate-400 flex items-center gap-1"><Lock className="w-3 h-3"/>Só a equipe de Manutenção pode aprovar/editar</span>}
                 </div>
 
+                {/* Seletor de visão: Kanban (por status) ou Calendário (por dia) */}
+                <div className="flex items-center gap-1 bg-slate-100 rounded-xl p-1 w-fit">
+                  {[{v:'KANBAN',l:'📋 Quadro',},{v:'CALENDARIO',l:'📅 Calendário'}].map(o=>(
+                    <button key={o.v} onClick={()=>setManutencaoVisaoTela(o.v)}
+                      className={`text-xs font-bold px-4 py-2 rounded-lg transition-colors ${manutencaoVisaoTela===o.v?'bg-white text-slate-800 shadow-sm':'text-slate-500 hover:text-slate-700'}`}>
+                      {o.l}
+                    </button>
+                  ))}
+                </div>
+
+                {/* ── CALENDÁRIO — demandas por dia ─────────────────────────
+                    Pedido do usuário: enxergar quantas demandas tem por dia.
+                    Cada dia mostra as atividades cujo PRAZO cai naquele dia
+                    (ou que começaram nele, quando não há prazo definido). */}
+                {manutencaoVisaoTela==='CALENDARIO'&&(()=>{
+                  const {ano,mes}=manutencaoMesRef;
+                  const primeiroDia=new Date(ano,mes,1);
+                  const ultimoDia=new Date(ano,mes+1,0);
+                  const diasNoMes=ultimoDia.getDate();
+                  const comecaEm=primeiroDia.getDay(); // 0=domingo
+                  const nomeMes=primeiroDia.toLocaleDateString('pt-BR',{month:'long',year:'numeric'});
+                  const isoDoDia=d=>`${ano}-${String(mes+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
+                  // Uma demanda "cai" no dia do prazo previsto; sem prazo, cai no
+                  // dia de início — assim nada some do calendário.
+                  const diaDaDemanda=m=>m.data_fim_prevista||m.data_inicio||null;
+                  const porDia={};
+                  manutFiltrada.forEach(m=>{
+                    const d=diaDaDemanda(m);
+                    if(!d)return;
+                    if(!porDia[d])porDia[d]=[];
+                    porDia[d].push(m);
+                  });
+                  const celulas=[];
+                  for(let i=0;i<comecaEm;i++)celulas.push(null);
+                  for(let d=1;d<=diasNoMes;d++)celulas.push(d);
+                  const semDataCount=manutFiltrada.filter(m=>!diaDaDemanda(m)).length;
+                  return(
+                    <div className="bg-white rounded-2xl border border-slate-200 p-4">
+                      <div className="flex items-center justify-between mb-4">
+                        <button onClick={()=>setManutencaoMesRef(p=>{const d=new Date(p.ano,p.mes-1,1);return{ano:d.getFullYear(),mes:d.getMonth()};})}
+                          className="w-8 h-8 rounded-lg border border-slate-200 hover:bg-slate-50 flex items-center justify-center"><ArrowRight className="w-4 h-4 rotate-180 text-slate-500"/></button>
+                        <p className="text-sm font-black text-slate-700 capitalize">{nomeMes}</p>
+                        <button onClick={()=>setManutencaoMesRef(p=>{const d=new Date(p.ano,p.mes+1,1);return{ano:d.getFullYear(),mes:d.getMonth()};})}
+                          className="w-8 h-8 rounded-lg border border-slate-200 hover:bg-slate-50 flex items-center justify-center"><ArrowRight className="w-4 h-4 text-slate-500"/></button>
+                      </div>
+                      <div className="grid grid-cols-7 gap-1 mb-1">
+                        {['Dom','Seg','Ter','Qua','Qui','Sex','Sáb'].map(d=>(
+                          <div key={d} className="text-[10px] font-black text-slate-400 uppercase text-center py-1">{d}</div>
+                        ))}
+                      </div>
+                      <div className="grid grid-cols-7 gap-1">
+                        {celulas.map((d,i)=>{
+                          if(d===null)return <div key={`v${i}`} className="min-h-[90px]"/>;
+                          const iso=isoDoDia(d);
+                          const doDia=porDia[iso]||[];
+                          const ehHoje=iso===hojeStr;
+                          const temAtrasada=doDia.some(estaAtrasada);
+                          const temUrgente=doDia.some(m=>m.urgencia==='URGENTE'&&!['CONCLUIDA','CANCELADA'].includes(m.status));
+                          return(
+                            <button key={iso} onClick={()=>setManutencaoDiaSel(manutencaoDiaSel===iso?null:iso)}
+                              className={`min-h-[90px] rounded-xl border-2 p-1.5 text-left transition-all hover:border-indigo-300 ${
+                                manutencaoDiaSel===iso?'border-indigo-500 bg-indigo-50':
+                                ehHoje?'border-indigo-300 bg-indigo-50/40':
+                                temAtrasada?'border-red-200 bg-red-50/50':'border-slate-100 bg-white'}`}>
+                              <div className="flex items-center justify-between">
+                                <span className={`text-xs font-black ${ehHoje?'text-indigo-700':'text-slate-500'}`}>{d}</span>
+                                {doDia.length>0&&(
+                                  <span className={`text-[9px] font-black px-1.5 py-0.5 rounded-full ${temAtrasada?'bg-red-500 text-white':temUrgente?'bg-amber-500 text-white':'bg-slate-700 text-white'}`}>{doDia.length}</span>
+                                )}
+                              </div>
+                              <div className="mt-1 space-y-0.5">
+                                {doDia.slice(0,2).map(m=>(
+                                  <p key={m.id} className={`text-[9px] leading-tight truncate px-1 py-0.5 rounded ${
+                                    estaAtrasada(m)?'bg-red-100 text-red-700':
+                                    m.status==='CONCLUIDA'?'bg-emerald-100 text-emerald-700 line-through':
+                                    'bg-slate-100 text-slate-600'}`}>{s(m.titulo)}</p>
+                                ))}
+                                {doDia.length>2&&<p className="text-[9px] text-slate-400 px-1">+{doDia.length-2} mais</p>}
+                              </div>
+                            </button>
+                          );
+                        })}
+                      </div>
+                      {semDataCount>0&&(
+                        <p className="text-[11px] text-slate-400 mt-3 flex items-center gap-1.5">
+                          <Info className="w-3 h-3"/>{semDataCount} demanda(s) sem data definida não aparecem no calendário — veja no Quadro.
+                        </p>
+                      )}
+
+                      {/* Detalhe do dia clicado */}
+                      {manutencaoDiaSel&&(
+                        <div className="mt-4 border-t border-slate-100 pt-4">
+                          <p className="text-xs font-black text-slate-600 mb-2">
+                            {fmtDt(manutencaoDiaSel)} — {(porDia[manutencaoDiaSel]||[]).length} demanda(s)
+                          </p>
+                          <div className="space-y-2">
+                            {(porDia[manutencaoDiaSel]||[]).map(m=>(
+                              <button key={m.id} onClick={()=>{setManutencaoSel(m);buscarHistoricoManutencao(m.id);}}
+                                className="w-full text-left bg-slate-50 hover:bg-slate-100 rounded-xl p-3 transition-colors">
+                                <div className="flex items-center justify-between gap-2">
+                                  <p className="text-sm font-bold text-slate-800">{s(m.titulo)}</p>
+                                  {estaAtrasada(m)&&<span className="text-[9px] font-black text-red-600 bg-red-100 px-1.5 py-0.5 rounded">ATRASADA</span>}
+                                </div>
+                                <p className="text-[11px] text-slate-500 mt-0.5">{s(m.local)||'—'} · {s(m.responsavel)||s(m.solicitante_nome)} · {s(m.status).replace('_',' ')}</p>
+                              </button>
+                            ))}
+                            {(porDia[manutencaoDiaSel]||[]).length===0&&<p className="text-xs text-slate-300 text-center py-3">Nenhuma demanda neste dia.</p>}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })()}
+
                 {/* Kanban */}
+                {manutencaoVisaoTela==='KANBAN'&&(
                 <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
                   {colunas.map(col=>{
                     const itens=manutFiltrada.filter(m=>m.status===col.status);
@@ -9162,6 +9320,7 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
                     );
                   })}
                 </div>
+                )}
 
                 {manutencaoDb.length===0&&(
                   <div className="bg-white rounded-2xl border border-slate-200 py-16 text-center">
@@ -10029,6 +10188,56 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
             </div>
           );
         })()}
+      </Modal>
+
+      {/* Modal: Configurar Lembrete Automático de Manutenção */}
+      <Modal open={modalLembreteManutencao} onClose={()=>setModalLembreteManutencao(false)} title="🔔 Lembrete automático" subtitle="Aviso diário do que está atrasado, vence hoje ou aguarda aprovação" maxWidth="max-w-lg"
+        footer={<div className="flex justify-between">
+          <Btn variant="secondary" onClick={()=>setModalLembreteManutencao(false)}>Cancelar</Btn>
+          <div className="flex gap-2">
+            <Btn variant="ghost" onClick={testarLembreteManutencao}><Send className="w-4 h-4"/>Enviar teste agora</Btn>
+            <Btn variant="dark" onClick={salvarCfgLembrete}><Save className="w-4 h-4"/>Salvar</Btn>
+          </div>
+        </div>}
+      >
+        <div className="space-y-4">
+          <button onClick={()=>setCfgLembrete({...cfgLembrete,ativo:!cfgLembrete.ativo})}
+            className={`w-full flex items-center justify-between rounded-xl border-2 p-4 transition-colors ${cfgLembrete.ativo?'bg-emerald-50 border-emerald-400':'bg-slate-50 border-slate-200'}`}>
+            <div className="text-left">
+              <p className={`text-sm font-black ${cfgLembrete.ativo?'text-emerald-700':'text-slate-500'}`}>{cfgLembrete.ativo?'Lembrete ativado':'Lembrete desativado'}</p>
+              <p className="text-[11px] text-slate-500 mt-0.5">Enviado de segunda a sexta, quando houver algo pendente</p>
+            </div>
+            <div className={`w-12 h-7 rounded-full flex items-center px-1 transition-colors ${cfgLembrete.ativo?'bg-emerald-500 justify-end':'bg-slate-300 justify-start'}`}>
+              <div className="w-5 h-5 bg-white rounded-full shadow"/>
+            </div>
+          </button>
+
+          <div className="bg-sky-50 border border-sky-200 rounded-xl p-3.5">
+            <p className="text-xs font-bold text-sky-800 flex items-center gap-1.5"><Bell className="w-3.5 h-3.5"/>Como funciona</p>
+            <ul className="text-[11px] text-sky-700 mt-1.5 space-y-1 list-disc list-inside">
+              <li>Todo dia útil às 7h, o sistema confere o que está pendente</li>
+              <li>O aviso sempre chega no <strong>sino do portal</strong> (não precisa configurar nada)</li>
+              <li>Se quiser também no Teams/e-mail, cole a URL do Power Automate abaixo</li>
+              <li>Se não houver nada pendente, nenhum aviso é enviado</li>
+            </ul>
+          </div>
+
+          <Field label="Avisar quantos dias antes do prazo">
+            <select value={cfgLembrete.dias_antes_prazo} onChange={e=>setCfgLembrete({...cfgLembrete,dias_antes_prazo:Number(e.target.value)})}
+              className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm outline-none focus:border-indigo-400">
+              <option value={0}>Só no dia do prazo</option>
+              <option value={1}>1 dia antes</option>
+              <option value={2}>2 dias antes</option>
+              <option value={3}>3 dias antes</option>
+              <option value={7}>1 semana antes</option>
+            </select>
+          </Field>
+
+          <Field label="URL do Power Automate (opcional — Teams/e-mail)">
+            <Inp placeholder="https://prod-XX.westus.logic.azure.com/..." value={cfgLembrete.flow_url} onChange={e=>setCfgLembrete({...cfgLembrete,flow_url:e.target.value})}/>
+          </Field>
+          <p className="text-[11px] text-slate-400">Deixe em branco pra receber só pelo sino do portal.</p>
+        </div>
       </Modal>
 
       {/* Modal: Registrar Atividade de Rotina (equipe de manutenção) */}
