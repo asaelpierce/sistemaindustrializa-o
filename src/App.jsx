@@ -13,7 +13,7 @@ import {
   ArrowUp, ArrowDown, TrendingUp, TrendingDown, Activity, MessageSquare,
   X, Send, Bot, Save, Menu, Bell, RefreshCw, RotateCcw, Factory,
   Layers, PieChart as PieChartIcon, BarChart as BarChartIcon, BarChart2, Link2,
-  AlertOctagon, KeyRound, Circle, ShieldAlert, Camera
+  AlertOctagon, KeyRound, Circle, ShieldAlert, Camera, Wrench
 } from 'lucide-react';
 
 // ============================================================================
@@ -599,6 +599,141 @@ function FiltroMulti({label,opcoes,selecionados,onToggle,onLimpar,aberto,onAbrir
 // inspetor apontar visualmente onde está o defeito. Pedido do usuário: "uma
 // ferramenta de marcação dentro do próprio portal". Ao salvar, achata desenho +
 // foto original numa imagem só (mesma resolução da original), substituindo o b64.
+// Formulário público de solicitação de manutenção — acessível via
+// ?manutencao=solicitar, SEM precisar de login. Qualquer pessoa da empresa
+// (produção, chão de fábrica, escritório) pode abrir e pedir um reparo ou
+// compra de peça. Pensado pra uso rápido no celular: poucos campos, grandes,
+// sem jargão técnico do sistema interno.
+function FormularioPublicoManutencao({supabase}){
+  const [enviando,setEnviando]=useState(false);
+  const [enviado,setEnviado]=useState(false);
+  const [erro,setErro]=useState('');
+  const [form,setForm]=useState({tipo:'MAQUINA',categoria:'REPARO',titulo:'',descricao:'',local:'',urgencia:'NORMAL',solicitante_nome:'',solicitante_setor:'',solicitante_contato:''});
+
+  const enviar=async e=>{
+    e.preventDefault();
+    if(!form.titulo.trim())return setErro('Descreva rapidamente o que você precisa.');
+    if(!form.solicitante_nome.trim())return setErro('Informe seu nome.');
+    if(!supabase)return setErro('Sistema ainda carregando, aguarde alguns segundos e tente de novo.');
+    setEnviando(true);setErro('');
+    try{
+      const{error}=await supabase.from('manutencao_solicitacoes').insert([{...form,status:'ABERTA'}]);
+      if(error)throw error;
+      setEnviado(true);
+    }catch(err){setErro('Não foi possível enviar. Tente novamente em instantes. ('+err.message+')');}
+    finally{setEnviando(false);}
+  };
+
+  if(enviado)return(
+    <div className="min-h-screen flex items-center justify-center p-4" style={{background:'linear-gradient(135deg,#0f172a 0%,#1e1b4b 60%,#0f172a 100%)'}}>
+      <div className="bg-white rounded-3xl p-8 max-w-md w-full text-center shadow-2xl">
+        <div className="w-16 h-16 bg-emerald-100 rounded-full flex items-center justify-center mx-auto mb-4">
+          <CheckCircle className="w-9 h-9 text-emerald-600"/>
+        </div>
+        <h1 className="text-xl font-black text-slate-800 mb-2">Solicitação enviada!</h1>
+        <p className="text-sm text-slate-500 mb-6">A equipe de manutenção já recebeu seu pedido e vai avaliar em breve.</p>
+        <button onClick={()=>{setEnviado(false);setForm({tipo:'MAQUINA',categoria:'REPARO',titulo:'',descricao:'',local:'',urgencia:'NORMAL',solicitante_nome:'',solicitante_setor:'',solicitante_contato:''});}}
+          className="text-sm font-bold text-indigo-600 hover:underline">Fazer outra solicitação</button>
+      </div>
+    </div>
+  );
+
+  return(
+    <div className="min-h-screen p-4 py-8" style={{background:'linear-gradient(135deg,#0f172a 0%,#1e1b4b 60%,#0f172a 100%)'}}>
+      <form onSubmit={enviar} className="max-w-lg mx-auto bg-white rounded-3xl p-6 sm:p-8 shadow-2xl space-y-5">
+        <div className="text-center mb-2">
+          <div className="w-14 h-14 bg-amber-100 rounded-2xl flex items-center justify-center mx-auto mb-3">
+            <Wrench className="w-7 h-7 text-amber-600"/>
+          </div>
+          <h1 className="text-xl font-black text-slate-800">Solicitação de Manutenção</h1>
+          <p className="text-sm text-slate-500 mt-1">Conte o que você precisa — a equipe de manutenção vai avaliar e agendar.</p>
+        </div>
+
+        <div>
+          <label className="text-xs font-black text-slate-500 uppercase tracking-wider">O que é?</label>
+          <div className="grid grid-cols-2 gap-2 mt-1.5">
+            {[{v:'MAQUINA',l:'⚙️ Máquina/Equipamento'},{v:'PREDIAL',l:'🏢 Predial/Instalações'}].map(o=>(
+              <button key={o.v} type="button" onClick={()=>setForm({...form,tipo:o.v})}
+                className={`text-sm font-bold rounded-xl p-3 border-2 ${form.tipo===o.v?'bg-indigo-50 border-indigo-500 text-indigo-700':'bg-slate-50 border-slate-200 text-slate-500'}`}>
+                {o.l}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div>
+          <label className="text-xs font-black text-slate-500 uppercase tracking-wider">Tipo de pedido</label>
+          <div className="grid grid-cols-3 gap-2 mt-1.5">
+            {[{v:'REPARO',l:'🔧 Reparo'},{v:'COMPRA_PECA',l:'📦 Comprar peça'},{v:'PREVENTIVA',l:'🗓️ Preventiva'}].map(o=>(
+              <button key={o.v} type="button" onClick={()=>setForm({...form,categoria:o.v})}
+                className={`text-xs font-bold rounded-xl p-2.5 border-2 ${form.categoria===o.v?'bg-indigo-50 border-indigo-500 text-indigo-700':'bg-slate-50 border-slate-200 text-slate-500'}`}>
+                {o.l}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div>
+          <label className="text-xs font-black text-slate-500 uppercase tracking-wider">O que você precisa? *</label>
+          <input value={form.titulo} onChange={e=>setForm({...form,titulo:e.target.value})} placeholder="Ex: Motor da prensa 2 fazendo barulho estranho"
+            className="w-full mt-1.5 border-2 border-slate-200 rounded-xl px-4 py-3 text-sm focus:border-indigo-500 outline-none"/>
+        </div>
+
+        <div>
+          <label className="text-xs font-black text-slate-500 uppercase tracking-wider">Detalhes (opcional)</label>
+          <textarea value={form.descricao} onChange={e=>setForm({...form,descricao:e.target.value})} rows={3} placeholder="Descreva com mais detalhes, se puder"
+            className="w-full mt-1.5 border-2 border-slate-200 rounded-xl px-4 py-3 text-sm focus:border-indigo-500 outline-none resize-none"/>
+        </div>
+
+        <div>
+          <label className="text-xs font-black text-slate-500 uppercase tracking-wider">Onde é? (setor, máquina, sala...)</label>
+          <input value={form.local} onChange={e=>setForm({...form,local:e.target.value})} placeholder="Ex: Setor de Corte, Prensa 2"
+            className="w-full mt-1.5 border-2 border-slate-200 rounded-xl px-4 py-3 text-sm focus:border-indigo-500 outline-none"/>
+        </div>
+
+        <div>
+          <label className="text-xs font-black text-slate-500 uppercase tracking-wider">Urgência</label>
+          <div className="grid grid-cols-4 gap-1.5 mt-1.5">
+            {[{v:'BAIXA',l:'Baixa',cls:'bg-slate-50 border-slate-500 text-slate-700'},{v:'NORMAL',l:'Normal',cls:'bg-blue-50 border-blue-500 text-blue-700'},{v:'ALTA',l:'Alta',cls:'bg-amber-50 border-amber-500 text-amber-700'},{v:'URGENTE',l:'Urgente',cls:'bg-red-50 border-red-500 text-red-700'}].map(o=>(
+              <button key={o.v} type="button" onClick={()=>setForm({...form,urgencia:o.v})}
+                className={`text-[11px] font-bold rounded-lg py-2 border-2 ${form.urgencia===o.v?o.cls:'bg-slate-50 border-slate-200 text-slate-400'}`}>
+                {o.l}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className="border-t border-slate-100 pt-4 space-y-3">
+          <div>
+            <label className="text-xs font-black text-slate-500 uppercase tracking-wider">Seu nome *</label>
+            <input value={form.solicitante_nome} onChange={e=>setForm({...form,solicitante_nome:e.target.value})} placeholder="Nome completo"
+              className="w-full mt-1.5 border-2 border-slate-200 rounded-xl px-4 py-3 text-sm focus:border-indigo-500 outline-none"/>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="text-xs font-black text-slate-500 uppercase tracking-wider">Seu setor</label>
+              <input value={form.solicitante_setor} onChange={e=>setForm({...form,solicitante_setor:e.target.value})} placeholder="Ex: Produção"
+                className="w-full mt-1.5 border-2 border-slate-200 rounded-xl px-4 py-3 text-sm focus:border-indigo-500 outline-none"/>
+            </div>
+            <div>
+              <label className="text-xs font-black text-slate-500 uppercase tracking-wider">Ramal/contato</label>
+              <input value={form.solicitante_contato} onChange={e=>setForm({...form,solicitante_contato:e.target.value})} placeholder="Opcional"
+                className="w-full mt-1.5 border-2 border-slate-200 rounded-xl px-4 py-3 text-sm focus:border-indigo-500 outline-none"/>
+            </div>
+          </div>
+        </div>
+
+        {erro&&<p className="text-sm text-red-600 font-bold bg-red-50 border border-red-200 rounded-xl px-4 py-3">{erro}</p>}
+
+        <button type="submit" disabled={enviando}
+          className="w-full bg-indigo-600 hover:bg-indigo-700 disabled:opacity-60 text-white font-black rounded-xl py-4 text-sm flex items-center justify-center gap-2">
+          {enviando?<><Loader2 className="w-4 h-4 animate-spin"/>Enviando...</>:<>Enviar Solicitação</>}
+        </button>
+      </form>
+    </div>
+  );
+}
+
 function AnotadorFoto({foto,onSalvar,onFechar}){
   const canvasRef=React.useRef(null);
   const imgRef=React.useRef(null);
@@ -967,6 +1102,18 @@ export default function App(){
   // Qualidade
   const [inspecoesDb,setInspecoesDb]=useState([]);
   const [rncsDb,setRncsDb]=useState([]);
+
+  // ── Módulo de Manutenção ─────────────────────────────────────────────────
+  // Aprovadores: usuários com perfil MANUTENCAO (Diogo, Daniel, Martins) — ver
+  // isManutencao mais abaixo. Qualquer um dos 3 aprovando já destrava a
+  // solicitação (não precisa dos 3 juntos) — confirmado pelo usuário.
+  const [manutencaoDb,setManutencaoDb]=useState([]);
+  const [manutencaoHistoricoDb,setManutencaoHistoricoDb]=useState({}); // por solicitacao_id
+  const [manutencaoVisao,setManutencaoVisao]=useState('KANBAN'); // KANBAN | LISTA
+  const [manutencaoFiltroTipo,setManutencaoFiltroTipo]=useState('TODOS'); // TODOS | MAQUINA | PREDIAL
+  const [manutencaoSel,setManutencaoSel]=useState(null); // solicitação aberta no modal de detalhe
+  const [novoComentarioManutencao,setNovoComentarioManutencao]=useState('');
+  const linkPublicoManutencao=typeof window!=='undefined'?`${window.location.origin}${window.location.pathname}?manutencao=solicitar`:'';
   const [modalNovaInspecao,setModalNovaInspecao]=useState(false);
   const [modalInspecaoDetalhe,setModalInspecaoDetalhe]=useState(false);
   const [inspecaoSel,setInspecaoSel]=useState(null);
@@ -995,6 +1142,9 @@ export default function App(){
   const isPCP=usuarioLogado?.perfil==='PCP'||isAdmin;
   const isExp=usuarioLogado?.perfil==='EXPEDICAO'||isAdmin;
   const isQual=usuarioLogado?.perfil==='QUALIDADE'||isAdmin;
+  // Aprovadores de Manutenção: perfil MANUTENCAO (Diogo, Daniel, Martins) — ADMIN
+  // também conta, como já é padrão nos outros perfis (acesso total de backup).
+  const isManutencao=usuarioLogado?.perfil==='MANUTENCAO'||isAdmin;
 
   const s=v=>(v===null||v===undefined)?'':String(v);
   const fmtD=(v,u='')=>{if(v===undefined||v===null||isNaN(v)||v==='')return'—';const n=parseFloat(v);const st=Number.isInteger(n)?n.toString():n.toFixed(2).replace('.',',');return u?`${st} ${u}`:st;};
@@ -1043,6 +1193,24 @@ export default function App(){
       if(chR.data)setChatInternoDb(chR.data);
       setDbOnline(true);
     }catch(e){setDbOnline(false);}
+  },[supabase]);
+
+  const fetchManutencao=useCallback(async()=>{
+    if(!supabase)return;
+    try{
+      const{data,error}=await supabase.from('manutencao_solicitacoes').select('*').order('criado_em',{ascending:false});
+      if(error)throw error;
+      setManutencaoDb(data||[]);
+    }catch(e){console.warn('Erro ao buscar manutenção:',e);}
+  },[supabase]);
+
+  const buscarHistoricoManutencao=useCallback(async solicitacaoId=>{
+    if(!supabase||!solicitacaoId)return;
+    try{
+      const{data,error}=await supabase.from('manutencao_historico').select('*').eq('solicitacao_id',solicitacaoId).order('criado_em',{ascending:true});
+      if(error)throw error;
+      setManutencaoHistoricoDb(prev=>({...prev,[solicitacaoId]:data||[]}));
+    }catch(e){console.warn('Erro ao buscar histórico:',e);}
   },[supabase]);
 
   // Busca fotos (pesadas) sob demanda — só quando o usuário realmente precisa ver/usar as fotos
@@ -3383,7 +3551,7 @@ export default function App(){
   },[supabase,usuarioLogado?.perfil]);
 
   // fetchAll na inicialização + a cada 60s (dados pesados)
-  useEffect(()=>{if(supabase){fetchAll();fetchQual();const iv=setInterval(fetchAll,90000);return()=>clearInterval(iv);}},[supabase]);
+  useEffect(()=>{if(supabase){fetchAll();fetchQual();fetchManutencao();const iv=setInterval(fetchAll,90000);return()=>clearInterval(iv);}},[supabase]);
   // fetchQual a cada 20s (leve: inspeções, RNCs, chat)
   useEffect(()=>{if(supabase){const iv=setInterval(fetchQual,20000);return()=>clearInterval(iv);}},[supabase,fetchQual]);
   useEffect(()=>{if(chatEndRef.current)chatEndRef.current.scrollIntoView({behavior:'smooth'});},[chatInternoDb,chatEqOpen]);
@@ -4261,6 +4429,12 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
       .sort((a,b)=>b.notasPendentes.length-a.notasPendentes.length);
   },[ordensCompraInd,notasRemessaIndAgrupadas]);
 
+  // ── Derivados do módulo de Manutenção ────────────────────────────────────
+  // Uma solicitação está "travada" (cadeado) enquanto ninguém aprovou ainda —
+  // confirmado pelo usuário: qualquer 1 dos 3 aprovando já destrava.
+  const manutencaoEstaTravada=sol=>!sol.aprovado_por&&['ABERTA','EM_APROVACAO'].includes(sol.status);
+  const manutencaoPendentesCount=manutencaoDb.filter(manutencaoEstaTravada).length;
+
   const chatNaoLidos = chatInternoDb.filter(m=>
     m.remetente!==usuarioLogado?.nome &&
     (m.destinatario==='Geral'||m.destinatario===usuarioLogado?.nome) &&
@@ -4653,6 +4827,74 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
     return{wb,fotosResiduais};
   };
 
+  // ── Ações do módulo de Manutenção ────────────────────────────────────────
+
+  // Aprovar: qualquer 1 dos 3 aprovadores (Diogo/Daniel/Martins) destrava —
+  // grava quem aprovou e quando, e sobe o status pra APROVADA.
+  const aprovarManutencao=async sol=>{
+    if(!isManutencao)return addToast('Só os aprovadores de Manutenção podem aprovar.','error');
+    if(!window.confirm(`Aprovar a solicitação "${s(sol.titulo)}"? Isso vai destravar o processo.`))return;
+    try{
+      const{error}=await supabase.from('manutencao_solicitacoes').update({
+        aprovado_por:s(usuarioLogado?.nome),aprovado_em:new Date().toISOString(),status:'APROVADA',atualizado_em:new Date().toISOString(),
+      }).eq('id',sol.id);
+      if(error)throw error;
+      await supabase.from('manutencao_historico').insert([{solicitacao_id:sol.id,tipo:'APROVACAO',autor:s(usuarioLogado?.nome),mensagem:`Aprovou a solicitação.`}]);
+      addToast('Solicitação aprovada — cadeado removido.');
+      fetchManutencao();buscarHistoricoManutencao(sol.id);
+    }catch(e){addToast('Erro ao aprovar: '+e.message,'error');}
+  };
+
+  // Recusar/cancelar — só os aprovadores, com motivo obrigatório (fica no histórico).
+  const recusarManutencao=async sol=>{
+    if(!isManutencao)return addToast('Só os aprovadores de Manutenção podem recusar.','error');
+    const motivo=window.prompt('Motivo da recusa/cancelamento:');
+    if(!motivo)return;
+    try{
+      const{error}=await supabase.from('manutencao_solicitacoes').update({status:'CANCELADA',motivo_recusa:motivo,atualizado_em:new Date().toISOString()}).eq('id',sol.id);
+      if(error)throw error;
+      await supabase.from('manutencao_historico').insert([{solicitacao_id:sol.id,tipo:'STATUS_ALTERADO',autor:s(usuarioLogado?.nome),mensagem:`Cancelou: ${motivo}`}]);
+      addToast('Solicitação cancelada.');
+      fetchManutencao();buscarHistoricoManutencao(sol.id);
+    }catch(e){addToast('Erro ao cancelar: '+e.message,'error');}
+  };
+
+  // Avançar status manualmente (Em Andamento, Concluída) — só aprovadores.
+  const mudarStatusManutencao=async(sol,novoStatus)=>{
+    if(!isManutencao)return addToast('Só os aprovadores de Manutenção podem alterar o status.','error');
+    try{
+      const patch={status:novoStatus,atualizado_em:new Date().toISOString()};
+      if(novoStatus==='CONCLUIDA'&&!sol.data_conclusao)patch.data_conclusao=new Date().toISOString().split('T')[0];
+      const{error}=await supabase.from('manutencao_solicitacoes').update(patch).eq('id',sol.id);
+      if(error)throw error;
+      await supabase.from('manutencao_historico').insert([{solicitacao_id:sol.id,tipo:'STATUS_ALTERADO',autor:s(usuarioLogado?.nome),mensagem:`Mudou o status para ${novoStatus.replace('_',' ')}.`}]);
+      addToast('Status atualizado.');
+      fetchManutencao();buscarHistoricoManutencao(sol.id);
+    }catch(e){addToast('Erro ao atualizar status: '+e.message,'error');}
+  };
+
+  // Atualizar datas/observações — só aprovadores (o solicitante não edita nada
+  // depois de enviar, só acompanha se tiver o link, mas isso é fora de escopo
+  // por enquanto: o solicitante não tem tela própria de acompanhamento ainda).
+  const salvarDatasManutencao=async(sol,campos)=>{
+    if(!isManutencao)return addToast('Só os aprovadores de Manutenção podem editar.','error');
+    try{
+      const{error}=await supabase.from('manutencao_solicitacoes').update({...campos,atualizado_em:new Date().toISOString()}).eq('id',sol.id);
+      if(error)throw error;
+      addToast('Salvo.');
+      fetchManutencao();
+    }catch(e){addToast('Erro ao salvar: '+e.message,'error');}
+  };
+
+  const comentarManutencao=async(sol,texto)=>{
+    if(!texto?.trim())return;
+    try{
+      await supabase.from('manutencao_historico').insert([{solicitacao_id:sol.id,tipo:'COMENTARIO',autor:s(usuarioLogado?.nome),mensagem:texto.trim()}]);
+      setNovoComentarioManutencao('');
+      buscarHistoricoManutencao(sol.id);
+    }catch(e){addToast('Erro ao comentar: '+e.message,'error');}
+  };
+
   const encerrarRNC = async(rncId) => {
     if(!window.confirm('Confirma o encerramento desta RNC?'))return;
     const rnc=rncsDb.find(r=>r.id===rncId);
@@ -4928,8 +5170,21 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
     ...(isAdmin?[{id:'IA_ANALISTA',label:'Analista IA',icon:Bot,group:'Inteligência'},{id:'AUDITORIA',label:'Auditoria BOM',icon:FileSearch,group:'Inteligência'},{id:'GESTAO_USUARIOS',label:'Gestão de Acessos',icon:Users,group:'Sistema'}]:[]),
     {id:'CHAT_INTERNO',label:'Chat da Equipe',icon:MessageSquare,group:'Comunicação',badge:chatNaoLidos||null},
     ...(isQual?[{id:'QUALIDADE',label:'Qualidade',icon:ShieldAlert,group:'Qualidade'},{id:'RNCS',label:'Registro de RNCs',icon:AlertOctagon,group:'Qualidade'}]:[]),
+    {id:'MANUTENCAO',label:'Manutenção',icon:Wrench,group:'Manutenção',badge:manutencaoPendentesCount||null},
   ];
   const groups=[...new Set(navItems.map(i=>i.group))];
+
+  // ─── FORMULÁRIO PÚBLICO DE MANUTENÇÃO (sem login) ──────────────────────────
+  // Pedido do usuário: "solicitar qualquer um pelo link vai conseguir" — usa um
+  // parâmetro de URL (?manutencao=solicitar) em vez de biblioteca de rotas
+  // (o app inteiro é uma SPA sem react-router). Funciona mesmo se a pessoa
+  // nunca fez login no portal — supabase (anon key) já está disponível antes
+  // do login, e a política RLS permite INSERT público nessa tabela específica.
+  const ehFormularioPublicoManutencao=typeof window!=='undefined'&&new URLSearchParams(window.location.search).get('manutencao')==='solicitar';
+  if(ehFormularioPublicoManutencao){
+    return <FormularioPublicoManutencao supabase={supabase}/>;
+  }
+
   // ─── LOGIN ────────────────────────────────────────────────────────────────
   if(!usuarioLogado){return(
     <div className="min-h-screen flex" style={{background:'linear-gradient(135deg,#0f172a 0%,#1e1b4b 60%,#0f172a 100%)'}}>
@@ -8718,6 +8973,96 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
               </div>
             )}
 
+            {/* ── MANUTENÇÃO ───────────────────────────────────────────── */}
+            {aba==='MANUTENCAO'&&(
+              <div className="space-y-5" style={{animation:'fadeIn 0.2s ease'}}>
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <SectionHeader title="🔧 Manutenção" subtitle="Máquinas e predial — solicitações, acompanhamento e aprovação"/>
+                  <div className="flex items-center gap-2">
+                    <button onClick={()=>{navigator.clipboard.writeText(linkPublicoManutencao);addToast('Link copiado! Compartilhe com quem precisa solicitar.');}}
+                      className="text-xs font-bold text-indigo-600 bg-indigo-50 border border-indigo-200 hover:bg-indigo-100 rounded-lg px-3 py-2 flex items-center gap-1.5">
+                      <Link2 className="w-3.5 h-3.5"/>Copiar link de solicitação
+                    </button>
+                  </div>
+                </div>
+
+                {/* Resumo rápido */}
+                <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+                  {[
+                    {status:'ABERTA',label:'Aberta',cor:'slate'},
+                    {status:'EM_APROVACAO',label:'Em Aprovação',cor:'amber'},
+                    {status:'APROVADA',label:'Aprovada',cor:'sky'},
+                    {status:'EM_ANDAMENTO',label:'Em Andamento',cor:'indigo'},
+                    {status:'CONCLUIDA',label:'Concluída',cor:'emerald'},
+                    {status:'CANCELADA',label:'Cancelada',cor:'red'},
+                  ].map(col=>{
+                    const qtd=manutencaoDb.filter(m=>m.status===col.status&&(manutencaoFiltroTipo==='TODOS'||m.tipo===manutencaoFiltroTipo)).length;
+                    return(
+                      <div key={col.status} className="bg-white rounded-xl border border-slate-200 p-3 text-center">
+                        <p className="text-2xl font-black text-slate-800">{qtd}</p>
+                        <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mt-0.5">{col.label}</p>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                {/* Filtros */}
+                <div className="flex flex-wrap items-center gap-2">
+                  {[{v:'TODOS',l:'Todos'},{v:'MAQUINA',l:'⚙️ Máquina'},{v:'PREDIAL',l:'🏢 Predial'}].map(f=>(
+                    <button key={f.v} onClick={()=>setManutencaoFiltroTipo(f.v)}
+                      className={`text-xs font-bold px-3 py-1.5 rounded-lg border ${manutencaoFiltroTipo===f.v?'bg-slate-800 text-white border-slate-800':'bg-white text-slate-500 border-slate-200 hover:border-slate-300'}`}>
+                      {f.l}
+                    </button>
+                  ))}
+                  {!isManutencao&&(
+                    <span className="ml-auto text-[11px] text-slate-400 flex items-center gap-1"><Lock className="w-3 h-3"/>Só Diogo, Daniel e Martins podem aprovar/editar</span>
+                  )}
+                </div>
+
+                {/* Kanban — 1 coluna por status, scroll horizontal em telas menores */}
+                <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+                  {[
+                    {status:'ABERTA',label:'Aberta',cor:'border-slate-300 bg-slate-50'},
+                    {status:'EM_APROVACAO',label:'Em Aprovação',cor:'border-amber-300 bg-amber-50'},
+                    {status:'APROVADA',label:'Aprovada',cor:'border-sky-300 bg-sky-50'},
+                    {status:'EM_ANDAMENTO',label:'Em Andamento',cor:'border-indigo-300 bg-indigo-50'},
+                    {status:'CONCLUIDA',label:'Concluída',cor:'border-emerald-300 bg-emerald-50'},
+                    {status:'CANCELADA',label:'Cancelada',cor:'border-red-300 bg-red-50'},
+                  ].map(col=>{
+                    const itens=manutencaoDb.filter(m=>m.status===col.status&&(manutencaoFiltroTipo==='TODOS'||m.tipo===manutencaoFiltroTipo));
+                    return(
+                      <div key={col.status} className={`rounded-2xl border-2 ${col.cor} p-3 min-h-[140px]`}>
+                        <p className="text-xs font-black text-slate-600 uppercase tracking-wider mb-3 px-1">{col.label} <span className="text-slate-400 font-bold">({itens.length})</span></p>
+                        <div className="space-y-2">
+                          {itens.map(sol=>{
+                            const travada=manutencaoEstaTravada(sol);
+                            const urgenciaCor={BAIXA:'bg-slate-100 text-slate-500',NORMAL:'bg-blue-100 text-blue-600',ALTA:'bg-amber-100 text-amber-700',URGENTE:'bg-red-100 text-red-700'}[sol.urgencia]||'bg-slate-100 text-slate-500';
+                            return(
+                              <button key={sol.id} onClick={()=>{setManutencaoSel(sol);buscarHistoricoManutencao(sol.id);}}
+                                className="w-full text-left bg-white rounded-xl border border-slate-200 p-3 hover:shadow-md transition-shadow">
+                                <div className="flex items-start justify-between gap-2">
+                                  <p className="text-sm font-bold text-slate-800 leading-tight">{s(sol.titulo)}</p>
+                                  {travada&&<Lock className="w-3.5 h-3.5 text-amber-500 flex-shrink-0 mt-0.5" title="Aguardando aprovação"/>}
+                                </div>
+                                <div className="flex items-center gap-1.5 mt-2 flex-wrap">
+                                  <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-slate-100 text-slate-500">{sol.tipo==='MAQUINA'?'⚙️':'🏢'} {s(sol.categoria).replace('_',' ')}</span>
+                                  <span className={`text-[9px] font-black px-1.5 py-0.5 rounded ${urgenciaCor}`}>{s(sol.urgencia)}</span>
+                                </div>
+                                <p className="text-[10px] text-slate-400 mt-1.5">{s(sol.solicitante_nome)}{sol.local?` · ${s(sol.local)}`:''}</p>
+                                {sol.aprovado_por&&<p className="text-[10px] text-emerald-600 font-semibold mt-1">✓ Aprovado por {s(sol.aprovado_por)}</p>}
+                              </button>
+                            );
+                          })}
+                          {itens.length===0&&<p className="text-[11px] text-slate-300 text-center py-4">Nada aqui</p>}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+
             {/* ── CHAT INTERNO ─────────────────────────────────────────── */}
             {aba==='CHAT_INTERNO'&&(
               <div className="flex h-[calc(100vh-10rem)] gap-0 bg-white rounded-2xl border border-slate-200 overflow-hidden shadow-sm" style={{animation:'fadeIn 0.2s ease'}}>
@@ -9569,6 +9914,115 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
                 <div className={cabecalhoSecao}>Comentários do Fornecedor</div>
                 <div className={linhaCampo}>{s(d.comentario_fornecedor)}</div>
               </>)}
+            </div>
+          );
+        })()}
+      </Modal>
+
+      {/* Modal: Detalhe da Solicitação de Manutenção */}
+      <Modal open={!!manutencaoSel} onClose={()=>setManutencaoSel(null)} title={manutencaoSel?`#${manutencaoSel.numero} — ${s(manutencaoSel.titulo)}`:''} subtitle={manutencaoSel?`${manutencaoSel.tipo==='MAQUINA'?'⚙️ Máquina/Equipamento':'🏢 Predial'} · ${s(manutencaoSel.categoria).replace('_',' ')}`:''} maxWidth="max-w-2xl">
+        {manutencaoSel&&(()=>{
+          const sol=manutencaoSel;
+          const travada=manutencaoEstaTravada(sol);
+          const historico=manutencaoHistoricoDb[sol.id]||[];
+          const statusOpcoes=[{v:'ABERTA',l:'Aberta'},{v:'EM_APROVACAO',l:'Em Aprovação'},{v:'APROVADA',l:'Aprovada'},{v:'EM_ANDAMENTO',l:'Em Andamento'},{v:'CONCLUIDA',l:'Concluída'},{v:'CANCELADA',l:'Cancelada'}];
+          return(
+            <div className="space-y-5">
+              {/* Cadeado / status de aprovação — bem visível no topo */}
+              {travada?(
+                <div className="bg-amber-50 border-2 border-amber-300 rounded-xl p-4 flex items-center gap-3">
+                  <div className="w-10 h-10 bg-amber-100 rounded-full flex items-center justify-center flex-shrink-0"><Lock className="w-5 h-5 text-amber-600"/></div>
+                  <div className="flex-1">
+                    <p className="text-sm font-black text-amber-800">Travada — aguardando aprovação</p>
+                    <p className="text-[11px] text-amber-600">Qualquer um dos aprovadores (Diogo, Daniel ou Martins) pode destravar.</p>
+                  </div>
+                  {isManutencao&&(
+                    <div className="flex gap-2">
+                      <button onClick={()=>aprovarManutencao(sol)} className="text-xs font-black text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg px-3 py-2">✓ Aprovar</button>
+                      <button onClick={()=>recusarManutencao(sol)} className="text-xs font-black text-red-600 bg-white border border-red-200 hover:bg-red-50 rounded-lg px-3 py-2">✕ Recusar</button>
+                    </div>
+                  )}
+                </div>
+              ):(
+                <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-3.5 flex items-center gap-3">
+                  <CheckCircle className="w-5 h-5 text-emerald-600 flex-shrink-0"/>
+                  <p className="text-sm text-emerald-700"><span className="font-black">Destravada</span>{sol.aprovado_por?` — aprovada por ${s(sol.aprovado_por)} em ${fmtDt(sol.aprovado_em)}`:''}</p>
+                </div>
+              )}
+
+              {/* Descrição e dados do solicitante */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div className="sm:col-span-2">
+                  <p className="text-[10px] font-black text-slate-400 uppercase tracking-wider mb-1">Descrição</p>
+                  <p className="text-sm text-slate-700 whitespace-pre-wrap">{s(sol.descricao)||<span className="text-slate-300">Sem detalhes adicionais.</span>}</p>
+                </div>
+                <div><p className="text-[10px] font-black text-slate-400 uppercase tracking-wider">Solicitante</p><p className="text-sm text-slate-700">{s(sol.solicitante_nome)}</p></div>
+                <div><p className="text-[10px] font-black text-slate-400 uppercase tracking-wider">Setor</p><p className="text-sm text-slate-700">{s(sol.solicitante_setor)||'—'}</p></div>
+                <div><p className="text-[10px] font-black text-slate-400 uppercase tracking-wider">Local</p><p className="text-sm text-slate-700">{s(sol.local)||'—'}</p></div>
+                <div><p className="text-[10px] font-black text-slate-400 uppercase tracking-wider">Contato</p><p className="text-sm text-slate-700">{s(sol.solicitante_contato)||'—'}</p></div>
+              </div>
+
+              {/* Status + urgência — editáveis só pelos aprovadores */}
+              <div className="border-t border-slate-100 pt-4">
+                <p className="text-[10px] font-black text-slate-400 uppercase tracking-wider mb-2">Status</p>
+                {isManutencao?(
+                  <div className="flex flex-wrap gap-1.5">
+                    {statusOpcoes.map(o=>(
+                      <button key={o.v} onClick={()=>mudarStatusManutencao(sol,o.v)}
+                        className={`text-xs font-bold px-3 py-1.5 rounded-lg border ${sol.status===o.v?'bg-slate-800 text-white border-slate-800':'bg-white text-slate-500 border-slate-200 hover:border-slate-300'}`}>
+                        {o.l}
+                      </button>
+                    ))}
+                  </div>
+                ):(
+                  <span className="text-sm font-bold text-slate-700">{statusOpcoes.find(o=>o.v===sol.status)?.l}</span>
+                )}
+                {sol.motivo_recusa&&<p className="text-[11px] text-red-600 mt-2"><strong>Motivo:</strong> {s(sol.motivo_recusa)}</p>}
+              </div>
+
+              {/* Datas — editáveis só pelos aprovadores */}
+              <div className="border-t border-slate-100 pt-4 grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <Field label="Data Início">
+                  <Inp type="date" disabled={!isManutencao} defaultValue={sol.data_inicio||''} onBlur={e=>e.target.value!==(sol.data_inicio||'')&&salvarDatasManutencao(sol,{data_inicio:e.target.value||null})}/>
+                </Field>
+                <Field label="Prazo Previsto">
+                  <Inp type="date" disabled={!isManutencao} defaultValue={sol.data_fim_prevista||''} onBlur={e=>e.target.value!==(sol.data_fim_prevista||'')&&salvarDatasManutencao(sol,{data_fim_prevista:e.target.value||null})}/>
+                </Field>
+                <Field label="Data Conclusão">
+                  <Inp type="date" disabled={!isManutencao} defaultValue={sol.data_conclusao||''} onBlur={e=>e.target.value!==(sol.data_conclusao||'')&&salvarDatasManutencao(sol,{data_conclusao:e.target.value||null})}/>
+                </Field>
+              </div>
+
+              {isManutencao&&(
+                <div>
+                  <Field label="Observações internas">
+                    <textarea rows={2} defaultValue={sol.observacoes||''} onBlur={e=>e.target.value!==(sol.observacoes||'')&&salvarDatasManutencao(sol,{observacoes:e.target.value})}
+                      className="w-full border border-slate-200 rounded-xl px-3 py-2 text-sm outline-none focus:border-indigo-400 resize-none"/>
+                  </Field>
+                </div>
+              )}
+
+              {/* Timeline / histórico */}
+              <div className="border-t border-slate-100 pt-4">
+                <p className="text-[10px] font-black text-slate-400 uppercase tracking-wider mb-2">Acompanhamento</p>
+                <div className="space-y-2 max-h-52 overflow-y-auto custom-scrollbar mb-3">
+                  {historico.length===0&&<p className="text-xs text-slate-300 text-center py-4">Nenhuma atividade registrada ainda.</p>}
+                  {historico.map(h=>(
+                    <div key={h.id} className="bg-slate-50 rounded-lg px-3 py-2 text-xs">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="font-bold text-slate-600">{s(h.autor)||'Sistema'}</span>
+                        <span className="text-[10px] text-slate-400">{fmtDt(h.criado_em)}</span>
+                      </div>
+                      <p className="text-slate-500 mt-0.5">{s(h.mensagem)}</p>
+                    </div>
+                  ))}
+                </div>
+                <div className="flex gap-2">
+                  <Inp placeholder="Adicionar comentário..." value={novoComentarioManutencao} onChange={e=>setNovoComentarioManutencao(e.target.value)}
+                    onKeyDown={e=>{if(e.key==='Enter'){e.preventDefault();comentarManutencao(sol,novoComentarioManutencao);}}} className="flex-1"/>
+                  <Btn variant="dark" onClick={()=>comentarManutencao(sol,novoComentarioManutencao)}><Send className="w-4 h-4"/></Btn>
+                </div>
+              </div>
             </div>
           );
         })()}
