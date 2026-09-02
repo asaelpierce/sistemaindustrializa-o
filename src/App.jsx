@@ -1113,6 +1113,11 @@ export default function App(){
   const [manutencaoFiltroTipo,setManutencaoFiltroTipo]=useState('TODOS'); // TODOS | MAQUINA | PREDIAL
   const [manutencaoSel,setManutencaoSel]=useState(null); // solicitação aberta no modal de detalhe
   const [novoComentarioManutencao,setNovoComentarioManutencao]=useState('');
+  // Filtro por origem: separa o que veio de fora (solicitações do formulário
+  // público) do trabalho de rotina que a própria equipe registra.
+  const [manutencaoFiltroOrigem,setManutencaoFiltroOrigem]=useState('TODOS'); // TODOS | SOLICITACAO | ROTINA
+  const [modalNovaRotina,setModalNovaRotina]=useState(false);
+  const [formRotina,setFormRotina]=useState({tipo:'MAQUINA',categoria:'PREVENTIVA',titulo:'',descricao:'',local:'',urgencia:'NORMAL',responsavel:'',data_inicio:new Date().toISOString().split('T')[0],data_fim_prevista:''});
   const linkPublicoManutencao=typeof window!=='undefined'?`${window.location.origin}${window.location.pathname}?manutencao=solicitar`:'';
   const [modalNovaInspecao,setModalNovaInspecao]=useState(false);
   const [modalInspecaoDetalhe,setModalInspecaoDetalhe]=useState(false);
@@ -4838,6 +4843,31 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
 
   // Aprovar: qualquer 1 dos 3 aprovadores (Diogo/Daniel/Martins) destrava —
   // grava quem aprovou e quando, e sobe o status pra APROVADA.
+  // Cria uma atividade de ROTINA — trabalho que a própria equipe de manutenção
+  // registra pra controlar o dia a dia. Diferente das solicitações que chegam
+  // pelo formulário público, não passa por aprovação (nasce já EM_ANDAMENTO),
+  // porque quem cria é justamente quem executa.
+  const criarRotinaManutencao=async()=>{
+    if(!formRotina.titulo.trim())return addToast('Descreva o que está sendo feito.','error');
+    try{
+      const{error}=await supabase.from('manutencao_solicitacoes').insert([{
+        ...formRotina,
+        origem:'ROTINA',
+        status:'EM_ANDAMENTO',
+        solicitante_nome:s(usuarioLogado?.nome),
+        solicitante_setor:'Manutenção',
+        aprovado_por:s(usuarioLogado?.nome),
+        aprovado_em:new Date().toISOString(),
+        data_fim_prevista:formRotina.data_fim_prevista||null,
+      }]);
+      if(error)throw error;
+      addToast('Atividade registrada!');
+      setModalNovaRotina(false);
+      setFormRotina({tipo:'MAQUINA',categoria:'PREVENTIVA',titulo:'',descricao:'',local:'',urgencia:'NORMAL',responsavel:'',data_inicio:new Date().toISOString().split('T')[0],data_fim_prevista:''});
+      fetchManutencao();
+    }catch(e){addToast('Erro ao registrar: '+e.message,'error');}
+  };
+
   const aprovarManutencao=async sol=>{
     if(!isManutencao)return addToast('Só os aprovadores de Manutenção podem aprovar.','error');
     if(!window.confirm(`Aprovar a solicitação "${s(sol.titulo)}"? Isso vai destravar o processo.`))return;
@@ -8981,82 +9011,148 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
             )}
 
             {/* ── MANUTENÇÃO ───────────────────────────────────────────── */}
-            {aba==='MANUTENCAO'&&(
+            {aba==='MANUTENCAO'&&(()=>{
+              // Filtro combinado: tipo (máquina/predial) + origem (solicitação
+              // externa vs rotina interna da equipe).
+              const manutFiltrada=manutencaoDb.filter(m=>
+                (manutencaoFiltroTipo==='TODOS'||m.tipo===manutencaoFiltroTipo)&&
+                (manutencaoFiltroOrigem==='TODOS'||(m.origem||'SOLICITACAO')===manutencaoFiltroOrigem)
+              );
+              const hojeStr=new Date().toISOString().split('T')[0];
+              // Atrasada = tem prazo previsto, já passou, e ainda não concluiu.
+              const estaAtrasada=m=>m.data_fim_prevista&&m.data_fim_prevista<hojeStr&&!['CONCLUIDA','CANCELADA'].includes(m.status);
+              const atrasadas=manutFiltrada.filter(estaAtrasada);
+              const emAndamento=manutFiltrada.filter(m=>m.status==='EM_ANDAMENTO');
+              const aguardando=manutFiltrada.filter(manutencaoEstaTravada);
+              const concluidasMes=manutFiltrada.filter(m=>m.status==='CONCLUIDA'&&s(m.data_conclusao).slice(0,7)===hojeStr.slice(0,7));
+              const colunas=[
+                {status:'ABERTA',label:'Aberta',borda:'border-slate-300',fundo:'bg-slate-50',texto:'text-slate-600'},
+                {status:'EM_APROVACAO',label:'Em Aprovação',borda:'border-amber-300',fundo:'bg-amber-50',texto:'text-amber-700'},
+                {status:'APROVADA',label:'Aprovada',borda:'border-sky-300',fundo:'bg-sky-50',texto:'text-sky-700'},
+                {status:'EM_ANDAMENTO',label:'Em Andamento',borda:'border-indigo-300',fundo:'bg-indigo-50',texto:'text-indigo-700'},
+                {status:'CONCLUIDA',label:'Concluída',borda:'border-emerald-300',fundo:'bg-emerald-50',texto:'text-emerald-700'},
+                {status:'CANCELADA',label:'Cancelada',borda:'border-red-300',fundo:'bg-red-50',texto:'text-red-700'},
+              ];
+              return(
               <div className="space-y-5" style={{animation:'fadeIn 0.2s ease'}}>
                 <div className="flex flex-wrap items-center justify-between gap-3">
-                  <SectionHeader title="🔧 Manutenção" subtitle="Máquinas e predial — solicitações, acompanhamento e aprovação"/>
+                  <SectionHeader title="🔧 Manutenção" subtitle="Solicitações da fábrica e rotina da equipe — acompanhamento completo"/>
                   <div className="flex items-center gap-2">
                     <button onClick={()=>{navigator.clipboard.writeText(linkPublicoManutencao);addToast('Link copiado! Compartilhe com quem precisa solicitar.');}}
-                      className="text-xs font-bold text-indigo-600 bg-indigo-50 border border-indigo-200 hover:bg-indigo-100 rounded-lg px-3 py-2 flex items-center gap-1.5">
-                      <Link2 className="w-3.5 h-3.5"/>Copiar link de solicitação
+                      className="text-xs font-bold text-slate-600 bg-white border border-slate-200 hover:border-slate-300 rounded-lg px-3 py-2 flex items-center gap-1.5">
+                      <Link2 className="w-3.5 h-3.5"/>Link de solicitação
                     </button>
+                    {isManutencao&&(
+                      <Btn variant="dark" onClick={()=>setModalNovaRotina(true)}>
+                        <Wrench className="w-4 h-4"/>Registrar atividade
+                      </Btn>
+                    )}
                   </div>
                 </div>
 
-                {/* Resumo rápido */}
-                <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
-                  {[
-                    {status:'ABERTA',label:'Aberta',cor:'slate'},
-                    {status:'EM_APROVACAO',label:'Em Aprovação',cor:'amber'},
-                    {status:'APROVADA',label:'Aprovada',cor:'sky'},
-                    {status:'EM_ANDAMENTO',label:'Em Andamento',cor:'indigo'},
-                    {status:'CONCLUIDA',label:'Concluída',cor:'emerald'},
-                    {status:'CANCELADA',label:'Cancelada',cor:'red'},
-                  ].map(col=>{
-                    const qtd=manutencaoDb.filter(m=>m.status===col.status&&(manutencaoFiltroTipo==='TODOS'||m.tipo===manutencaoFiltroTipo)).length;
-                    return(
-                      <div key={col.status} className="bg-white rounded-xl border border-slate-200 p-3 text-center">
-                        <p className="text-2xl font-black text-slate-800">{qtd}</p>
-                        <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mt-0.5">{col.label}</p>
-                      </div>
-                    );
-                  })}
+                {/* Painel de destaque — o que realmente importa saber de cara */}
+                <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+                  <div className={`rounded-2xl border-2 p-4 ${atrasadas.length>0?'bg-red-50 border-red-300':'bg-white border-slate-200'}`}>
+                    <div className="flex items-center gap-2">
+                      <AlertTriangle className={`w-4 h-4 ${atrasadas.length>0?'text-red-500':'text-slate-300'}`}/>
+                      <p className="text-[10px] font-black uppercase tracking-wider text-slate-500">Atrasadas</p>
+                    </div>
+                    <p className={`text-3xl font-black mt-1 ${atrasadas.length>0?'text-red-600':'text-slate-300'}`}>{atrasadas.length}</p>
+                    <p className="text-[10px] text-slate-400 mt-0.5">Passaram do prazo previsto</p>
+                  </div>
+                  <div className={`rounded-2xl border-2 p-4 ${aguardando.length>0?'bg-amber-50 border-amber-300':'bg-white border-slate-200'}`}>
+                    <div className="flex items-center gap-2">
+                      <Lock className={`w-4 h-4 ${aguardando.length>0?'text-amber-500':'text-slate-300'}`}/>
+                      <p className="text-[10px] font-black uppercase tracking-wider text-slate-500">Aguardando aprovação</p>
+                    </div>
+                    <p className={`text-3xl font-black mt-1 ${aguardando.length>0?'text-amber-600':'text-slate-300'}`}>{aguardando.length}</p>
+                    <p className="text-[10px] text-slate-400 mt-0.5">Travadas até alguém liberar</p>
+                  </div>
+                  <div className="rounded-2xl border-2 bg-white border-slate-200 p-4">
+                    <div className="flex items-center gap-2">
+                      <Activity className="w-4 h-4 text-indigo-400"/>
+                      <p className="text-[10px] font-black uppercase tracking-wider text-slate-500">Em andamento</p>
+                    </div>
+                    <p className="text-3xl font-black mt-1 text-indigo-600">{emAndamento.length}</p>
+                    <p className="text-[10px] text-slate-400 mt-0.5">Sendo executadas agora</p>
+                  </div>
+                  <div className="rounded-2xl border-2 bg-white border-slate-200 p-4">
+                    <div className="flex items-center gap-2">
+                      <CheckCircle className="w-4 h-4 text-emerald-400"/>
+                      <p className="text-[10px] font-black uppercase tracking-wider text-slate-500">Concluídas no mês</p>
+                    </div>
+                    <p className="text-3xl font-black mt-1 text-emerald-600">{concluidasMes.length}</p>
+                    <p className="text-[10px] text-slate-400 mt-0.5">Fechadas neste mês</p>
+                  </div>
                 </div>
 
                 {/* Filtros */}
-                <div className="flex flex-wrap items-center gap-2">
-                  {[{v:'TODOS',l:'Todos'},{v:'MAQUINA',l:'⚙️ Máquina'},{v:'PREDIAL',l:'🏢 Predial'}].map(f=>(
-                    <button key={f.v} onClick={()=>setManutencaoFiltroTipo(f.v)}
-                      className={`text-xs font-bold px-3 py-1.5 rounded-lg border ${manutencaoFiltroTipo===f.v?'bg-slate-800 text-white border-slate-800':'bg-white text-slate-500 border-slate-200 hover:border-slate-300'}`}>
-                      {f.l}
-                    </button>
-                  ))}
-                  {!isManutencao&&(
-                    <span className="ml-auto text-[11px] text-slate-400 flex items-center gap-1"><Lock className="w-3 h-3"/>Só Diogo, Daniel e Martins podem aprovar/editar</span>
-                  )}
+                <div className="flex flex-wrap items-center gap-3 bg-white rounded-xl border border-slate-200 p-3">
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-[10px] font-black text-slate-400 uppercase tracking-wider mr-1">Origem</span>
+                    {[{v:'TODOS',l:'Todas'},{v:'SOLICITACAO',l:'📨 Solicitações'},{v:'ROTINA',l:'🔧 Rotina da equipe'}].map(f=>(
+                      <button key={f.v} onClick={()=>setManutencaoFiltroOrigem(f.v)}
+                        className={`text-xs font-bold px-3 py-1.5 rounded-lg border ${manutencaoFiltroOrigem===f.v?'bg-indigo-600 text-white border-indigo-600':'bg-white text-slate-500 border-slate-200 hover:border-slate-300'}`}>
+                        {f.l}
+                      </button>
+                    ))}
+                  </div>
+                  <div className="w-px h-6 bg-slate-200"/>
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-[10px] font-black text-slate-400 uppercase tracking-wider mr-1">Tipo</span>
+                    {[{v:'TODOS',l:'Todos'},{v:'MAQUINA',l:'⚙️ Máquina'},{v:'PREDIAL',l:'🏢 Predial'}].map(f=>(
+                      <button key={f.v} onClick={()=>setManutencaoFiltroTipo(f.v)}
+                        className={`text-xs font-bold px-3 py-1.5 rounded-lg border ${manutencaoFiltroTipo===f.v?'bg-slate-800 text-white border-slate-800':'bg-white text-slate-500 border-slate-200 hover:border-slate-300'}`}>
+                        {f.l}
+                      </button>
+                    ))}
+                  </div>
+                  {!isManutencao&&<span className="ml-auto text-[11px] text-slate-400 flex items-center gap-1"><Lock className="w-3 h-3"/>Só a equipe de Manutenção pode aprovar/editar</span>}
                 </div>
 
-                {/* Kanban — 1 coluna por status, scroll horizontal em telas menores */}
+                {/* Kanban */}
                 <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-                  {[
-                    {status:'ABERTA',label:'Aberta',cor:'border-slate-300 bg-slate-50'},
-                    {status:'EM_APROVACAO',label:'Em Aprovação',cor:'border-amber-300 bg-amber-50'},
-                    {status:'APROVADA',label:'Aprovada',cor:'border-sky-300 bg-sky-50'},
-                    {status:'EM_ANDAMENTO',label:'Em Andamento',cor:'border-indigo-300 bg-indigo-50'},
-                    {status:'CONCLUIDA',label:'Concluída',cor:'border-emerald-300 bg-emerald-50'},
-                    {status:'CANCELADA',label:'Cancelada',cor:'border-red-300 bg-red-50'},
-                  ].map(col=>{
-                    const itens=manutencaoDb.filter(m=>m.status===col.status&&(manutencaoFiltroTipo==='TODOS'||m.tipo===manutencaoFiltroTipo));
+                  {colunas.map(col=>{
+                    const itens=manutFiltrada.filter(m=>m.status===col.status);
                     return(
-                      <div key={col.status} className={`rounded-2xl border-2 ${col.cor} p-3 min-h-[140px]`}>
-                        <p className="text-xs font-black text-slate-600 uppercase tracking-wider mb-3 px-1">{col.label} <span className="text-slate-400 font-bold">({itens.length})</span></p>
+                      <div key={col.status} className={`rounded-2xl border-2 ${col.borda} ${col.fundo} p-3 min-h-[140px]`}>
+                        <div className="flex items-center justify-between mb-3 px-1">
+                          <p className={`text-xs font-black uppercase tracking-wider ${col.texto}`}>{col.label}</p>
+                          <span className={`text-xs font-black ${col.texto} opacity-60`}>{itens.length}</span>
+                        </div>
                         <div className="space-y-2">
                           {itens.map(sol=>{
                             const travada=manutencaoEstaTravada(sol);
+                            const atrasada=estaAtrasada(sol);
+                            const ehRotina=(sol.origem||'SOLICITACAO')==='ROTINA';
                             const urgenciaCor={BAIXA:'bg-slate-100 text-slate-500',NORMAL:'bg-blue-100 text-blue-600',ALTA:'bg-amber-100 text-amber-700',URGENTE:'bg-red-100 text-red-700'}[sol.urgencia]||'bg-slate-100 text-slate-500';
                             return(
                               <button key={sol.id} onClick={()=>{setManutencaoSel(sol);buscarHistoricoManutencao(sol.id);}}
-                                className="w-full text-left bg-white rounded-xl border border-slate-200 p-3 hover:shadow-md transition-shadow">
+                                className={`w-full text-left bg-white rounded-xl border p-3 hover:shadow-md transition-shadow ${atrasada?'border-red-300 ring-1 ring-red-100':'border-slate-200'}`}>
                                 <div className="flex items-start justify-between gap-2">
                                   <p className="text-sm font-bold text-slate-800 leading-tight">{s(sol.titulo)}</p>
-                                  {travada&&<Lock className="w-3.5 h-3.5 text-amber-500 flex-shrink-0 mt-0.5" title="Aguardando aprovação"/>}
+                                  <div className="flex items-center gap-1 flex-shrink-0">
+                                    {travada&&<Lock className="w-3.5 h-3.5 text-amber-500" title="Aguardando aprovação"/>}
+                                    {atrasada&&<AlertTriangle className="w-3.5 h-3.5 text-red-500" title="Atrasada"/>}
+                                  </div>
                                 </div>
                                 <div className="flex items-center gap-1.5 mt-2 flex-wrap">
-                                  <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-slate-100 text-slate-500">{sol.tipo==='MAQUINA'?'⚙️':'🏢'} {s(sol.categoria).replace('_',' ')}</span>
+                                  <span className={`text-[9px] font-black px-1.5 py-0.5 rounded ${ehRotina?'bg-indigo-100 text-indigo-700':'bg-slate-100 text-slate-500'}`}>{ehRotina?'🔧 Rotina':'📨 Solicitação'}</span>
+                                  <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-slate-100 text-slate-500">{sol.tipo==='MAQUINA'?'⚙️':'🏢'}</span>
                                   <span className={`text-[9px] font-black px-1.5 py-0.5 rounded ${urgenciaCor}`}>{s(sol.urgencia)}</span>
                                 </div>
-                                <p className="text-[10px] text-slate-400 mt-1.5">{s(sol.solicitante_nome)}{sol.local?` · ${s(sol.local)}`:''}</p>
-                                {sol.aprovado_por&&<p className="text-[10px] text-emerald-600 font-semibold mt-1">✓ Aprovado por {s(sol.aprovado_por)}</p>}
+                                {sol.local&&<p className="text-[10px] text-slate-500 mt-1.5 flex items-center gap-1"><MapPin className="w-2.5 h-2.5"/>{s(sol.local)}</p>}
+                                {/* Datas — o coração do acompanhamento de rotina */}
+                                {(sol.data_inicio||sol.data_fim_prevista)&&(
+                                  <div className="flex items-center gap-2 mt-1.5 text-[10px]">
+                                    {sol.data_inicio&&<span className="text-slate-500">Início {fmtDt(sol.data_inicio)}</span>}
+                                    {sol.data_fim_prevista&&<span className={atrasada?'text-red-600 font-bold':'text-slate-500'}>→ Prazo {fmtDt(sol.data_fim_prevista)}</span>}
+                                  </div>
+                                )}
+                                <div className="flex items-center justify-between gap-2 mt-1.5 pt-1.5 border-t border-slate-50">
+                                  <span className="text-[10px] text-slate-400">{ehRotina?s(sol.responsavel)||s(sol.solicitante_nome):s(sol.solicitante_nome)}</span>
+                                  {sol.aprovado_por&&!ehRotina&&<span className="text-[9px] text-emerald-600 font-semibold">✓ {s(sol.aprovado_por).split(' ')[0]}</span>}
+                                </div>
                               </button>
                             );
                           })}
@@ -9066,8 +9162,17 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
                     );
                   })}
                 </div>
+
+                {manutencaoDb.length===0&&(
+                  <div className="bg-white rounded-2xl border border-slate-200 py-16 text-center">
+                    <Wrench className="w-10 h-10 mx-auto mb-3 text-slate-200"/>
+                    <p className="text-sm font-semibold text-slate-400">Nenhuma solicitação ou atividade ainda</p>
+                    <p className="text-xs text-slate-400 mt-1">Compartilhe o link de solicitação ou registre uma atividade de rotina.</p>
+                  </div>
+                )}
               </div>
-            )}
+              );
+            })()}
 
 
             {/* ── CHAT INTERNO ─────────────────────────────────────────── */}
@@ -9926,6 +10031,75 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
         })()}
       </Modal>
 
+      {/* Modal: Registrar Atividade de Rotina (equipe de manutenção) */}
+      <Modal open={modalNovaRotina} onClose={()=>setModalNovaRotina(false)} title="🔧 Registrar atividade de rotina" subtitle="Trabalho do dia a dia da equipe — não passa por aprovação" maxWidth="max-w-lg"
+        footer={<div className="flex justify-between">
+          <Btn variant="secondary" onClick={()=>setModalNovaRotina(false)}>Cancelar</Btn>
+          <Btn variant="dark" onClick={criarRotinaManutencao} disabled={!formRotina.titulo.trim()}>
+            <Save className="w-4 h-4"/>Registrar
+          </Btn>
+        </div>}
+      >
+        <div className="space-y-4">
+          <div className="grid grid-cols-2 gap-2">
+            {[{v:'MAQUINA',l:'⚙️ Máquina/Equipamento'},{v:'PREDIAL',l:'🏢 Predial/Instalações'}].map(o=>(
+              <button key={o.v} onClick={()=>setFormRotina({...formRotina,tipo:o.v})}
+                className={`text-sm font-bold rounded-xl p-3 border-2 ${formRotina.tipo===o.v?'bg-indigo-50 border-indigo-500 text-indigo-700':'bg-slate-50 border-slate-200 text-slate-500'}`}>
+                {o.l}
+              </button>
+            ))}
+          </div>
+
+          <div className="grid grid-cols-3 gap-2">
+            {[{v:'PREVENTIVA',l:'🗓️ Preventiva'},{v:'REPARO',l:'🔧 Reparo'},{v:'OUTRO',l:'📋 Outro'}].map(o=>(
+              <button key={o.v} onClick={()=>setFormRotina({...formRotina,categoria:o.v})}
+                className={`text-xs font-bold rounded-xl p-2.5 border-2 ${formRotina.categoria===o.v?'bg-indigo-50 border-indigo-500 text-indigo-700':'bg-slate-50 border-slate-200 text-slate-500'}`}>
+                {o.l}
+              </button>
+            ))}
+          </div>
+
+          <Field label="O que está sendo feito" required>
+            <Inp placeholder="Ex: Troca de correia do exaustor do setor de corte" value={formRotina.titulo} onChange={e=>setFormRotina({...formRotina,titulo:e.target.value})}/>
+          </Field>
+
+          <Field label="Detalhes">
+            <textarea rows={2} value={formRotina.descricao} onChange={e=>setFormRotina({...formRotina,descricao:e.target.value})}
+              className="w-full border border-slate-200 rounded-xl px-3 py-2 text-sm outline-none focus:border-indigo-400 resize-none" placeholder="O que está sendo mexido, peças usadas, observações..."/>
+          </Field>
+
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="Equipamento / Local">
+              <Inp placeholder="Ex: Prensa 2, Galpão 3" value={formRotina.local} onChange={e=>setFormRotina({...formRotina,local:e.target.value})}/>
+            </Field>
+            <Field label="Responsável">
+              <Inp placeholder="Quem está executando" value={formRotina.responsavel} onChange={e=>setFormRotina({...formRotina,responsavel:e.target.value})}/>
+            </Field>
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="Data de início" required>
+              <Inp type="date" value={formRotina.data_inicio} onChange={e=>setFormRotina({...formRotina,data_inicio:e.target.value})}/>
+            </Field>
+            <Field label="Previsão de término">
+              <Inp type="date" value={formRotina.data_fim_prevista} onChange={e=>setFormRotina({...formRotina,data_fim_prevista:e.target.value})}/>
+            </Field>
+          </div>
+
+          <div>
+            <label className="text-xs font-black text-slate-500 uppercase tracking-wider">Urgência</label>
+            <div className="grid grid-cols-4 gap-1.5 mt-1.5">
+              {[{v:'BAIXA',l:'Baixa',cls:'bg-slate-50 border-slate-500 text-slate-700'},{v:'NORMAL',l:'Normal',cls:'bg-blue-50 border-blue-500 text-blue-700'},{v:'ALTA',l:'Alta',cls:'bg-amber-50 border-amber-500 text-amber-700'},{v:'URGENTE',l:'Urgente',cls:'bg-red-50 border-red-500 text-red-700'}].map(o=>(
+                <button key={o.v} onClick={()=>setFormRotina({...formRotina,urgencia:o.v})}
+                  className={`text-[11px] font-bold rounded-lg py-2 border-2 ${formRotina.urgencia===o.v?o.cls:'bg-slate-50 border-slate-200 text-slate-400'}`}>
+                  {o.l}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+      </Modal>
+
       {/* Modal: Detalhe da Solicitação de Manutenção */}
       <Modal open={!!manutencaoSel} onClose={()=>setManutencaoSel(null)} title={manutencaoSel?`#${manutencaoSel.numero} — ${s(manutencaoSel.titulo)}`:''} subtitle={manutencaoSel?`${manutencaoSel.tipo==='MAQUINA'?'⚙️ Máquina/Equipamento':'🏢 Predial'} · ${s(manutencaoSel.categoria).replace('_',' ')}`:''} maxWidth="max-w-2xl">
         {manutencaoSel&&(()=>{
@@ -9985,6 +10159,14 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
                   <span className="text-sm font-bold text-slate-700">{statusOpcoes.find(o=>o.v===sol.status)?.l}</span>
                 )}
                 {sol.motivo_recusa&&<p className="text-[11px] text-red-600 mt-2"><strong>Motivo:</strong> {s(sol.motivo_recusa)}</p>}
+              </div>
+
+              {/* Responsável pela execução — quem da manutenção está tocando */}
+              <div className="border-t border-slate-100 pt-4">
+                <Field label="Responsável pela execução">
+                  <Inp disabled={!isManutencao} defaultValue={sol.responsavel||''} placeholder="Quem está executando"
+                    onBlur={e=>e.target.value!==(sol.responsavel||'')&&salvarDatasManutencao(sol,{responsavel:e.target.value})}/>
+                </Field>
               </div>
 
               {/* Datas — editáveis só pelos aprovadores */}
