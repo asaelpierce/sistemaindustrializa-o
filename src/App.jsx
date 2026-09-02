@@ -608,7 +608,32 @@ function FormularioPublicoManutencao({supabase}){
   const [enviando,setEnviando]=useState(false);
   const [enviado,setEnviado]=useState(false);
   const [erro,setErro]=useState('');
+  const [fotos,setFotos]=useState([]);
   const [form,setForm]=useState({tipo:'MAQUINA',categoria:'REPARO',titulo:'',descricao:'',local:'',urgencia:'NORMAL',solicitante_nome:'',solicitante_setor:'',solicitante_contato:''});
+
+  // Comprime a foto antes de enviar — no chão de fábrica a pessoa tira do
+  // celular, e a imagem original é grande demais pra guardar direto.
+  const anexarFotos=async files=>{
+    const arr=Array.from(files||[]).slice(0,4);
+    const processadas=[];
+    for(const file of arr){
+      if(!file.type.startsWith('image/'))continue;
+      const b64=await new Promise(res=>{
+        const img=new Image();
+        img.onload=()=>{
+          const canvas=document.createElement('canvas');
+          const escala=Math.min(1,1280/Math.max(img.width,img.height));
+          canvas.width=img.width*escala;canvas.height=img.height*escala;
+          canvas.getContext('2d').drawImage(img,0,0,canvas.width,canvas.height);
+          res(canvas.toDataURL('image/jpeg',0.75).split(',')[1]);
+        };
+        img.onerror=()=>res(null);
+        const r=new FileReader();r.onload=e=>{img.src=e.target.result;};r.readAsDataURL(file);
+      });
+      if(b64)processadas.push({nome:file.name,tipo:'image/jpeg',dados:b64});
+    }
+    setFotos(p=>[...p,...processadas].slice(0,4));
+  };
 
   const enviar=async e=>{
     e.preventDefault();
@@ -617,7 +642,7 @@ function FormularioPublicoManutencao({supabase}){
     if(!supabase)return setErro('Sistema ainda carregando, aguarde alguns segundos e tente de novo.');
     setEnviando(true);setErro('');
     try{
-      const{error}=await supabase.from('manutencao_solicitacoes').insert([{...form,status:'ABERTA'}]);
+      const{error}=await supabase.from('manutencao_solicitacoes').insert([{...form,status:'ABERTA',fotos}]);
       if(error)throw error;
       setEnviado(true);
     }catch(err){setErro('Não foi possível enviar. Tente novamente em instantes. ('+err.message+')');}
@@ -689,6 +714,29 @@ function FormularioPublicoManutencao({supabase}){
           <label className="text-xs font-black text-slate-500 uppercase tracking-wider">Onde é? (setor, máquina, sala...)</label>
           <input value={form.local} onChange={e=>setForm({...form,local:e.target.value})} placeholder="Ex: Setor de Corte, Prensa 2"
             className="w-full mt-1.5 border-2 border-slate-200 rounded-xl px-4 py-3 text-sm focus:border-indigo-500 outline-none"/>
+        </div>
+
+        {/* Fotos — no chão de fábrica a pessoa quase sempre tira foto do
+            problema. Botão grande, abre a câmera direto no celular. */}
+        <div>
+          <label className="text-xs font-black text-slate-500 uppercase tracking-wider">Fotos do problema (ajuda muito!)</label>
+          <label className="mt-1.5 w-full border-2 border-dashed border-slate-300 rounded-xl px-4 py-4 flex flex-col items-center justify-center cursor-pointer hover:border-indigo-400 hover:bg-indigo-50/30 transition-colors">
+            <Camera className="w-6 h-6 text-slate-400 mb-1"/>
+            <span className="text-sm font-bold text-slate-500">Tirar foto ou escolher</span>
+            <span className="text-[11px] text-slate-400">Até 4 fotos</span>
+            <input type="file" multiple accept="image/*" capture="environment" className="hidden" onChange={e=>anexarFotos(e.target.files)}/>
+          </label>
+          {fotos.length>0&&(
+            <div className="grid grid-cols-4 gap-2 mt-2">
+              {fotos.map((f,i)=>(
+                <div key={i} className="relative group">
+                  <img src={`data:${f.tipo};base64,${f.dados}`} className="w-full h-20 object-cover rounded-lg border border-slate-200"/>
+                  <button type="button" onClick={()=>setFotos(p=>p.filter((_,idx)=>idx!==i))}
+                    className="absolute top-1 right-1 bg-red-500 text-white rounded-full w-5 h-5 flex items-center justify-center text-xs">×</button>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
 
         <div>
@@ -1124,6 +1172,12 @@ export default function App(){
   const [manutencaoDiaSel,setManutencaoDiaSel]=useState(null); // dia clicado no calendário (ISO)
   const [modalLembreteManutencao,setModalLembreteManutencao]=useState(false);
   const [cfgLembrete,setCfgLembrete]=useState({ativo:false,flow_url:'',hora:7,dias_antes_prazo:1});
+  // Itens de compra por demanda — substitui o fluxo antigo de mandar por
+  // WhatsApp (nome da peça, link, foto).
+  const [itensCompraDb,setItensCompraDb]=useState({}); // por solicitacao_id
+  const [novoItemCompra,setNovoItemCompra]=useState({descricao:'',link:'',quantidade:1,unidade:'UN',observacao:''});
+  const [fotosManutencaoUpload,setFotosManutencaoUpload]=useState([]);
+  const [buscandoCompraSankhya,setBuscandoCompraSankhya]=useState(null); // id do item sendo buscado
   const [formRotina,setFormRotina]=useState({tipo:'MAQUINA',categoria:'PREVENTIVA',titulo:'',descricao:'',local:'',urgencia:'NORMAL',responsavel:'',data_inicio:new Date().toISOString().split('T')[0],data_fim_prevista:''});
   const linkPublicoManutencao=typeof window!=='undefined'?`${window.location.origin}${window.location.pathname}?manutencao=solicitar`:'';
   const [modalNovaInspecao,setModalNovaInspecao]=useState(false);
@@ -4882,6 +4936,142 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
       if(json.enviado)addToast(`Lembrete enviado! ${json.resumo.atrasadas} atrasada(s), ${json.resumo.aguardando_aprovacao} aguardando aprovação. Confira o sino.`);
       else addToast('Nada pendente pra lembrar hoje — nenhum aviso enviado.','warning');
     }catch(e){addToast('Erro ao testar: '+e.message,'error');}
+  };
+
+  // ── Itens de compra da demanda ───────────────────────────────────────────
+  const buscarItensCompra=useCallback(async solicitacaoId=>{
+    if(!supabase||!solicitacaoId)return;
+    try{
+      const{data,error}=await supabase.from('manutencao_itens_compra').select('*').eq('solicitacao_id',solicitacaoId).order('criado_em');
+      if(error)throw error;
+      setItensCompraDb(prev=>({...prev,[solicitacaoId]:data||[]}));
+    }catch(e){console.warn('Erro ao buscar itens de compra:',e);}
+  },[supabase]);
+
+  const adicionarItemCompra=async sol=>{
+    if(!novoItemCompra.descricao.trim())return addToast('Descreva a peça/material.','error');
+    try{
+      const{error}=await supabase.from('manutencao_itens_compra').insert([{
+        solicitacao_id:sol.id,
+        descricao:novoItemCompra.descricao.trim(),
+        link:novoItemCompra.link.trim()||null,
+        quantidade:Number(novoItemCompra.quantidade)||1,
+        unidade:novoItemCompra.unidade||'UN',
+        observacao:novoItemCompra.observacao.trim()||null,
+        fotos:fotosManutencaoUpload.map(f=>({nome:f.name,tipo:f.type,dados:f.b64})),
+        criado_por:s(usuarioLogado?.nome),
+      }]);
+      if(error)throw error;
+      await supabase.from('manutencao_historico').insert([{solicitacao_id:sol.id,tipo:'COMENTARIO',autor:s(usuarioLogado?.nome),mensagem:`Adicionou item pra comprar: ${novoItemCompra.descricao.trim()}`}]);
+      setNovoItemCompra({descricao:'',link:'',quantidade:1,unidade:'UN',observacao:''});
+      setFotosManutencaoUpload([]);
+      addToast('Item adicionado à lista de compras.');
+      buscarItensCompra(sol.id);buscarHistoricoManutencao(sol.id);
+    }catch(e){addToast('Erro ao adicionar item: '+e.message,'error');}
+  };
+
+  const atualizarItemCompra=async(item,campos)=>{
+    try{
+      const{error}=await supabase.from('manutencao_itens_compra').update(campos).eq('id',item.id);
+      if(error)throw error;
+      buscarItensCompra(item.solicitacao_id);
+    }catch(e){addToast('Erro ao atualizar: '+e.message,'error');}
+  };
+
+  const removerItemCompra=async item=>{
+    if(!window.confirm(`Remover "${s(item.descricao)}" da lista de compras?`))return;
+    try{
+      await supabase.from('manutencao_itens_compra').delete().eq('id',item.id);
+      addToast('Item removido.');
+      buscarItensCompra(item.solicitacao_id);
+    }catch(e){addToast('Erro ao remover: '+e.message,'error');}
+  };
+
+  // Vincula o item a uma solicitação de compra real do Sankhya, pelo número
+  // que o Diogo digita depois de criar lá no ERP.
+  const vincularCompraSankhya=async item=>{
+    const numero=window.prompt('Número da solicitação/pedido de compra no Sankhya:',item.numero_solicitacao_sankhya||'');
+    if(!numero)return;
+    setBuscandoCompraSankhya(item.id);
+    try{
+      const res=await fetch(`${SUPABASE_URL}/functions/v1/manutencao-buscar-compra-sankhya`,{
+        method:'POST',headers:{'Content-Type':'application/json','apikey':SUPABASE_KEY},
+        body:JSON.stringify({numero})
+      });
+      const json=await res.json();
+      if(!json.encontrado){addToast(json.mensagem||'Não encontrado no Sankhya.','error');return;}
+      const c=json.compra;
+      await atualizarItemCompra(item,{
+        numero_solicitacao_sankhya:s(c.numero),
+        fornecedor_sankhya:s(c.fornecedor),
+        valor_sankhya:c.valor,
+        status_sankhya:c.status_nota==='L'?'Liberada':s(c.status_nota),
+        sincronizado_em:new Date().toISOString(),
+        status:'SOLICITADO',
+      });
+      addToast(`Vinculado! ${s(c.fornecedor)} — ${fmtMoeda(c.valor||0)}`);
+    }catch(e){addToast('Erro ao buscar no Sankhya: '+e.message,'error');}
+    finally{setBuscandoCompraSankhya(null);}
+  };
+
+  // Cria tarefa no Planner (reaproveita o fluxo Power Automate que o PCP já usa).
+  const criarTarefaPlannerManutencao=async sol=>{
+    const itens=itensCompraDb[sol.id]||[];
+    try{
+      const res=await fetch(`${SUPABASE_URL}/functions/v1/planner-proxy`,{
+        method:'POST',headers:{'Content-Type':'application/json','apikey':SUPABASE_KEY},
+        body:JSON.stringify({
+          titulo:`[Manutenção #${sol.numero}] ${s(sol.titulo)}`,
+          descricao:`${s(sol.descricao)}\n\nLocal: ${s(sol.local)||'—'}\nSolicitante: ${s(sol.solicitante_nome)}\nUrgência: ${s(sol.urgencia)}\n\nItens pra comprar:\n${itens.map(i=>`• ${s(i.descricao)} (${i.quantidade} ${s(i.unidade)})${i.link?` — ${s(i.link)}`:''}${i.numero_solicitacao_sankhya?` — Sankhya #${s(i.numero_solicitacao_sankhya)}`:''}`).join('\n')||'(nenhum item cadastrado)'}`,
+          prazo:sol.data_fim_prevista||null,
+          origem:'MANUTENCAO',
+          numero:sol.numero,
+        })
+      });
+      const json=await res.json();
+      if(json.ok){
+        addToast('Tarefa criada no Planner!');
+        await supabase.from('manutencao_historico').insert([{solicitacao_id:sol.id,tipo:'COMENTARIO',autor:s(usuarioLogado?.nome),mensagem:'Criou tarefa no Planner de compras.'}]);
+        buscarHistoricoManutencao(sol.id);
+      }else addToast('Planner respondeu com erro: '+s(json.body||json.error),'error');
+    }catch(e){addToast('Erro ao criar tarefa: '+e.message,'error');}
+  };
+
+  // Upload de fotos genérico pro módulo de manutenção (comprime pra não
+  // estourar o tamanho do registro — mesma preocupação já tratada na Qualidade).
+  const handleFotoManutencao=async files=>{
+    const arr=Array.from(files||[]).slice(0,5);
+    const processadas=[];
+    for(const file of arr){
+      if(!file.type.startsWith('image/'))continue;
+      const b64=await new Promise(res=>{
+        const img=new Image();
+        img.onload=()=>{
+          const canvas=document.createElement('canvas');
+          const escala=Math.min(1,1280/Math.max(img.width,img.height));
+          canvas.width=img.width*escala;canvas.height=img.height*escala;
+          canvas.getContext('2d').drawImage(img,0,0,canvas.width,canvas.height);
+          res(canvas.toDataURL('image/jpeg',0.75).split(',')[1]);
+        };
+        img.onerror=()=>res(null);
+        const r=new FileReader();r.onload=e=>{img.src=e.target.result;};r.readAsDataURL(file);
+      });
+      if(b64)processadas.push({name:file.name,type:'image/jpeg',b64,preview:`data:image/jpeg;base64,${b64}`});
+    }
+    setFotosManutencaoUpload(p=>[...p,...processadas].slice(0,5));
+  };
+
+  const salvarFotosNaDemanda=async sol=>{
+    if(fotosManutencaoUpload.length===0)return;
+    try{
+      const novas=[...(Array.isArray(sol.fotos)?sol.fotos:[]),...fotosManutencaoUpload.map(f=>({nome:f.name,tipo:f.type,dados:f.b64}))];
+      const{error}=await supabase.from('manutencao_solicitacoes').update({fotos:novas}).eq('id',sol.id);
+      if(error)throw error;
+      setManutencaoSel(p=>({...p,fotos:novas}));
+      setFotosManutencaoUpload([]);
+      addToast('Fotos anexadas.');
+      fetchManutencao();
+    }catch(e){addToast('Erro ao anexar fotos: '+e.message,'error');}
   };
 
   const criarRotinaManutencao=async()=>{
@@ -9250,7 +9440,7 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
                           </p>
                           <div className="space-y-2">
                             {(porDia[manutencaoDiaSel]||[]).map(m=>(
-                              <button key={m.id} onClick={()=>{setManutencaoSel(m);buscarHistoricoManutencao(m.id);}}
+                              <button key={m.id} onClick={()=>{setManutencaoSel(m);buscarHistoricoManutencao(m.id);buscarItensCompra(m.id);setFotosManutencaoUpload([]);}}
                                 className="w-full text-left bg-slate-50 hover:bg-slate-100 rounded-xl p-3 transition-colors">
                                 <div className="flex items-center justify-between gap-2">
                                   <p className="text-sm font-bold text-slate-800">{s(m.titulo)}</p>
@@ -9285,7 +9475,7 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
                             const ehRotina=(sol.origem||'SOLICITACAO')==='ROTINA';
                             const urgenciaCor={BAIXA:'bg-slate-100 text-slate-500',NORMAL:'bg-blue-100 text-blue-600',ALTA:'bg-amber-100 text-amber-700',URGENTE:'bg-red-100 text-red-700'}[sol.urgencia]||'bg-slate-100 text-slate-500';
                             return(
-                              <button key={sol.id} onClick={()=>{setManutencaoSel(sol);buscarHistoricoManutencao(sol.id);}}
+                              <button key={sol.id} onClick={()=>{setManutencaoSel(sol);buscarHistoricoManutencao(sol.id);buscarItensCompra(sol.id);setFotosManutencaoUpload([]);}}
                                 className={`w-full text-left bg-white rounded-xl border p-3 hover:shadow-md transition-shadow ${atrasada?'border-red-300 ring-1 ring-red-100':'border-slate-200'}`}>
                                 <div className="flex items-start justify-between gap-2">
                                   <p className="text-sm font-bold text-slate-800 leading-tight">{s(sol.titulo)}</p>
@@ -10399,6 +10589,143 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
                   </Field>
                 </div>
               )}
+
+              {/* ── FOTOS DA DEMANDA ──────────────────────────────────────
+                  O pessoal quase sempre manda foto do problema. */}
+              <div className="border-t border-slate-100 pt-4">
+                <div className="flex items-center justify-between mb-2">
+                  <p className="text-[10px] font-black text-slate-400 uppercase tracking-wider">Fotos</p>
+                  {isManutencao&&(
+                    <label className="text-[10px] font-black text-indigo-600 hover:underline cursor-pointer flex items-center gap-1">
+                      <Camera className="w-3 h-3"/>Anexar foto
+                      <input type="file" multiple accept="image/*" capture="environment" className="hidden" onChange={e=>handleFotoManutencao(e.target.files)}/>
+                    </label>
+                  )}
+                </div>
+                {(Array.isArray(sol.fotos)&&sol.fotos.length>0)?(
+                  <div className="grid grid-cols-4 gap-2">
+                    {sol.fotos.map((f,i)=>(
+                      <img key={i} src={`data:${f.tipo};base64,${f.dados}`} alt={f.nome}
+                        className="w-full h-20 object-cover rounded-lg border border-slate-200 cursor-pointer hover:opacity-80"
+                        onClick={()=>{const w=window.open('');w.document.write(`<img src="data:${f.tipo};base64,${f.dados}" style="max-width:100%"/>`);}}/>
+                    ))}
+                  </div>
+                ):<p className="text-xs text-slate-300">Nenhuma foto anexada.</p>}
+                {/* Fotos pendentes de salvar */}
+                {fotosManutencaoUpload.length>0&&(
+                  <div className="mt-2 bg-indigo-50 border border-indigo-200 rounded-xl p-2">
+                    <div className="grid grid-cols-4 gap-2 mb-2">
+                      {fotosManutencaoUpload.map((f,i)=>(
+                        <div key={i} className="relative group">
+                          <img src={f.preview} className="w-full h-16 object-cover rounded-lg"/>
+                          <button onClick={()=>setFotosManutencaoUpload(p=>p.filter((_,idx)=>idx!==i))}
+                            className="absolute top-0.5 right-0.5 bg-red-500 text-white rounded-full w-4 h-4 flex items-center justify-center opacity-0 group-hover:opacity-100"><X className="w-2.5 h-2.5"/></button>
+                        </div>
+                      ))}
+                    </div>
+                    <div className="flex gap-2">
+                      <Btn variant="dark" size="sm" onClick={()=>salvarFotosNaDemanda(sol)}>Anexar à demanda</Btn>
+                      <Btn variant="ghost" size="sm" onClick={()=>setFotosManutencaoUpload([])}>Descartar</Btn>
+                    </div>
+                    <p className="text-[10px] text-indigo-600 mt-1.5">Ou use estas fotos ao adicionar um item de compra abaixo.</p>
+                  </div>
+                )}
+              </div>
+
+              {/* ── ITENS PARA COMPRAR ────────────────────────────────────
+                  Substitui o fluxo antigo de mandar por WhatsApp: nome da peça,
+                  link do fornecedor, foto, e o vínculo com a solicitação de
+                  compra criada no Sankhya. */}
+              <div className="border-t border-slate-100 pt-4">
+                <div className="flex items-center justify-between mb-2">
+                  <p className="text-[10px] font-black text-slate-400 uppercase tracking-wider">🛒 Itens para comprar</p>
+                  {(itensCompraDb[sol.id]||[]).length>0&&isManutencao&&(
+                    <button onClick={()=>criarTarefaPlannerManutencao(sol)} className="text-[10px] font-black text-indigo-600 hover:underline flex items-center gap-1">
+                      <Send className="w-3 h-3"/>Criar tarefa no Planner
+                    </button>
+                  )}
+                </div>
+
+                <div className="space-y-2 mb-3">
+                  {(itensCompraDb[sol.id]||[]).map(item=>{
+                    const statusCor={A_COMPRAR:'bg-slate-100 text-slate-600',SOLICITADO:'bg-amber-100 text-amber-700',COMPRADO:'bg-sky-100 text-sky-700',RECEBIDO:'bg-emerald-100 text-emerald-700',CANCELADO:'bg-red-100 text-red-600'}[item.status]||'bg-slate-100 text-slate-600';
+                    return(
+                      <div key={item.id} className="bg-slate-50 rounded-xl p-3">
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="min-w-0 flex-1">
+                            <p className="text-sm font-bold text-slate-800">{s(item.descricao)}</p>
+                            <p className="text-[11px] text-slate-500">{fmtD(item.quantidade)} {s(item.unidade)}{item.observacao?` · ${s(item.observacao)}`:''}</p>
+                            {item.link&&(
+                              <a href={item.link} target="_blank" rel="noreferrer" className="text-[11px] text-indigo-600 hover:underline flex items-center gap-1 mt-0.5 truncate">
+                                <Link2 className="w-3 h-3 flex-shrink-0"/><span className="truncate">{s(item.link)}</span>
+                              </a>
+                            )}
+                          </div>
+                          <span className={`text-[9px] font-black px-2 py-0.5 rounded-full flex-shrink-0 ${statusCor}`}>{s(item.status).replace('_',' ')}</span>
+                        </div>
+
+                        {/* Fotos do item */}
+                        {Array.isArray(item.fotos)&&item.fotos.length>0&&(
+                          <div className="grid grid-cols-5 gap-1 mt-2">
+                            {item.fotos.map((f,i)=>(
+                              <img key={i} src={`data:${f.tipo};base64,${f.dados}`} className="w-full h-12 object-cover rounded border border-slate-200 cursor-pointer hover:opacity-80"
+                                onClick={()=>{const w=window.open('');w.document.write(`<img src="data:${f.tipo};base64,${f.dados}" style="max-width:100%"/>`);}}/>
+                            ))}
+                          </div>
+                        )}
+
+                        {/* Vínculo com o Sankhya */}
+                        {item.numero_solicitacao_sankhya?(
+                          <div className="mt-2 bg-white border border-emerald-200 rounded-lg px-2.5 py-1.5">
+                            <p className="text-[10px] font-black text-emerald-700">✓ Sankhya #{s(item.numero_solicitacao_sankhya)}</p>
+                            <p className="text-[10px] text-slate-500">{s(item.fornecedor_sankhya)} · {item.valor_sankhya?fmtMoeda(item.valor_sankhya):'—'} · {s(item.status_sankhya)}</p>
+                          </div>
+                        ):null}
+
+                        {isManutencao&&(
+                          <div className="flex items-center gap-2 mt-2 flex-wrap">
+                            <select value={item.status} onChange={e=>atualizarItemCompra(item,{status:e.target.value})}
+                              className="text-[10px] font-bold border border-slate-200 rounded-lg px-2 py-1 outline-none">
+                              {['A_COMPRAR','SOLICITADO','COMPRADO','RECEBIDO','CANCELADO'].map(st=>(
+                                <option key={st} value={st}>{st.replace('_',' ')}</option>
+                              ))}
+                            </select>
+                            <button onClick={()=>vincularCompraSankhya(item)} disabled={buscandoCompraSankhya===item.id}
+                              className="text-[10px] font-black text-white bg-indigo-600 hover:bg-indigo-700 rounded-lg px-2.5 py-1 disabled:opacity-50">
+                              {buscandoCompraSankhya===item.id?'Buscando...':item.numero_solicitacao_sankhya?'Revincular Sankhya':'🔗 Vincular Sankhya'}
+                            </button>
+                            <button onClick={()=>removerItemCompra(item)} className="text-[10px] font-bold text-red-500 hover:underline ml-auto">Remover</button>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                  {(itensCompraDb[sol.id]||[]).length===0&&<p className="text-xs text-slate-300 text-center py-3">Nenhum item de compra ainda.</p>}
+                </div>
+
+                {/* Adicionar novo item */}
+                {isManutencao&&(
+                  <div className="bg-indigo-50/50 border border-indigo-100 rounded-xl p-3 space-y-2">
+                    <p className="text-[10px] font-black text-indigo-700 uppercase tracking-wider">Adicionar item</p>
+                    <Inp placeholder="Peça / material (ex: Rolamento 6205)" value={novoItemCompra.descricao} onChange={e=>setNovoItemCompra({...novoItemCompra,descricao:e.target.value})}/>
+                    <Inp placeholder="Link do fornecedor (opcional)" value={novoItemCompra.link} onChange={e=>setNovoItemCompra({...novoItemCompra,link:e.target.value})}/>
+                    <div className="flex gap-2">
+                      <Inp type="number" placeholder="Qtd" value={novoItemCompra.quantidade} onChange={e=>setNovoItemCompra({...novoItemCompra,quantidade:e.target.value})} className="w-20"/>
+                      <Inp placeholder="UN" value={novoItemCompra.unidade} onChange={e=>setNovoItemCompra({...novoItemCompra,unidade:e.target.value})} className="w-20"/>
+                      <Inp placeholder="Observação" value={novoItemCompra.observacao} onChange={e=>setNovoItemCompra({...novoItemCompra,observacao:e.target.value})} className="flex-1"/>
+                    </div>
+                    <div className="flex items-center justify-between gap-2">
+                      <label className="text-[10px] font-black text-indigo-600 hover:underline cursor-pointer flex items-center gap-1">
+                        <Camera className="w-3 h-3"/>{fotosManutencaoUpload.length>0?`${fotosManutencaoUpload.length} foto(s) selecionada(s)`:'Adicionar foto'}
+                        <input type="file" multiple accept="image/*" capture="environment" className="hidden" onChange={e=>handleFotoManutencao(e.target.files)}/>
+                      </label>
+                      <Btn variant="dark" size="sm" onClick={()=>adicionarItemCompra(sol)} disabled={!novoItemCompra.descricao.trim()}>
+                        <PackageOpen className="w-3.5 h-3.5"/>Adicionar
+                      </Btn>
+                    </div>
+                  </div>
+                )}
+              </div>
 
               {/* Timeline / histórico */}
               <div className="border-t border-slate-100 pt-4">
