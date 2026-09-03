@@ -4125,7 +4125,9 @@ export default function App(){
   const enviarExpedicao=async()=>{
     if(!projeto||!cliente)return addToast('Projeto e Cliente são obrigatórios.','error');
     if(isComp&&!opPaiId)return addToast('Selecione a OP original.','error');
-    const semSaldo=itens.filter(it=>it.saldoDisponivel<it.quantidadeTotal);
+    // Valida contra o saldo ATUAL do estoque, não contra a cópia congelada no
+    // item (que ficava desatualizada depois de sincronizar o ERP).
+    const semSaldo=itens.filter(it=>(estoqueDb[it.codigoMP]?.saldo_disponivel??it.saldoDisponivel)<it.quantidadeTotal);
     if(semSaldo.length>0)return addToast(`Saldo insuficiente: ${semSaldo.map(s=>s.codigoMP).join(', ')}`,'error');
     const servFinal=servico==='Outros'?(outrosTexto||'Outros'):servico;
     const removidos=itensOrig.filter(o=>!itens.find(it=>it.codigoMP===o.codigoMP)).map(r=>({codigoMP:s(r.codigoMP),descricao:s(r.descricao),quantidade:Number(r.quantidadeTotal),um:s(r.um)}));
@@ -7955,7 +7957,14 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
                         const dU=s(it.descricao).toUpperCase();
                         const isEd=dU.includes('BORRACHA')||dU.includes('CHEMITAC')||dU.includes('COLA')||ITENS_RATEIO.includes(s(it.codigoMP));
                         const diff=it.quantidadeTotal-it.quantidadeOriginal;const isAlt=isEd&&diff!==0;
-                        const semSaldo=it.saldoDisponivel<it.quantidadeTotal;
+                        // Bug corrigido: o saldo era copiado pra dentro do item no
+                        // momento em que o produto foi buscado (snapshot congelado) —
+                        // depois disso, sincronizar o ERP atualizava o estoqueDb mas a
+                        // tela continuava mostrando o número velho. Agora lê sempre o
+                        // valor atual, caindo na cópia só se o item não existir no
+                        // estoque (item manual/não catalogado).
+                        const saldoAtual=estoqueDb[it.codigoMP]?.saldo_disponivel??it.saldoDisponivel;
+                        const semSaldo=saldoAtual<it.quantidadeTotal;
                         return(
                           <tr key={i} className={semSaldo?'bg-red-50/40':'hover:bg-slate-50/50'}>
                             <td className="px-5 py-3.5"><button onClick={()=>setItens(p=>p.filter((_,idx)=>idx!==i))} className="text-slate-300 hover:text-red-500 transition-colors"><Trash2 className="w-4 h-4"/></button></td>
@@ -7990,7 +7999,7 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
                                 {ITENS_RATEIO.includes(s(it.codigoMP))&&<button onClick={()=>{setIdxRateio(i);setModalRateio(true);}} className={`p-1.5 rounded-lg transition-all ${it.rateiosExtras?.length>0?'bg-indigo-100 text-indigo-600':'bg-slate-100 text-slate-500 hover:bg-slate-200'}`}><PieChartIcon className="w-3.5 h-3.5"/></button>}
                               </div>
                             </td>
-                            <td className={`px-5 py-3.5 text-center text-xs font-black ${semSaldo?'text-red-600':'text-emerald-600'}`}>{semSaldo&&<AlertTriangle className="w-3 h-3 inline mr-1"/>}{fmtD(it.saldoDisponivel)} {it.um}</td>
+                            <td className={`px-5 py-3.5 text-center text-xs font-black ${semSaldo?'text-red-600':'text-emerald-600'}`}>{semSaldo&&<AlertTriangle className="w-3 h-3 inline mr-1"/>}{fmtD(saldoAtual)} {it.um}</td>
                           </tr>
                         );
                       })}
