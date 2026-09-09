@@ -2458,10 +2458,19 @@ export default function App(){
     // recalcula sozinho depois, mesmo que o Sankhya atualize o valor de algum pedido.
     // O que muda ao vivo é só o STATUS de cada projeto (se já foi faturado ou não).
     const valorPrevisto=planejamentoFechamentoAtual?planejamentoFechamentoAtual.valorTotal:planejamentoDoMes.reduce((a,r)=>a+r.valorTotal,0);
+    // BUG CORRIGIDO (usuário: "o que já antecipou e faturou não pode contar").
+    // Antes só saía da conta quem estava marcado como FATURADO (all-or-nothing).
+    // Projeto com nota já emitida, mas ainda não classificado como Faturado,
+    // contava 100% do valor — por isso "A Faturar" aparecia IDÊNTICO ao
+    // "Previsto" e a barra marcava 0%, mesmo com R$375 mil já faturados no mês.
+    // Agora desconta o valor realmente faturado de cada projeto, usando
+    // valorBruto (base valor_nota, comparável ao valor do pedido — valorFaturado
+    // é o líquido sem impostos e nunca fecha 100% contra o bruto).
     const valorAFaturar=planejamentoDoMes.reduce((a,r)=>{
       if(r.andamentoEfetivo==='FATURADO')return a; // já resolvido, sai da meta em aberto
       const alvo=planejamentoFechamentoAtual?(valorFechadoPorBr[r.br]??r.valorTotal):r.valorTotal;
-      return a+alvo;
+      const jaEmitido=Number(r.valorBruto||0);
+      return a+Math.max(0,alvo-jaEmitido);
     },0);
     const valorAtrasado=planejamentoAtrasados.reduce((a,r)=>a+r.valorVencidoSemAviso,0);
     return{valorPrevisto,valorAFaturar,valorAtrasado,totalProjetos:planejamentoDoMes.length,totalAtrasados:planejamentoAtrasados.length};
