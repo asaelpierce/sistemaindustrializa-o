@@ -1886,7 +1886,7 @@ export default function App(){
       const br=r.br;
       if(!porBR[br])porBR[br]={
         br,cliente:r.cliente,vendedor:r.vendedor,emissao:r.dataNeg,
-        valorTotal:0,valorFaturadoQtd:0,valorAFaturar:0,qtdPecas:0,qtdEntregueTotal:0,valorFaturadoReal:0,valorBrutoReal:0,pedidosCount:0,
+        valorTotal:0,valorFaturadoQtd:0,valorAFaturar:0,qtdPecas:0,qtdEntregueTotal:0,valorFaturadoReal:0,valorFaturadoNaBaseDoPedido:0,pedidosCount:0,
         descricoes:[],datasEntregaCP:[],datasReferencia:[],situacaoEspecial:null,reprogramacao:null,
         itensPendentesTotal:0,itensTotal:0,notas:r.notas||[],semPedidoSincronizado:r.semPedidoSincronizado,itens:[],
         valorVencidoSemAviso:0,valorReprogramado:0,valorAVencer:0,valorSemPrazo:0,valorServicoEmAberto:0,temServicoPendente:false,
@@ -1901,7 +1901,7 @@ export default function App(){
       // Mesma ideia, mas na base BRUTA (valor_nota) — é a única comparável com o
       // valor do pedido. O líquido (net_offer_value) é ~84% do bruto por causa
       // de impostos, então descontar por ele subestima o que já foi faturado.
-      if(!g.valorBrutoReal)g.valorBrutoReal=r.valorBruto||0;
+      if(!g.valorFaturadoNaBaseDoPedido)g.valorFaturadoNaBaseDoPedido=r.valorBruto||0;
       // Pedido de referência pro link direto do Sankhya (Pedido de Venda) — pega o
       // primeiro que tiver nunota+top, já que um BR pode ter mais de um pedido.
       if(!g.nunotaPedidoRef&&r.nunota&&r.topPedido){g.nunotaPedidoRef=r.nunota;g.topPedidoRef=r.topPedido;}
@@ -2473,7 +2473,15 @@ export default function App(){
     const valorAFaturar=planejamentoDoMes.reduce((a,r)=>{
       if(r.andamentoEfetivo==='FATURADO')return a; // já resolvido, sai da meta em aberto
       const alvo=planejamentoFechamentoAtual?(valorFechadoPorBr[r.br]??r.valorTotal):r.valorTotal;
-      const jaEmitido=Number(r.valorBrutoReal||0);
+      // O PCP trabalha SEMPRE em valor líquido — confirmado por ele e pela
+      // planilha de setembro, onde BR14074, BR14422, BR14473, BR14420, BR14338
+      // e BR14317 (todos já faturados) simplesmente NÃO APARECEM, e o BR14323,
+      // faturado só em parte, entra apenas com o saldo restante.
+      // valorTotal vem de pedidos_itens.valor_liquido, e o comparável dele no
+      // faturamento é valor_nota (conferido: BR14422 = 317.615,74 nos dois).
+      // net_offer_value é outra base (~84%) e deixaria ~16% fantasma em projeto
+      // 100% faturado, que nunca zeraria.
+      const jaEmitido=Number(r.valorFaturadoNaBaseDoPedido||0);
       return a+Math.max(0,alvo-jaEmitido);
     },0);
     const valorAtrasado=planejamentoAtrasados.reduce((a,r)=>a+r.valorVencidoSemAviso,0);
