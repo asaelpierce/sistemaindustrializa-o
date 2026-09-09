@@ -12210,15 +12210,32 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
         {comparacaoSel&&(()=>{
           if(comparacaoSel.carregando)return<div className="py-12 text-center"><Loader2 className="w-6 h-6 animate-spin mx-auto text-indigo-500 mb-2"/><p className="text-sm text-slate-400">Buscando itens da nota no Sankhya...</p></div>;
           const rem=comparacaoSel.rem;
-          const materiais=produtosDb[rem.produto_acabado]?.materiais||[];
           const qtdOP=Number(rem.quantidade_op||0);
-          // Lado esquerdo: o que a remessa deveria ter mandado.
-          const enviados=materiais.map(m=>({
-            cod:s(m.codigoMP),
-            desc:s(estoqueDb[m.codigoMP]?.descricao)||`Código ${m.codigoMP}`,
-            qtd:Number(m.quantidade||0)*qtdOP,
-            um:s(m.um)||'UN',
-          }));
+          // BUG CORRIGIDO (apontado pelo usuário: "o que você tá considerando
+          // só na remessa não é o que ele removeu?"): antes eu usava a
+          // composição teórica do produto (ficha técnica), não o que a remessa
+          // DE FATO mandou. Como o PCP pode remover itens e ajustar quantidades
+          // ao montar a remessa, os itens removidos apareciam como "faltando na
+          // nota" — falso alarme. Caso real: BR14398 enviou 4 itens e removeu 9;
+          // os 9 removidos poluíam a comparação, escondendo que a nota batia
+          // 100% com o que realmente saiu.
+          const itensReais=Array.isArray(rem.itens)?rem.itens:[];
+          const removidos=Array.isArray(rem.itens_removidos)?rem.itens_removidos:[];
+          // Lado esquerdo: o que a remessa realmente mandou. Cai na composição
+          // teórica só se a remessa não tiver itens gravados (registro antigo).
+          const enviados=itensReais.length>0
+            ? itensReais.map(it=>({
+                cod:s(it.codigoMP),
+                desc:s(it.descricao)||s(estoqueDb[it.codigoMP]?.descricao)||`Código ${it.codigoMP}`,
+                qtd:Number(it.quantidadeTotal||0),
+                um:s(it.um)||'UN',
+              }))
+            : (produtosDb[rem.produto_acabado]?.materiais||[]).map(m=>({
+                cod:s(m.codigoMP),
+                desc:s(estoqueDb[m.codigoMP]?.descricao)||`Código ${m.codigoMP}`,
+                qtd:Number(m.quantidade||0)*qtdOP,
+                um:s(m.um)||'UN',
+              }));
           // Lado direito: o que a nota fiscal registrou de fato.
           const naNota=(comparacaoSel.itensNota||[]).map(i=>({
             cod:s(i.cod_produto??i.codigo??i.codprod),
@@ -12316,8 +12333,24 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
                 </div>
               </div>
 
+              {/* Itens que o PCP removeu ao montar a remessa — não entram na
+                  comparação (nunca saíram), mas mostrar evita a dúvida de
+                  "cadê o resto da ficha técnica?". */}
+              {removidos.length>0&&(
+                <div className="bg-slate-50 border border-slate-200 rounded-xl p-3">
+                  <p className="text-[10px] font-black text-slate-500 uppercase tracking-wider mb-1.5">✂️ Removidos pelo PCP ao montar a remessa ({removidos.length}) — não foram enviados</p>
+                  <div className="flex flex-wrap gap-1.5">
+                    {removidos.map((r,i)=>(
+                      <span key={i} className="text-[10px] bg-white border border-slate-200 rounded px-2 py-0.5 text-slate-500">
+                        {s(r.codigoMP)} <span className="text-slate-300">·</span> {fmtD(r.quantidade)} {s(r.um)}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
+
               <p className="text-[11px] text-slate-400 bg-slate-50 rounded-lg p-3">
-                💡 A remessa mandou <strong>{fmtD(qtdOP)} peça(s)</strong> de {s(rem.produto_acabado)}, então a coluna "Enviado" é a composição multiplicada por essa quantidade. Diferenças pequenas são normais (sobra de material, arredondamento); item que só aparece de um lado é o sinal de alerta.
+                💡 A coluna "Enviado" é o que a remessa <strong>realmente mandou</strong>{itensReais.length===0?' (composição teórica — esta remessa não tem itens gravados)':''}, já considerando ajustes e remoções do PCP. Diferenças pequenas são normais (sobra de material, arredondamento); item presente em só um lado é o sinal de alerta.
               </p>
             </div>
           );
