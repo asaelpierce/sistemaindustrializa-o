@@ -1271,6 +1271,21 @@ export default function App(){
   });
   const [notaItensSel,setNotaItensSel]=useState(null); // {numeroNota,fornecedor,itens:[...],carregando}
   const [remessaItensSel,setRemessaItensSel]=useState(null); // {rem} — ver a composição (o que foi enviado) de uma remessa
+  // Comparação lado a lado: o que a remessa mandou (composição × quantidade)
+  // versus o que a nota fiscal registrou de fato. Pedido do usuário — é o que
+  // permite ele VALIDAR se o vínculo automático acertou, em vez de confiar
+  // cegamente no percentual de confiança.
+  const [comparacaoSel,setComparacaoSel]=useState(null);
+  const compararNotaComRemessa=async(rem,nota)=>{
+    setComparacaoSel({rem,nota,itensNota:[],carregando:true});
+    try{
+      const res=await fetch(`${SUPABASE_URL}/functions/v1/consultar-itens-nota-sankhya`,{method:'POST',headers:{'Content-Type':'application/json','apikey':SUPABASE_KEY},body:JSON.stringify({nunota:nota.nunota})});
+      const data=await res.json();
+      if(!data.ok)throw new Error(data.erro||'Erro ao consultar itens');
+      setComparacaoSel({rem,nota,itensNota:data.itens||[],carregando:false});
+    }catch(e){addToast('Erro ao buscar itens da nota: '+e.message,'error');setComparacaoSel(null);}
+  };
+
   const verItensDaNota=async nota=>{
     setNotaItensSel({numeroNota:nota.numero_nota,fornecedor:nota.fornecedor,itens:[],carregando:true});
     try{
@@ -8925,6 +8940,11 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
                                   {vinculo.compartilhada?' · matéria-prima compartilhada com outra remessa do mesmo BR':''}
                                 </p>
                                 <div className="flex items-center gap-1.5 flex-wrap">
+                                  {/* Comparação lado a lado — é o que permite validar
+                                      se o vínculo automático acertou de verdade. */}
+                                  <button onClick={()=>compararNotaComRemessa(rem,vinculo.nota)} className="mt-1.5 inline-flex items-center gap-1 text-[10px] font-black text-white bg-slate-800 hover:bg-slate-900 rounded-lg px-2.5 py-1">
+                                    ⚖️ Comparar nota × remessa
+                                  </button>
                                   <BotaoAbrirSankhya nunota={vinculo.nota.nunota} tipmov={vinculo.nota.tipmov} codtipoper={vinculo.nota.top} label="🔗 Ver esta nota no Sankhya"
                                     className="mt-1.5 inline-flex items-center gap-1 text-[10px] font-black text-white bg-indigo-600 hover:bg-indigo-700 rounded-lg px-2.5 py-1"/>
                                   <button onClick={()=>verItensDaNota(vinculo.nota)} className="mt-1.5 inline-flex items-center gap-1 text-[10px] font-black text-indigo-700 bg-white border border-indigo-200 hover:bg-indigo-50 rounded-lg px-2.5 py-1">
@@ -12175,6 +12195,133 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
             <p className="text-[11px] text-amber-600 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">Este BR não tem pedido específico vinculado — a marcação vai se aplicar a todos os pedidos deste BR.</p>
           )}
         </div>
+      </Modal>
+
+      {/* ── MODAL: Comparação Remessa × Nota Fiscal ─────────────────────────
+          Pedido do usuário: "seria top se eu conseguisse ver a nota e a
+          remessa quando clicar, assim o usuário valida". Mostra lado a lado o
+          que foi ENVIADO (composição do produto × quantidade da remessa) e o
+          que a NOTA registrou, cruzando por código de matéria-prima — é o que
+          permite conferir na mão se o vínculo automático acertou. */}
+      <Modal open={!!comparacaoSel} onClose={()=>setComparacaoSel(null)}
+        title="⚖️ Comparar: o que saiu × o que a nota diz"
+        subtitle={comparacaoSel?`${s(comparacaoSel.rem?.projeto)} · ${s(comparacaoSel.rem?.produto_acabado)} × NF ${s(comparacaoSel.nota?.numero_nota)} (${s(comparacaoSel.nota?.fornecedor)})`:''}
+        maxWidth="max-w-4xl">
+        {comparacaoSel&&(()=>{
+          if(comparacaoSel.carregando)return<div className="py-12 text-center"><Loader2 className="w-6 h-6 animate-spin mx-auto text-indigo-500 mb-2"/><p className="text-sm text-slate-400">Buscando itens da nota no Sankhya...</p></div>;
+          const rem=comparacaoSel.rem;
+          const materiais=produtosDb[rem.produto_acabado]?.materiais||[];
+          const qtdOP=Number(rem.quantidade_op||0);
+          // Lado esquerdo: o que a remessa deveria ter mandado.
+          const enviados=materiais.map(m=>({
+            cod:s(m.codigoMP),
+            desc:s(estoqueDb[m.codigoMP]?.descricao)||`Código ${m.codigoMP}`,
+            qtd:Number(m.quantidade||0)*qtdOP,
+            um:s(m.um)||'UN',
+          }));
+          // Lado direito: o que a nota fiscal registrou de fato.
+          const naNota=(comparacaoSel.itensNota||[]).map(i=>({
+            cod:s(i.cod_produto??i.codigo??i.codprod),
+            desc:s(i.descricao??i.descricao_produto??''),
+            qtd:Number(i.quantidade??i.qtd??0),
+            um:s(i.unidade??i.um??'UN'),
+          }));
+          // Cruzamento por código — é assim que dá pra ver o que bate.
+          const codsEnviados=new Set(enviados.map(e=>e.cod));
+          const codsNota=new Set(naNota.map(n=>n.cod));
+          const soNaRemessa=enviados.filter(e=>!codsNota.has(e.cod));
+          const soNaNota=naNota.filter(n=>!codsEnviados.has(n.cod));
+          const emAmbos=enviados.filter(e=>codsNota.has(e.cod)).map(e=>{
+            const n=naNota.find(x=>x.cod===e.cod);
+            const dif=Math.abs(e.qtd-n.qtd);
+            const pct=e.qtd>0?dif/e.qtd:(n.qtd>0?1:0);
+            return{...e,qtdNota:n.qtd,umNota:n.um,dif,batendo:pct<=0.05,proximo:pct>0.05&&pct<=0.30};
+          });
+          return(
+            <div className="space-y-4">
+              {/* Veredito rápido */}
+              <div className={`rounded-xl border-2 p-4 ${emAmbos.length===0?'bg-red-50 border-red-300':soNaRemessa.length===0&&soNaNota.length===0?'bg-emerald-50 border-emerald-300':'bg-amber-50 border-amber-300'}`}>
+                <p className={`text-sm font-black ${emAmbos.length===0?'text-red-800':soNaRemessa.length===0&&soNaNota.length===0?'text-emerald-800':'text-amber-800'}`}>
+                  {emAmbos.length===0
+                    ?'⚠️ Nenhum item em comum — provavelmente NÃO é a nota desta remessa'
+                    :soNaRemessa.length===0&&soNaNota.length===0
+                      ?'✅ Todos os itens batem — vínculo consistente'
+                      :`⚠️ ${emAmbos.length} item(ns) em comum, mas há diferenças — confira abaixo`}
+                </p>
+                <p className="text-[11px] text-slate-600 mt-0.5">
+                  {emAmbos.filter(i=>i.batendo).length} com quantidade igual · {emAmbos.filter(i=>i.proximo).length} com pequena diferença · {emAmbos.filter(i=>!i.batendo&&!i.proximo).length} com diferença grande · {soNaRemessa.length} só na remessa · {soNaNota.length} só na nota
+                </p>
+              </div>
+
+              {/* Itens que aparecem nos dois lados */}
+              {emAmbos.length>0&&(
+                <div>
+                  <p className="text-[10px] font-black text-slate-400 uppercase tracking-wider mb-2">Itens em comum</p>
+                  <div className="border border-slate-200 rounded-xl overflow-hidden">
+                    <table className="w-full text-xs">
+                      <thead className="bg-slate-50 border-b border-slate-200">
+                        <tr className="text-left text-[10px] font-black text-slate-500 uppercase">
+                          <th className="px-3 py-2">Código</th>
+                          <th className="px-3 py-2">Descrição</th>
+                          <th className="px-3 py-2 text-right">Enviado (remessa)</th>
+                          <th className="px-3 py-2 text-right">Na nota</th>
+                          <th className="px-3 py-2 text-center">Confere?</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100">
+                        {emAmbos.map((it,i)=>(
+                          <tr key={i} className={it.batendo?'':it.proximo?'bg-amber-50/40':'bg-red-50/40'}>
+                            <td className="px-3 py-2 font-bold text-slate-700">{it.cod}</td>
+                            <td className="px-3 py-2 text-slate-500 truncate max-w-[240px]">{it.desc}</td>
+                            <td className="px-3 py-2 text-right font-bold text-slate-700">{fmtD(it.qtd)} {it.um}</td>
+                            <td className="px-3 py-2 text-right font-bold text-indigo-700">{fmtD(it.qtdNota)} {it.umNota}</td>
+                            <td className="px-3 py-2 text-center">
+                              {it.batendo?<span className="text-emerald-600 font-black">✓ igual</span>
+                                :it.proximo?<span className="text-amber-600 font-black">≈ perto</span>
+                                :<span className="text-red-600 font-black">✕ difere</span>}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+
+              {/* Divergências */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div>
+                  <p className="text-[10px] font-black text-slate-400 uppercase tracking-wider mb-2">📦 Só na remessa ({soNaRemessa.length})</p>
+                  <div className="space-y-1">
+                    {soNaRemessa.map((it,i)=>(
+                      <div key={i} className="bg-slate-50 rounded-lg px-3 py-2 text-xs">
+                        <p className="font-bold text-slate-700">{it.cod} — {fmtD(it.qtd)} {it.um}</p>
+                        <p className="text-[10px] text-slate-400 truncate">{it.desc}</p>
+                      </div>
+                    ))}
+                    {soNaRemessa.length===0&&<p className="text-[11px] text-slate-300 py-3 text-center">Nada sobrando</p>}
+                  </div>
+                </div>
+                <div>
+                  <p className="text-[10px] font-black text-slate-400 uppercase tracking-wider mb-2">🧾 Só na nota ({soNaNota.length})</p>
+                  <div className="space-y-1">
+                    {soNaNota.map((it,i)=>(
+                      <div key={i} className="bg-slate-50 rounded-lg px-3 py-2 text-xs">
+                        <p className="font-bold text-slate-700">{it.cod} — {fmtD(it.qtd)} {it.um}</p>
+                        <p className="text-[10px] text-slate-400 truncate">{it.desc}</p>
+                      </div>
+                    ))}
+                    {soNaNota.length===0&&<p className="text-[11px] text-slate-300 py-3 text-center">Nada sobrando</p>}
+                  </div>
+                </div>
+              </div>
+
+              <p className="text-[11px] text-slate-400 bg-slate-50 rounded-lg p-3">
+                💡 A remessa mandou <strong>{fmtD(qtdOP)} peça(s)</strong> de {s(rem.produto_acabado)}, então a coluna "Enviado" é a composição multiplicada por essa quantidade. Diferenças pequenas são normais (sobra de material, arredondamento); item que só aparece de um lado é o sinal de alerta.
+              </p>
+            </div>
+          );
+        })()}
       </Modal>
 
       {/* ── MODAL: Itens de uma nota de remessa (consulta ao vivo no Sankhya) ── */}
