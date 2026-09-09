@@ -1616,7 +1616,7 @@ export default function App(){
   const fetchPedidosItensCache=useCallback(async()=>{
     const cache=pedidosItensCacheRef.current;
     if(cache.data&&Date.now()-cache.ts<30000)return cache.data;
-    const{data,error}=await supabase.from('pedidos_itens').select('br,nunota,numero_pedido,cliente_nome,vendedor_nome,valor_liquido,produto_descricao,cod_produto,quantidade,qtd_entregue,unidade,data_neg,data_prevista_entrega,top');
+    const{data,error}=await supabase.from('pedidos_itens').select('br,nunota,numero_pedido,cliente_nome,vendedor_nome,valor_liquido,valor_liquido_real,produto_descricao,cod_produto,quantidade,qtd_entregue,unidade,data_neg,data_prevista_entrega,top');
     if(error)throw error;
     pedidosItensCacheRef.current={data:data||[],ts:Date.now()};
     return data||[];
@@ -2730,7 +2730,11 @@ export default function App(){
         if(nunotasDesconsiderados.has(p.nunota)||brsDesconsiderados.has(br))return;
         const chave=`${br}|${nunota}`;
         if(!agrup[chave])agrup[chave]={chave,br,nunota,topPedido:p.top||null,numeroPedido:s(p.numero_pedido),cliente:p.cliente_nome,vendedor:p.vendedor_nome,valorTotal:0,dataNeg:p.data_neg,dataPrevista:p.data_prevista_entrega,produtos:[],temItemServico:false};
-        agrup[chave].valorTotal+=Number(p.valor_liquido||0);
+        // Usa o valor LÍQUIDO REAL (VLRNOTA - impostos), que é o que o PCP usa na
+        // planilha OOH. O campo valor_liquido, apesar do nome, traz ITE.VLRTOT
+        // (com impostos) — era a causa de o portal nunca bater com a planilha.
+        // Fallback pro antigo enquanto a sincronização não cobriu todos os BRs.
+        agrup[chave].valorTotal+=Number(p.valor_liquido_real??p.valor_liquido??0);
         if(p.produto_descricao&&!agrup[chave].produtos.includes(p.produto_descricao))agrup[chave].produtos.push(p.produto_descricao);
         if(p.data_neg&&(!agrup[chave].dataNeg||p.data_neg<agrup[chave].dataNeg))agrup[chave].dataNeg=p.data_neg;
         // "SERVIÇO" é responsabilidade comercial, não do PCP — não conta como atraso de
@@ -2742,7 +2746,7 @@ export default function App(){
         if(!itensPedidoPorChave[chave][cod])itensPedidoPorChave[chave][cod]={codProduto:s(p.cod_produto),descricao:p.produto_descricao,unidade:p.unidade,qtdPedida:0,qtdEntregue:0,valorPedido:0,dataPrevista:p.data_prevista_entrega};
         itensPedidoPorChave[chave][cod].qtdPedida+=Number(p.quantidade||0);
         itensPedidoPorChave[chave][cod].qtdEntregue+=Number(p.qtd_entregue||0);
-        itensPedidoPorChave[chave][cod].valorPedido+=Number(p.valor_liquido||0);
+        itensPedidoPorChave[chave][cod].valorPedido+=Number(p.valor_liquido_real??p.valor_liquido??0);
         if(p.data_prevista_entrega&&(!itensPedidoPorChave[chave][cod].dataPrevista||p.data_prevista_entrega<itensPedidoPorChave[chave][cod].dataPrevista))itensPedidoPorChave[chave][cod].dataPrevista=p.data_prevista_entrega;
       });
 
@@ -3098,7 +3102,7 @@ export default function App(){
         if(!agrup[br])agrup[br]={br,cliente:p.cliente_nome,vendedor:p.vendedor_nome,valorTotal:0,valorEntregue:0,valorTotalProducao:0,valorEntregueProducao:0,dataPrevista:p.data_prevista_entrega,produtos:[],situacaoEspecial:null};
         const qtd=Number(p.quantidade||0);
         const qtdEnt=Number(p.qtd_entregue||0);
-        const valorItem=Number(p.valor_liquido||0);
+        const valorItem=Number(p.valor_liquido_real??p.valor_liquido??0);
         // "Atendido" é por QUANTIDADE (QTDENTREGUE do Sankhya), nunca por comparação de valores
         // — valor líquido de nota já vem sem impostos e nunca bate 100% com o valor do pedido.
         const valorEntregueItem=valorItem*(qtd>0?Math.min(1,qtdEnt/qtd):0);
