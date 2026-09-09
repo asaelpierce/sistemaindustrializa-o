@@ -1886,7 +1886,7 @@ export default function App(){
       const br=r.br;
       if(!porBR[br])porBR[br]={
         br,cliente:r.cliente,vendedor:r.vendedor,emissao:r.dataNeg,
-        valorTotal:0,valorFaturadoQtd:0,valorAFaturar:0,qtdPecas:0,qtdEntregueTotal:0,valorFaturadoReal:0,pedidosCount:0,
+        valorTotal:0,valorFaturadoQtd:0,valorAFaturar:0,qtdPecas:0,qtdEntregueTotal:0,valorFaturadoReal:0,valorBrutoReal:0,pedidosCount:0,
         descricoes:[],datasEntregaCP:[],datasReferencia:[],situacaoEspecial:null,reprogramacao:null,
         itensPendentesTotal:0,itensTotal:0,notas:r.notas||[],semPedidoSincronizado:r.semPedidoSincronizado,itens:[],
         valorVencidoSemAviso:0,valorReprogramado:0,valorAVencer:0,valorSemPrazo:0,valorServicoEmAberto:0,temServicoPendente:false,
@@ -1898,6 +1898,10 @@ export default function App(){
       // valorFaturado do mestraDb já é o total por BR (faturadoPorBR[br]), duplicado em
       // toda linha de pedido do mesmo BR — pega só uma vez, nunca soma entre pedidos.
       if(!g.valorFaturadoReal)g.valorFaturadoReal=r.valorFaturado||0;
+      // Mesma ideia, mas na base BRUTA (valor_nota) — é a única comparável com o
+      // valor do pedido. O líquido (net_offer_value) é ~84% do bruto por causa
+      // de impostos, então descontar por ele subestima o que já foi faturado.
+      if(!g.valorBrutoReal)g.valorBrutoReal=r.valorBruto||0;
       // Pedido de referência pro link direto do Sankhya (Pedido de Venda) — pega o
       // primeiro que tiver nunota+top, já que um BR pode ter mais de um pedido.
       if(!g.nunotaPedidoRef&&r.nunota&&r.topPedido){g.nunotaPedidoRef=r.nunota;g.topPedidoRef=r.topPedido;}
@@ -2469,7 +2473,7 @@ export default function App(){
     const valorAFaturar=planejamentoDoMes.reduce((a,r)=>{
       if(r.andamentoEfetivo==='FATURADO')return a; // já resolvido, sai da meta em aberto
       const alvo=planejamentoFechamentoAtual?(valorFechadoPorBr[r.br]??r.valorTotal):r.valorTotal;
-      const jaEmitido=Number(r.valorBruto||0);
+      const jaEmitido=Number(r.valorBrutoReal||0);
       return a+Math.max(0,alvo-jaEmitido);
     },0);
     const valorAtrasado=planejamentoAtrasados.reduce((a,r)=>a+r.valorVencidoSemAviso,0);
