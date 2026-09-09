@@ -3025,11 +3025,19 @@ export default function App(){
       // que a Mestra usa), sem filtrar por andamento_producao em nenhum momento.
       const faturamentoPorBRMes={};
       const faturamentoTotalPorBR={}; // líquido acumulado do BR (qualquer mês) — usado pra saber quanto FALTA faturar
+      // Acumulador na MESMA BASE do valor do pedido. Descoberto conferindo o
+      // BR14422: pedido.valor_liquido (317.615,74) é idêntico ao
+      // faturamento.valor_nota (317.615,74), enquanto net_offer_value é o
+      // líquido sem impostos (265.379,15 ≈ 84%). Comparar o pedido contra o
+      // líquido nunca fecha 100%, então um projeto totalmente faturado jamais
+      // seria reconhecido como atendido.
+      const faturamentoNaBaseDoPedidoPorBR={};
       (faturamentoDatasRes.data||[]).forEach(f=>{
         const br=s(f.br);if(!br)return;
         if(f.data_faturamento&&(!dataFaturamentoPorBR[br]||f.data_faturamento>dataFaturamentoPorBR[br].data)){
           dataFaturamentoPorBR[br]={data:f.data_faturamento,numeroNota:f.numero_nota};
         }
+        faturamentoNaBaseDoPedidoPorBR[br]=(faturamentoNaBaseDoPedidoPorBR[br]||0)+Number(f.valor_nota||0);
         const mesNeg=s(f.data_neg).slice(0,7);
         if(!mesNeg)return;
         const chave=`${mesNeg}|${br}`;
@@ -3122,7 +3130,17 @@ export default function App(){
         // "pendente" logo abaixo — não da lista de previstos. Tratá-lo como atendido
         // sumia com ele do Previsto e subestimava o valor do mês (ex: BR14349/26,
         // R$28.069, desaparecia da lista inteira).
-        const atendido=percentualFaturado>=0.999||andamentoManual==='FATURADO'||(r.situacaoEspecial&&(r.situacaoEspecial.status==='CANCELADO'||r.situacaoEspecial.status==='PENDENTE'));
+        // BUG CORRIGIDO (apontado pelo usuário: "no planejamento de setembro, o
+        // que já antecipou e faturou não pode contar — se já foi"). O atendido
+        // olhava SÓ a quantidade entregue do pedido (qtd_entregue), que em
+        // vários casos fica zerada mesmo com a nota fiscal já emitida — aí o
+        // projeto continuava contando como compromisso do mês. Casos reais de
+        // setembro: BR14422 (R$317.615), BR14473, BR14332, BR14420 e BR14338,
+        // todos 100% faturados e ainda ocupando a previsão — ~R$465 mil a mais.
+        // Agora considera também o valor realmente faturado (notas emitidas).
+        const faturadoNotaBR=faturamentoNaBaseDoPedidoPorBR[r.br]||0;
+        const percentualPorNota=r.valorTotal>0?faturadoNotaBR/r.valorTotal:0;
+        const atendido=percentualFaturado>=0.999||percentualPorNota>=0.999||andamentoManual==='FATURADO'||(r.situacaoEspecial&&(r.situacaoEspecial.status==='CANCELADO'||r.situacaoEspecial.status==='PENDENTE'));
         // Data de referência = material tem que estar pronto 5 dias antes do CP.
         // Alerta de esteira = 15 dias antes do CP, pra entrar na fila de fabricação a tempo
         // (reduzido de 20 pra 15 dias, decisão do PCP).
@@ -3150,8 +3168,7 @@ export default function App(){
         // tendo nota emitida — foi o que fez "A faturar" ficar igual à "Carteira total"
         // e a barra marcar 0%, mesmo com 16 projetos faturados no mês. Pega o maior dos
         // dois (nunca acima do valor total do projeto, pra não gerar negativo).
-        const faturadoNota=faturamentoTotalPorBR[r.br]||0;
-        const valorFaturadoEfetivo=Math.min(r.valorTotal,Math.max(r.valorEntregue||0,faturadoNota));
+        const valorFaturadoEfetivo=Math.min(r.valorTotal,Math.max(r.valorEntregue||0,faturadoNotaBR));
         return{...r,valorFaturado:valorFaturadoEfetivo,percentualFaturado,atendido,pendente,mesPrevisto,plano,
           andamento:andamentoManual,observacaoPendencia:observacaoPorBR[r.br]||null,
           escopo2:escopo2PorBR[r.br]||null,aguardandoImportacao,importacaoInfo:importacaoPorBRooh[r.br]||null,
