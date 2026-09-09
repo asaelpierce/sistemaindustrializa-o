@@ -13,7 +13,7 @@ import {
   ArrowUp, ArrowDown, TrendingUp, TrendingDown, Activity, MessageSquare,
   X, Send, Bot, Save, Menu, Bell, RefreshCw, RotateCcw, Factory,
   Layers, PieChart as PieChartIcon, BarChart as BarChartIcon, BarChart2, Link2,
-  AlertOctagon, KeyRound, Circle, ShieldAlert, Camera, Wrench
+  AlertOctagon, KeyRound, Circle, ShieldAlert, Camera, Wrench, ChevronDown
 } from 'lucide-react';
 
 // ============================================================================
@@ -1263,6 +1263,12 @@ export default function App(){
   const [buscaForn,setBuscaForn]=useState('');
   const [filtroSoPendentes,setFiltroSoPendentes]=useState(false);
   const [filtroSoEmTransito,setFiltroSoEmTransito]=useState(false); // pega ENVIADO + as RETORNADO com marcação incorreta (nota real ainda pendente)
+  // Preferência de recolher a lista de notas sem BR — fica salva no navegador
+  // porque é ruído recorrente pra quem já sabe que aquelas notas não dá pra
+  // rastrear; sem persistir, voltaria aberta a cada refresh.
+  const [ocultarNotasSemBR,setOcultarNotasSemBR]=useState(()=>{
+    try{return localStorage.getItem('ocultarNotasSemBR')==='1';}catch(_){return false;}
+  });
   const [notaItensSel,setNotaItensSel]=useState(null); // {numeroNota,fornecedor,itens:[...],carregando}
   const [remessaItensSel,setRemessaItensSel]=useState(null); // {rem} — ver a composição (o que foi enviado) de uma remessa
   const verItensDaNota=async nota=>{
@@ -8816,24 +8822,35 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
                     lista vazia, sem explicação nenhuma pro usuário. */}
                 {notasPendentesSemRemessa.length>0&&(
                   <div className="bg-orange-50 border border-orange-200 rounded-2xl overflow-hidden">
-                    <div className="px-5 py-3.5 border-b border-orange-100">
-                      <p className="text-sm font-black text-orange-800 flex items-center gap-1.5"><AlertTriangle className="w-4 h-4"/>{notasPendentesSemRemessa.length} nota(s) pendente(s) sem BR ou remessa cadastrada</p>
-                      <p className="text-[11px] text-orange-700 mt-0.5">Essas notas não aparecem nos cards abaixo porque não têm projeto vinculado no Sankhya, ou não têm remessa correspondente cadastrada aqui no portal — não dá pra saber a qual projeto pertencem só com o que temos.</p>
-                    </div>
-                    <div className="divide-y divide-orange-100">
-                      {notasPendentesSemRemessa.map((n,i)=>(
-                        <div key={i} className="px-5 py-3 flex items-center justify-between gap-4 flex-wrap">
-                          <div className="min-w-0">
-                            <p className="text-sm font-bold text-slate-900">NF {n.numero_nota} <span className="text-slate-400 font-normal">· {s(n.fornecedor)}</span></p>
-                            <p className="text-[11px] text-slate-500 mt-0.5">{n.br?`BR ${n.br} (sem remessa cadastrada)`:'Sem BR vinculado no Sankhya'} · {n.quantidade} · {fmtDt(n.data_neg)}</p>
+                    <button onClick={()=>{const nv=!ocultarNotasSemBR;setOcultarNotasSemBR(nv);try{localStorage.setItem('ocultarNotasSemBR',nv?'1':'0');}catch(_){}}}
+                      className="w-full px-5 py-3.5 border-b border-orange-100 text-left hover:bg-orange-100/40 transition-colors">
+                      <div className="flex items-center justify-between gap-3">
+                        <p className="text-sm font-black text-orange-800 flex items-center gap-1.5"><AlertTriangle className="w-4 h-4"/>{notasPendentesSemRemessa.length} nota(s) pendente(s) sem BR ou remessa cadastrada</p>
+                        <span className="text-[10px] font-black text-orange-600 flex items-center gap-1 flex-shrink-0">
+                          {ocultarNotasSemBR?'mostrar':'ocultar'}
+                          <ChevronDown className={`w-3.5 h-3.5 transition-transform ${ocultarNotasSemBR?'':'rotate-180'}`}/>
+                        </span>
+                      </div>
+                      {!ocultarNotasSemBR&&(
+                        <p className="text-[11px] text-orange-700 mt-0.5">Essas notas não aparecem nos cards abaixo porque não têm projeto vinculado no Sankhya, ou não têm remessa correspondente cadastrada aqui no portal — não dá pra saber a qual projeto pertencem só com o que temos.</p>
+                      )}
+                    </button>
+                    {!ocultarNotasSemBR&&(
+                      <div className="divide-y divide-orange-100">
+                        {notasPendentesSemRemessa.map((n,i)=>(
+                          <div key={i} className="px-5 py-3 flex items-center justify-between gap-4 flex-wrap">
+                            <div className="min-w-0">
+                              <p className="text-sm font-bold text-slate-900">NF {n.numero_nota} <span className="text-slate-400 font-normal">· {s(n.fornecedor)}</span></p>
+                              <p className="text-[11px] text-slate-500 mt-0.5">{n.br?`BR ${n.br} (sem remessa cadastrada)`:'Sem BR vinculado no Sankhya'} · {n.quantidade} · {fmtDt(n.data_neg)}</p>
+                            </div>
+                            <div className="flex items-center gap-1.5">
+                              <BotaoAbrirSankhya nunota={n.nunota} tipmov={n.tipmov} codtipoper={n.top} label="ver no Sankhya 🔗" className="text-[10px] font-black text-indigo-600 hover:underline"/>
+                              <button onClick={()=>verItensDaNota(n)} className="text-[10px] font-black text-indigo-600 hover:underline">· ver itens</button>
+                            </div>
                           </div>
-                          <div className="flex items-center gap-1.5">
-                            <BotaoAbrirSankhya nunota={n.nunota} tipmov={n.tipmov} codtipoper={n.top} label="ver no Sankhya 🔗" className="text-[10px] font-black text-indigo-600 hover:underline"/>
-                            <button onClick={()=>verItensDaNota(n)} className="text-[10px] font-black text-indigo-600 hover:underline">· ver itens</button>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
+                        ))}
+                      </div>
+                    )}
                   </div>
                 )}
 
