@@ -4279,19 +4279,22 @@ export default function App(){
   // confirmar manualmente. A IA nunca é a única a saber que ficou em dúvida.
   const analisarVinculoComIA=async(rem,candidatas)=>{
     if(!openAIKey){addToast('Configure a chave da OpenAI em Configurações pra usar a análise por IA.','error');return null;}
-    const materiais=produtosDb[rem.produto_acabado]?.materiais||[];
+    // Usa o que a remessa REALMENTE enviou (com ajustes/remoções do PCP), não a
+    // ficha técnica — senão a IA raciocina sobre itens que nunca saíram.
+    const enviados=itensReaisDaRemessa(rem);
+    const removidos=Array.isArray(rem.itens_removidos)?rem.itens_removidos:[];
     const contexto=`Você é um analista de logística industrial. Uma remessa de matéria-prima foi enviada pra um fornecedor terceirizar um processamento (industrialização). Preciso saber qual nota fiscal de retorno corresponde a essa remessa.
 
 REMESSA ENVIADA:
 - Projeto (BR): ${s(rem.projeto)}
 - Produto acabado enviado: ${rem.produto_acabado} (${s(produtosDb[rem.produto_acabado]?.descricao)})
 - Quantidade de peças enviadas: ${rem.quantidade_op}
-- Composição (matéria-prima por peça): ${materiais.map(m=>`${m.codigoMP} (${m.quantidade} ${m.um}/peça)`).join(', ')||'não cadastrada'}
+- Itens REALMENTE enviados (código = quantidade total já enviada): ${enviados.map(i=>`${i.cod} = ${i.qtd}`).join(', ')||'não informado'}${removidos.length>0?`\n- Itens que o PCP REMOVEU e NÃO foram enviados (ignore-os): ${removidos.map(r=>s(r.codigoMP)).join(', ')}`:''}
 
 NOTAS FISCAIS DE RETORNO CANDIDATAS (mesmo BR):
 ${candidatas.map((n,i)=>`${i+1}. NF ${n.numero_nota} — fornecedor ${s(n.fornecedor)} — código ${n.cod_produto} — quantidade ${n.quantidade} — ${n.pendente?'AINDA PENDENTE (não retornou)':'já retornou'} — data ${n.data_neg}`).join('\n')}
 
-Qual dessas notas (se alguma) corresponde a essa remessa? Considere que a nota pode cobrir só uma parte da composição (a mesma matéria-prima às vezes é usada em várias remessas do mesmo BR, e uma nota pode cobrir a soma de várias).
+Qual dessas notas (se alguma) corresponde a essa remessa? Considere que a nota pode cobrir só uma parte dos itens (a mesma matéria-prima às vezes é usada em várias remessas do mesmo BR, e uma nota pode cobrir a soma de várias).
 
 Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
 {"numero_nota_escolhida":"9515 ou null se nenhuma servir","certeza_percentual":0 a 100,"justificativa":"até 3 frases em português, direto"}`;
@@ -4342,7 +4345,9 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
   const confirmarRetornoAutomatico=async(rem,vinculo)=>{
     try{
       const novosItens=(rem.itens||[]).map(it=>({...it,quantidadeRetornada:Number(it.quantidadeTotal||0)}));
-      const origem=vinculo.confianca==='IA'?`IA (${vinculo.certeza}% de certeza)`:'Automático';
+      const origem=vinculo.confianca==='IA'?`IA (${vinculo.certeza}% de certeza)`
+        :vinculo.confianca==='MANUAL'?`Conferido na tela por ${s(usuarioLogado?.nome)}`
+        :'Automático';
       const{error}=await supabase.from('remessas').update({
         itens:novosItens,status:'RETORNADO',pecas_recebidas:rem.quantidade_op,data_retorno:new Date().toISOString(),
         recebido_por:`${origem} — NF ${vinculo.nota.numero_nota} (${s(vinculo.nota.fornecedor)})`,
@@ -4625,39 +4630,47 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
     if(!a||!b)return false;
     return a.includes(b)||b.includes(a)||a.split(' ')[0]===b.split(' ')[0];
   };
+  // Itens que a remessa REALMENTE enviou, já com ajustes e remoções do PCP.
+  // Cai na composição teórica só se a remessa não tiver itens gravados
+  // (registros antigos). Mesma falha que o usuário achou na tela de comparação:
+  // usar a ficha técnica trata como "enviado" o que o PCP removeu.
+  const itensReaisDaRemessa=useCallback(rem=>{
+    const itens=Array.isArray(rem?.itens)?rem.itens:[];
+    if(itens.length>0)return itens.map(it=>({cod:s(it.codigoMP),qtd:Number(it.quantidadeTotal||0)}));
+    const mats=produtosDb[rem?.produto_acabado]?.materiais||[];
+    const qtdOP=Number(rem?.quantidade_op||0);
+    return mats.map(m=>({cod:s(m.codigoMP),qtd:Number(m.quantidade||0)*qtdOP}));
+  },[produtosDb]);
+
   const somaEsperadaGrupoMP=useCallback((brNorm,codMP,remessasList,fornecedorNota)=>{
     return remessasList.filter(r=>{
       if(r.status==='CANCELADO')return false;
       if(normalizarBR(r.projeto)!==brNorm)return false;
       if(!fornecedoresBatem(r.expedicao?.destinatario,fornecedorNota))return false;
-      const mats=produtosDb[r.produto_acabado]?.materiais;
-      return Array.isArray(mats)&&mats.some(m=>s(m.codigoMP)===codMP);
+      return itensReaisDaRemessa(r).some(i=>i.cod===codMP);
     }).reduce((acc,r)=>{
-      const mats=produtosDb[r.produto_acabado]?.materiais||[];
-      const item=mats.find(m=>s(m.codigoMP)===codMP);
-      return acc+(Number(item?.quantidade||0)*Number(r.quantidade_op||0));
+      const item=itensReaisDaRemessa(r).find(i=>i.cod===codMP);
+      return acc+Number(item?.qtd||0);
     },0);
-  },[produtosDb]);
+  },[itensReaisDaRemessa]);
+
   const sugerirVinculoRemessa=useCallback(remessa=>{
     const brNorm=normalizarBR(remessa.projeto);
-    const materiais=produtosDb[remessa.produto_acabado]?.materiais;
-    if(!Array.isArray(materiais)||materiais.length===0)return null;
-    const codsComposicao=new Set(materiais.map(m=>s(m.codigoMP)));
+    // Base = o que saiu de verdade, não a ficha técnica.
+    const enviados=itensReaisDaRemessa(remessa);
+    if(enviados.length===0)return null;
+    const codsEnviados=new Set(enviados.map(i=>i.cod));
     const qtdPorCod={};
-    materiais.forEach(m=>{qtdPorCod[s(m.codigoMP)]=Number(m.quantidade||0);});
-    const qtdOP=Number(remessa.quantidade_op||0);
+    enviados.forEach(i=>{qtdPorCod[i.cod]=i.qtd;});
     const fornecedorDestino=remessa.expedicao?.destinatario;
     // Fornecedor SEMPRE obrigatório quando a remessa tem destinatário registrado —
     // nunca cruza notas de fornecedores diferentes só porque a MP é a mesma.
-    const candidatas=notasRemessaInd.filter(n=>normalizarBR(n.br)===brNorm&&codsComposicao.has(s(n.cod_produto))
+    const candidatas=notasRemessaInd.filter(n=>normalizarBR(n.br)===brNorm&&codsEnviados.has(s(n.cod_produto))
       &&(!fornecedorDestino||fornecedoresBatem(fornecedorDestino,n.fornecedor)));
     if(candidatas.length===0)return null;
-    // Confiança ALTA: a quantidade da nota bate com o esperado (qtd_por_peça × qtd_op,
-    // OU a soma de todas as remessas do BR que compartilham essa MP), com folga de
-    // 15% pra cobrir arredondamento/pequenas variações de fornecedor.
     const comDiferenca=candidatas.map(n=>{
       const cod=s(n.cod_produto);
-      const esperadoIndividual=(qtdPorCod[cod]||0)*qtdOP;
+      const esperadoIndividual=qtdPorCod[cod]||0;
       const esperadoGrupo=somaEsperadaGrupoMP(brNorm,cod,remessasDb,n.fornecedor);
       const difIndividual=Math.abs(Number(n.quantidade||0)-esperadoIndividual);
       const difGrupo=Math.abs(Number(n.quantidade||0)-esperadoGrupo);
@@ -4670,19 +4683,14 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
       return{nota:n,diferenca,pctDiferenca,esperado,compartilhada:usaGrupo};
     }).sort((a,b)=>a.diferenca-b.diferenca);
     const melhor=comDiferenca[0];
-    // Limite ajustado pra 30% (era 15%) — investigando os casos de "confiança
-    // média/baixa", achei que a maioria das remessas com diferença de 19-25% JÁ
-    // ESTAVAM marcadas RETORNADO manualmente pelo usuário — ou seja, o vínculo
-    // estava certo, só a matemática tem uma folga natural (nota bruta inclui
-    // impostos/frete, o fornecedor manda sobra de material, arredondamento) que
-    // passava dos 15% originais. Não era erro de vínculo, era rigidez demais.
+    // Limite de 30% — investigando os casos de confiança média/baixa, achei que
+    // a maioria das remessas com diferença de 19-25% JÁ ESTAVAM marcadas
+    // RETORNADO manualmente pelo usuário: o vínculo estava certo, só a
+    // matemática tem folga natural (sobra de material, arredondamento).
     if(melhor.pctDiferenca<=0.30)return{nota:melhor.nota,confianca:'ALTA',esperado:melhor.esperado,compartilhada:melhor.compartilhada,candidatas:comDiferenca.map(c=>c.nota)};
     if(melhor.pctDiferenca<=0.5)return{nota:melhor.nota,confianca:'MEDIA',esperado:melhor.esperado,compartilhada:melhor.compartilhada,candidatas:comDiferenca.map(c=>c.nota)};
-    // Só BR+composição bateram, quantidade muito diferente — pode ser parcial
-    // genuíno (ex: OC de 100, remessa de só 80) ou vínculo errado; marca BAIXA
-    // pra deixar claro que precisa de conferência manual.
     return{nota:melhor.nota,confianca:'BAIXA',esperado:melhor.esperado,compartilhada:melhor.compartilhada,candidatas:comDiferenca.map(c=>c.nota)};
-  },[notasRemessaInd,produtosDb]);
+  },[notasRemessaInd,itensReaisDaRemessa,somaEsperadaGrupoMP,remessasDb]);
   // Vínculo com a Ordem de Compra: BR + fornecedor (não cod_produto — descoberto que
   // o item da OC de industrialização é o SERVIÇO em si, ex: "FORNADA DE AUTOCLAVE",
   // diferente do item acabado/MP da remessa). Prioriza o fornecedor já confirmado
@@ -12206,7 +12214,36 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
       <Modal open={!!comparacaoSel} onClose={()=>setComparacaoSel(null)}
         title="⚖️ Comparar: o que saiu × o que a nota diz"
         subtitle={comparacaoSel?`${s(comparacaoSel.rem?.projeto)} · ${s(comparacaoSel.rem?.produto_acabado)} × NF ${s(comparacaoSel.nota?.numero_nota)} (${s(comparacaoSel.nota?.fornecedor)})`:''}
-        maxWidth="max-w-4xl">
+        maxWidth="max-w-4xl"
+        footer={comparacaoSel&&!comparacaoSel.carregando&&(()=>{
+          const rem=comparacaoSel.rem,nota=comparacaoSel.nota;
+          const jaRetornada=rem.status==='RETORNADO';
+          const notaAindaPendente=!!nota.pendente;
+          return(
+            <div className="flex items-center justify-between gap-3 flex-wrap">
+              <Btn variant="secondary" onClick={()=>setComparacaoSel(null)}>Fechar</Btn>
+              {/* Confirmação manual a partir da conferência visual — é o fluxo
+                  que o usuário pediu: primeiro ele valida item a item, aí
+                  confirma sabendo o que está fazendo. Fica registrado que foi
+                  conferência manual, não decisão automática. */}
+              {jaRetornada
+                ? <span className="text-xs font-bold text-emerald-600 flex items-center gap-1.5"><CheckCircle className="w-4 h-4"/>Retorno já confirmado</span>
+                : notaAindaPendente
+                  ? <div className="text-right">
+                      <span className="text-xs font-bold text-amber-600 flex items-center gap-1.5 justify-end"><AlertTriangle className="w-4 h-4"/>Nota ainda consta PENDENTE no Sankhya</span>
+                      <p className="text-[10px] text-slate-400 mt-0.5">Só dá pra confirmar depois que o retorno for registrado no ERP.</p>
+                    </div>
+                  : <Btn variant="dark" onClick={()=>{
+                      if(!window.confirm(`Confirmar que a remessa ${s(rem.projeto)} retornou, vinculada à NF ${s(nota.numero_nota)}?\n\nVocê está confirmando após conferir os itens na tela.`))return;
+                      confirmarRetornoAutomatico(rem,{nota,confianca:'MANUAL'});
+                      setComparacaoSel(null);
+                    }}>
+                      <CheckCircle className="w-4 h-4"/>Confere — confirmar retorno
+                    </Btn>}
+            </div>
+          );
+        })()}
+      >
         {comparacaoSel&&(()=>{
           if(comparacaoSel.carregando)return<div className="py-12 text-center"><Loader2 className="w-6 h-6 animate-spin mx-auto text-indigo-500 mb-2"/><p className="text-sm text-slate-400">Buscando itens da nota no Sankhya...</p></div>;
           const rem=comparacaoSel.rem;
