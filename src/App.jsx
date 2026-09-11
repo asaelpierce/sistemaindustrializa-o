@@ -5730,6 +5730,209 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
     });
   };
 
+  // ── Relatório de Remessas ────────────────────────────────────────────────
+  // Recalcula tudo ao vivo a partir de remessasDb. Filtro de período opcional.
+  const [relPeriodo,setRelPeriodo]=useState({de:'',ate:''});
+  const relatorioRemessas=useMemo(()=>{
+    const base=remessasDb.filter(r=>{
+      const d=s(r.data_criacao).slice(0,10);
+      if(relPeriodo.de&&d<relPeriodo.de)return false;
+      if(relPeriodo.ate&&d>relPeriodo.ate)return false;
+      return true;
+    });
+    const nItens=r=>Array.isArray(r.itens)?r.itens.length:0;
+    const nRemov=r=>Array.isArray(r.itens_removidos)?r.itens_removidos.length:0;
+    // "Envio real" = mesmo projeto, mesmo destinatário, mesmo dia. Um caminhão
+    // com vários produtos do mesmo BR vira vários lançamentos no portal, então
+    // contar lançamento superestima a operação.
+    const chaveEnvio=r=>`${normalizarBR(r.projeto)}|${normalizarFornecedor(r.expedicao?.destinatario)}|${s(r.data_criacao).slice(0,10)}`;
+    const enviosReais=new Set(base.map(chaveEnvio)).size;
+
+    const porMes={};
+    base.forEach(r=>{
+      const m=s(r.data_criacao).slice(0,7);
+      if(!m)return;
+      if(!porMes[m])porMes[m]={mes:m,lancamentos:0,itens:0,removidos:0,envios:new Set()};
+      porMes[m].lancamentos++;porMes[m].itens+=nItens(r);porMes[m].removidos+=nRemov(r);
+      porMes[m].envios.add(chaveEnvio(r));
+    });
+    const meses=Object.values(porMes).sort((a,b)=>a.mes.localeCompare(b.mes))
+      .map(m=>({...m,envios:m.envios.size}));
+
+    // Fornecedor normalizado — o campo é texto livre, então "MARFLEX", "marflex"
+    // e "MARFLEX " seriam contados como três fornecedores diferentes.
+    const porForn={};
+    base.forEach(r=>{
+      const bruto=s(r.expedicao?.destinatario).trim();
+      const chave=bruto?normalizarFornecedor(bruto):'(sem destinatário)';
+      if(!porForn[chave])porForn[chave]={nome:bruto?bruto.toUpperCase().trim():'(sem destinatário)',chave,lancamentos:0,itens:0,retornadas:0,emAberto:0,envios:new Set(),grafias:new Set()};
+      const f=porForn[chave];
+      f.lancamentos++;f.itens+=nItens(r);f.envios.add(chaveEnvio(r));
+      if(bruto)f.grafias.add(bruto.trim());
+      if(r.status==='RETORNADO')f.retornadas++;
+      if(['ENVIADO','RETORNO_PARCIAL'].includes(r.status))f.emAberto++;
+    });
+    const fornecedores=Object.values(porForn)
+      .map(f=>({...f,envios:f.envios.size,grafias:[...f.grafias]}))
+      .sort((a,b)=>b.lancamentos-a.lancamentos);
+
+    const porItem={};
+    base.forEach(r=>(Array.isArray(r.itens)?r.itens:[]).forEach(it=>{
+      const cod=s(it.codigoMP);if(!cod)return;
+      const k=`${cod}|${s(it.um)}`;
+      if(!porItem[k])porItem[k]={cod,um:s(it.um)||'UN',descricao:s(it.descricao),vezes:0,qtd:0};
+      porItem[k].vezes++;porItem[k].qtd+=Number(it.quantidadeTotal||0);
+    }));
+    const itensRank=Object.values(porItem).sort((a,b)=>b.vezes-a.vezes||b.qtd-a.qtd);
+
+    // Dias fora, só das que já voltaram.
+    const dias=base.filter(r=>r.data_retorno&&r.data_criacao)
+      .map(r=>Math.max(0,Math.round((new Date(s(r.data_retorno).slice(0,10))-new Date(s(r.data_criacao).slice(0,10)))/864e5)))
+      .sort((a,b)=>a-b);
+    const mediaDias=dias.length?dias.reduce((a,b)=>a+b,0)/dias.length:null;
+    const medianaDias=dias.length?dias[Math.floor(dias.length/2)]:null;
+
+    const totItens=base.reduce((a,r)=>a+nItens(r),0);
+    const totRemov=base.reduce((a,r)=>a+nRemov(r),0);
+    return{
+      base,lancamentos:base.length,enviosReais,
+      projetos:new Set(base.map(r=>normalizarBR(r.projeto))).size,
+      itens:totItens,removidos:totRemov,
+      codigosDistintos:new Set(Object.values(porItem).map(i=>i.cod)).size,
+      mediaItens:base.length?totItens/base.length:0,
+      retornadas:base.filter(r=>r.status==='RETORNADO').length,
+      emTransito:base.filter(r=>r.status==='ENVIADO').length,
+      parciais:base.filter(r=>r.status==='RETORNO_PARCIAL').length,
+      canceladas:base.filter(r=>r.status==='CANCELADO').length,
+      meses,fornecedores,itensRank,
+      mediaDias,medianaDias,minDias:dias[0]??null,maxDias:dias[dias.length-1]??null,
+      ate7:dias.filter(d=>d<=7).length,de8a20:dias.filter(d=>d>7&&d<=20).length,acima20:dias.filter(d=>d>20).length,
+      totalComRetorno:dias.length,
+    };
+  },[remessasDb,relPeriodo]);
+
+  // Exporta o relatório de remessas pra Excel, com as mesmas 5 visões da tela
+  // (aqui a lista de itens vai completa, não só os 30 primeiros).
+  const exportarRelatorioRemessas=async()=>{
+    if(!window.ExcelJS)return addToast('ExcelJS não carregado. Recarregue a página.','error');
+    try{
+      const R=relatorioRemessas;
+      const wb=new window.ExcelJS.Workbook();
+      const AZUL='FF1F3864',CINZA='FFF2F2F2';
+      const cab=(ws,linha,cols)=>{
+        const row=ws.getRow(linha);
+        cols.forEach((c,i)=>{
+          const cel=row.getCell(i+1);
+          cel.value=c.t;
+          cel.font={name:'Arial',bold:true,color:{argb:'FFFFFFFF'},size:10};
+          cel.fill={type:'pattern',pattern:'solid',fgColor:{argb:AZUL}};
+          cel.alignment={horizontal:'center',vertical:'middle',wrapText:true};
+          ws.getColumn(i+1).width=c.w;
+        });
+        row.height=28;
+      };
+      const periodoTxt=relPeriodo.de||relPeriodo.ate?`${relPeriodo.de||'início'} a ${relPeriodo.ate||'hoje'}`:'todo o período';
+
+      // 1) Resumo
+      const w1=wb.addWorksheet('Resumo');
+      w1.getCell('A1').value='Relatório de Remessas para Industrialização';
+      w1.getCell('A1').font={name:'Arial',bold:true,size:14,color:{argb:AZUL}};
+      w1.getCell('A2').value=`Portal Sistema de Industrialização — ${periodoTxt} · gerado em ${new Date().toLocaleString('pt-BR')}`;
+      w1.getCell('A2').font={name:'Arial',size:9,italic:true,color:{argb:'FF595959'}};
+      cab(w1,4,[{t:'Indicador',w:36},{t:'Valor',w:16},{t:'Observação',w:64}]);
+      const linhas=[
+        ['Lançamentos de remessa',R.lancamentos,'Cada produto acabado gera um lançamento próprio'],
+        ['Envios físicos reais',R.enviosReais,'Agrupando por projeto + destinatário + dia'],
+        ['Projetos (BR) atendidos',R.projetos,'Distintos'],
+        ['Itens de matéria-prima enviados',R.itens,''],
+        ['Códigos distintos',R.codigosDistintos,''],
+        ['Itens removidos pelo PCP',R.removidos,'Constavam na ficha técnica mas não foram enviados'],
+        ['Média de itens por remessa',Number(R.mediaItens.toFixed(1)),''],
+        ['',null,''],
+        ['Retornadas',R.retornadas,''],
+        ['Em trânsito',R.emTransito,''],
+        ['Retorno parcial',R.parciais,''],
+        ['Canceladas',R.canceladas,''],
+        ['',null,''],
+        ['Tempo médio no fornecedor (dias)',R.mediaDias!==null?Number(R.mediaDias.toFixed(1)):'—',`Base: ${R.totalComRetorno} remessas retornadas`],
+        ['Mediana (dias)',R.medianaDias??'—',''],
+        ['Retornaram em até 7 dias',R.ate7,''],
+        ['Entre 8 e 20 dias',R.de8a20,''],
+        ['Acima de 20 dias',R.acima20,''],
+      ];
+      linhas.forEach((l,i)=>{
+        const row=w1.getRow(5+i);
+        row.getCell(1).value=l[0];row.getCell(1).font={name:'Arial',size:10,bold:true};
+        row.getCell(2).value=l[1];row.getCell(2).alignment={horizontal:'right'};
+        row.getCell(3).value=l[2];row.getCell(3).font={name:'Arial',size:9,italic:true,color:{argb:'FF595959'}};
+      });
+
+      // 2) Por mês
+      const w2=wb.addWorksheet('Por mês');
+      cab(w2,1,[{t:'Mês',w:14},{t:'Lançamentos',w:14},{t:'Envios reais',w:14},{t:'Itens',w:12},{t:'Removidos',w:12},{t:'Média itens',w:14}]);
+      R.meses.forEach((m,i)=>{
+        const row=w2.getRow(2+i);
+        row.getCell(1).value=m.mes;row.getCell(2).value=m.lancamentos;row.getCell(3).value=m.envios;
+        row.getCell(4).value=m.itens;row.getCell(5).value=m.removidos;
+        row.getCell(6).value=m.lancamentos?Number((m.itens/m.lancamentos).toFixed(1)):0;
+      });
+
+      // 3) Fornecedores
+      const w3=wb.addWorksheet('Fornecedores');
+      cab(w3,1,[{t:'Fornecedor',w:28},{t:'Lançamentos',w:14},{t:'Envios',w:12},{t:'Itens',w:12},{t:'Retornadas',w:13},{t:'Em aberto',w:12},{t:'Grafias no sistema',w:40}]);
+      R.fornecedores.forEach((f,i)=>{
+        const row=w3.getRow(2+i);
+        row.getCell(1).value=f.nome;row.getCell(2).value=f.lancamentos;row.getCell(3).value=f.envios;
+        row.getCell(4).value=f.itens;row.getCell(5).value=f.retornadas;row.getCell(6).value=f.emAberto;
+        row.getCell(7).value=f.grafias.join(' · ');
+        row.getCell(7).font={name:'Arial',size:9,italic:true,color:{argb:'FF808080'}};
+      });
+
+      // 4) Itens (lista completa)
+      const w4=wb.addWorksheet('Itens enviados');
+      cab(w4,1,[{t:'Código',w:12},{t:'Descrição',w:62},{t:'UM',w:8},{t:'Vezes enviado',w:14},{t:'Quantidade total',w:18}]);
+      R.itensRank.forEach((it,i)=>{
+        const row=w4.getRow(2+i);
+        row.getCell(1).value=it.cod;row.getCell(2).value=it.descricao;row.getCell(3).value=it.um;
+        row.getCell(4).value=it.vezes;
+        row.getCell(5).value=Number(it.qtd.toFixed(2));
+        row.getCell(5).numFmt='#,##0.00';
+      });
+      w4.views=[{state:'frozen',ySplit:1}];
+
+      // 5) Detalhado
+      const w5=wb.addWorksheet('Remessas detalhadas');
+      cab(w5,1,[{t:'Projeto',w:17},{t:'Produto',w:11},{t:'Qtd OP',w:10},{t:'Situação',w:16},{t:'Destinatário',w:22},
+                {t:'Criada em',w:13},{t:'Retorno',w:13},{t:'Itens',w:9},{t:'Removidos',w:11},{t:'Dias fora',w:11},{t:'Criado por',w:18}]);
+      [...R.base].sort((a,b)=>s(a.data_criacao).localeCompare(s(b.data_criacao))).forEach((r,i)=>{
+        const row=w5.getRow(2+i);
+        const cri=s(r.data_criacao).slice(0,10),ret=s(r.data_retorno).slice(0,10);
+        const dias=ret&&cri?Math.max(0,Math.round((new Date(ret)-new Date(cri))/864e5)):null;
+        row.getCell(1).value=s(r.projeto);row.getCell(2).value=s(r.produto_acabado);
+        row.getCell(3).value=Number(r.quantidade_op)||0;
+        row.getCell(4).value=s(r.status).replace('_',' ');
+        row.getCell(5).value=s(r.expedicao?.destinatario)||'—';
+        row.getCell(6).value=cri?cri.split('-').reverse().join('/'):'—';
+        row.getCell(7).value=ret?ret.split('-').reverse().join('/'):'—';
+        row.getCell(8).value=Array.isArray(r.itens)?r.itens.length:0;
+        row.getCell(9).value=Array.isArray(r.itens_removidos)?r.itens_removidos.length:0;
+        row.getCell(10).value=dias??'—';
+        row.getCell(11).value=s(r.criado_por)||'—';
+        if(dias!==null&&dias>20)row.getCell(10).fill={type:'pattern',pattern:'solid',fgColor:{argb:'FFFFEB9C'}};
+      });
+      w5.views=[{state:'frozen',ySplit:1}];
+      w5.autoFilter={from:{row:1,column:1},to:{row:1+R.base.length,column:11}};
+
+      const buf=await wb.xlsx.writeBuffer();
+      const blob=new Blob([buf],{type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'});
+      const a=document.createElement('a');
+      a.href=URL.createObjectURL(blob);
+      a.download=`Relatorio_Remessas_${new Date().toISOString().slice(0,10)}.xlsx`;
+      a.click();
+      addToast('Relatório exportado!');
+    }catch(e){addToast('Erro ao exportar: '+e.message,'error');}
+  };
+
   // ── Controle Geral computed ──────────────────────────────────────────────
   const ctrlAtivos = useMemo(()=>projAgrup.filter(p=>['ENVIADO','RETORNO_PARCIAL'].includes(p.status)),[projAgrup]);
   const ctrlConcluidos = useMemo(()=>projAgrup.filter(p=>p.status==='RETORNADO'),[projAgrup]);
@@ -5757,7 +5960,7 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
     // definida, é só reativar esta linha em vez de reconstruir tudo do zero.
     ...((isPCP||isExp)?[{id:'PRODUCAO',label:'Produção por Setor',icon:Factory,group:'PCP'}]:[]),
     ...(isPCP?[{id:'NOVA_OP',label:'Nova Remessa',icon:PackageOpen,group:'PCP'},{id:'HISTORICO_PCP',label:'Histórico de Envios',icon:History,group:'PCP'},{id:'UPLOAD_ESTOQUE',label:'Sincronizar ERP',icon:UploadCloud,group:'PCP'}]:[]),
-    ...(isExp?[{id:'EXPEDICAO',label:'Fila de Expedição',icon:Truck,group:'Logística',badge:remPend.length||null},{id:'FORNECEDORES',label:'Retorno de Peças',icon:RotateCcw,group:'Logística',badge:notasRemessaPendentesCount||null},{id:'CONTROLE_GERAL',label:'Controle Geral',icon:ListChecks,group:'Logística'}]:[]),
+    ...(isExp?[{id:'EXPEDICAO',label:'Fila de Expedição',icon:Truck,group:'Logística',badge:remPend.length||null},{id:'FORNECEDORES',label:'Retorno de Peças',icon:RotateCcw,group:'Logística',badge:notasRemessaPendentesCount||null},{id:'CONTROLE_GERAL',label:'Controle Geral',icon:ListChecks,group:'Logística'},{id:'RELATORIO_REMESSAS',label:'Relatório de Remessas',icon:FileSearch,group:'Logística'}]:[]),
     ...(isAdmin?[{id:'IA_ANALISTA',label:'Analista IA',icon:Bot,group:'Inteligência'},{id:'AUDITORIA',label:'Auditoria BOM',icon:FileSearch,group:'Inteligência'},{id:'GESTAO_USUARIOS',label:'Gestão de Acessos',icon:Users,group:'Sistema'}]:[]),
     {id:'CHAT_INTERNO',label:'Chat da Equipe',icon:MessageSquare,group:'Comunicação',badge:chatNaoLidos||null},
     ...(isQual?[{id:'QUALIDADE',label:'Qualidade',icon:ShieldAlert,group:'Qualidade'},{id:'RNCS',label:'Registro de RNCs',icon:AlertOctagon,group:'Qualidade'}]:[]),
@@ -8197,6 +8400,208 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
                 </div>
               </div>
             )}
+
+            {/* ── RELATÓRIO DE REMESSAS ──────────────────────────────────
+                Mesmo conteúdo do relatório gerado em Excel, só que vivo:
+                recalcula direto de remessasDb a cada carregamento. */}
+            {aba==='RELATORIO_REMESSAS'&&(()=>{
+              const R=relatorioRemessas;
+              const fmtMes=m=>{const[a,me]=m.split('-');return `${['','jan','fev','mar','abr','mai','jun','jul','ago','set','out','nov','dez'][Number(me)]}/${a.slice(2)}`;};
+              const maxMes=Math.max(1,...R.meses.map(m=>m.lancamentos));
+              const pctRemov=R.itens+R.removidos>0?R.removidos/(R.itens+R.removidos)*100:0;
+              return(
+              <div className="space-y-5 pb-10" style={{animation:'fadeIn 0.25s ease'}}>
+                <div className="flex flex-wrap items-end justify-between gap-3">
+                  <SectionHeader title="📊 Relatório de Remessas" subtitle="Material enviado a terceiros para industrialização — números calculados ao vivo"/>
+                  <div className="flex items-end gap-2">
+                    <Field label="De"><Inp type="date" value={relPeriodo.de} onChange={e=>setRelPeriodo({...relPeriodo,de:e.target.value})} className="w-36"/></Field>
+                    <Field label="Até"><Inp type="date" value={relPeriodo.ate} onChange={e=>setRelPeriodo({...relPeriodo,ate:e.target.value})} className="w-36"/></Field>
+                    {(relPeriodo.de||relPeriodo.ate)&&<Btn variant="ghost" onClick={()=>setRelPeriodo({de:'',ate:''})}>Limpar</Btn>}
+                    <Btn variant="dark" onClick={exportarRelatorioRemessas}><FileSpreadsheet className="w-4 h-4"/>Exportar Excel</Btn>
+                  </div>
+                </div>
+
+                {/* Números gerais */}
+                <div className="grid grid-cols-2 lg:grid-cols-6 gap-3">
+                  {[
+                    {l:'Lançamentos',v:R.lancamentos,d:'registros no portal'},
+                    {l:'Envios reais',v:R.enviosReais,d:'projeto + destino + dia',destaque:true},
+                    {l:'Projetos',v:R.projetos,d:'BRs distintos'},
+                    {l:'Itens enviados',v:R.itens,d:`${R.codigosDistintos} códigos`},
+                    {l:'Itens removidos',v:R.removidos,d:'tirados da ficha técnica'},
+                    {l:'Média itens',v:R.mediaItens.toFixed(1),d:'por remessa'},
+                  ].map(c=>(
+                    <div key={c.l} className={`rounded-2xl border-2 p-4 ${c.destaque?'bg-indigo-50 border-indigo-300':'bg-white border-slate-200'}`}>
+                      <p className="text-[10px] font-black text-slate-400 uppercase tracking-wider">{c.l}</p>
+                      <p className={`text-3xl font-black mt-1 ${c.destaque?'text-indigo-600':'text-slate-800'}`}>{c.v}</p>
+                      <p className="text-[10px] text-slate-400 mt-0.5">{c.d}</p>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                  {/* Situação */}
+                  <div className="bg-white rounded-2xl border border-slate-200 p-5">
+                    <p className="text-xs font-black text-slate-600 uppercase tracking-wider mb-3">Situação das remessas</p>
+                    <div className="space-y-2">
+                      {[{l:'Retornadas',v:R.retornadas,c:'bg-emerald-400'},
+                        {l:'Em trânsito',v:R.emTransito,c:'bg-amber-400'},
+                        {l:'Retorno parcial',v:R.parciais,c:'bg-sky-400'},
+                        {l:'Canceladas',v:R.canceladas,c:'bg-red-400'}].map(s2=>{
+                        const pct=R.lancamentos?(s2.v/R.lancamentos*100):0;
+                        return(
+                          <div key={s2.l}>
+                            <div className="flex items-center justify-between text-xs mb-0.5">
+                              <span className="font-bold text-slate-700">{s2.l}</span>
+                              <span className="text-slate-500">{s2.v} <span className="text-slate-300">({pct.toFixed(0)}%)</span></span>
+                            </div>
+                            <div className="h-2.5 bg-slate-100 rounded-full overflow-hidden"><div className={`h-full ${s2.c} rounded-full`} style={{width:`${pct}%`}}/></div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  {/* Tempo fora */}
+                  <div className="bg-white rounded-2xl border border-slate-200 p-5">
+                    <p className="text-xs font-black text-slate-600 uppercase tracking-wider mb-3">Tempo no fornecedor</p>
+                    {R.totalComRetorno===0?<p className="text-xs text-slate-300 py-6 text-center">Nenhuma remessa retornada no período.</p>:(
+                    <>
+                      <div className="grid grid-cols-4 gap-2 mb-3">
+                        {[{l:'Média',v:R.mediaDias?.toFixed(1)},{l:'Mediana',v:R.medianaDias},{l:'Mínimo',v:R.minDias},{l:'Máximo',v:R.maxDias}].map(x=>(
+                          <div key={x.l} className="bg-slate-50 rounded-xl p-2.5 text-center">
+                            <p className="text-xl font-black text-slate-800">{x.v}</p>
+                            <p className="text-[9px] font-bold text-slate-400 uppercase">{x.l}</p>
+                          </div>
+                        ))}
+                      </div>
+                      <div className="space-y-1.5">
+                        {[{l:'Até 7 dias',v:R.ate7,c:'bg-emerald-400'},{l:'8 a 20 dias',v:R.de8a20,c:'bg-amber-400'},{l:'Acima de 20 dias',v:R.acima20,c:'bg-red-400'}].map(x=>{
+                          const pct=R.totalComRetorno?(x.v/R.totalComRetorno*100):0;
+                          return(
+                            <div key={x.l}>
+                              <div className="flex items-center justify-between text-[11px] mb-0.5">
+                                <span className="font-bold text-slate-600">{x.l}</span>
+                                <span className="text-slate-500">{x.v} ({pct.toFixed(0)}%)</span>
+                              </div>
+                              <div className="h-2 bg-slate-100 rounded-full overflow-hidden"><div className={`h-full ${x.c} rounded-full`} style={{width:`${pct}%`}}/></div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                      <p className="text-[10px] text-slate-400 mt-2">Dias entre a criação da remessa e o registro do retorno, em {R.totalComRetorno} remessas.</p>
+                    </>)}
+                  </div>
+                </div>
+
+                {/* Evolução mensal */}
+                <div className="bg-white rounded-2xl border border-slate-200 p-5">
+                  <div className="flex items-center justify-between mb-3">
+                    <p className="text-xs font-black text-slate-600 uppercase tracking-wider">Evolução mensal</p>
+                    <p className="text-[10px] text-slate-400">barra cheia = lançamentos · marca escura = envios reais</p>
+                  </div>
+                  <div className="flex items-end gap-2 h-40">
+                    {R.meses.map(m=>(
+                      <div key={m.mes} className="flex-1 flex flex-col items-center justify-end h-full">
+                        <span className="text-[10px] font-black text-slate-600">{m.lancamentos}</span>
+                        <div className="w-full bg-indigo-200 rounded-t relative" style={{height:`${(m.lancamentos/maxMes)*100}%`,minHeight:'4px'}}>
+                          <div className="absolute bottom-0 left-0 right-0 bg-indigo-600 rounded-t" style={{height:`${m.lancamentos?(m.envios/m.lancamentos)*100:0}%`}}/>
+                        </div>
+                        <span className="text-[10px] font-bold text-slate-400 mt-1">{fmtMes(m.mes)}</span>
+                      </div>
+                    ))}
+                    {R.meses.length===0&&<p className="text-xs text-slate-300 w-full text-center self-center">Sem dados no período.</p>}
+                  </div>
+                  <div className="border-t border-slate-100 mt-4 pt-3 overflow-x-auto">
+                    <table className="w-full text-xs">
+                      <thead><tr className="text-left text-[10px] font-black text-slate-400 uppercase">
+                        <th className="py-1.5">Mês</th><th className="text-right">Lançamentos</th><th className="text-right">Envios reais</th>
+                        <th className="text-right">Itens</th><th className="text-right">Removidos</th><th className="text-right">Média itens</th>
+                      </tr></thead>
+                      <tbody className="divide-y divide-slate-50">
+                        {R.meses.map(m=>(
+                          <tr key={m.mes}>
+                            <td className="py-1.5 font-bold text-slate-700">{fmtMes(m.mes)}</td>
+                            <td className="text-right text-slate-600">{m.lancamentos}</td>
+                            <td className="text-right font-bold text-indigo-600">{m.envios}</td>
+                            <td className="text-right text-slate-600">{m.itens}</td>
+                            <td className="text-right text-slate-400">{m.removidos}</td>
+                            <td className="text-right text-slate-600">{m.lancamentos?(m.itens/m.lancamentos).toFixed(1):'—'}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                  {/* Fornecedores */}
+                  <div className="bg-white rounded-2xl border border-slate-200 p-5">
+                    <p className="text-xs font-black text-slate-600 uppercase tracking-wider mb-3">Por fornecedor</p>
+                    <div className="space-y-2 max-h-80 overflow-y-auto custom-scrollbar">
+                      {R.fornecedores.map(f=>{
+                        const pct=R.lancamentos?(f.lancamentos/R.lancamentos*100):0;
+                        return(
+                          <div key={f.chave}>
+                            <div className="flex items-center justify-between text-xs mb-0.5 gap-2">
+                              <span className="font-bold text-slate-700 truncate">{f.nome}
+                                {f.grafias.length>1&&<span className="text-[9px] text-amber-600 font-normal ml-1" title={f.grafias.join(' · ')}>({f.grafias.length} grafias)</span>}
+                              </span>
+                              <span className="text-slate-500 flex-shrink-0">{f.lancamentos} <span className="text-slate-300">({f.envios} envios)</span>
+                                {f.emAberto>0&&<span className="text-amber-600 font-bold ml-1">· {f.emAberto} em aberto</span>}
+                              </span>
+                            </div>
+                            <div className="h-2 bg-slate-100 rounded-full overflow-hidden"><div className="h-full bg-slate-700 rounded-full" style={{width:`${pct}%`}}/></div>
+                          </div>
+                        );
+                      })}
+                      {R.fornecedores.length===0&&<p className="text-xs text-slate-300 py-6 text-center">Sem dados no período.</p>}
+                    </div>
+                  </div>
+
+                  {/* Itens mais enviados */}
+                  <div className="bg-white rounded-2xl border border-slate-200 p-5">
+                    <p className="text-xs font-black text-slate-600 uppercase tracking-wider mb-3">Itens mais enviados</p>
+                    <div className="overflow-x-auto max-h-80 overflow-y-auto custom-scrollbar">
+                      <table className="w-full text-xs">
+                        <thead className="sticky top-0 bg-white"><tr className="text-left text-[10px] font-black text-slate-400 uppercase">
+                          <th className="py-1.5">Cód.</th><th>Descrição</th><th className="text-right">Vezes</th><th className="text-right">Qtd total</th>
+                        </tr></thead>
+                        <tbody className="divide-y divide-slate-50">
+                          {R.itensRank.slice(0,30).map(i=>(
+                            <tr key={`${i.cod}|${i.um}`}>
+                              <td className="py-1.5 font-bold text-slate-700">{i.cod}</td>
+                              <td className="text-slate-500 truncate max-w-[220px]" title={i.descricao}>{i.descricao||'—'}</td>
+                              <td className="text-right font-bold text-slate-700">{i.vezes}</td>
+                              <td className="text-right text-slate-600">{fmtD(i.qtd)} {i.um}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                      {R.itensRank.length===0&&<p className="text-xs text-slate-300 py-6 text-center">Sem dados no período.</p>}
+                    </div>
+                    {R.itensRank.length>30&&<p className="text-[10px] text-slate-400 mt-2">Mostrando 30 de {R.itensRank.length} códigos. O Excel traz a lista completa.</p>}
+                  </div>
+                </div>
+
+                {/* Pontos de atenção — só aparecem quando de fato existem */}
+                {(pctRemov>40||R.fornecedores.some(f=>f.grafias.length>1)||R.fornecedores.some(f=>f.nome==='(sem destinatário)'))&&(
+                  <div className="bg-amber-50 border border-amber-200 rounded-2xl p-5">
+                    <p className="text-xs font-black text-amber-800 uppercase tracking-wider mb-2">Pontos de atenção</p>
+                    <ul className="space-y-1.5 text-[11px] text-amber-800">
+                      {pctRemov>40&&<li>• <strong>{pctRemov.toFixed(0)}% dos itens da ficha técnica são removidos</strong> ({R.removidos} removidos contra {R.itens} enviados) — vale avaliar se a composição padrão está trazendo itens demais, porque o PCP refaz essa exclusão a cada remessa.</li>}
+                      {R.fornecedores.filter(f=>f.grafias.length>1).map(f=>(
+                        <li key={f.chave}>• <strong>{f.nome}</strong> aparece com {f.grafias.length} grafias diferentes ({f.grafias.join(', ')}) — o campo de destinatário é livre e isso divide o mesmo fornecedor.</li>
+                      ))}
+                      {R.fornecedores.filter(f=>f.nome==='(sem destinatário)').map(f=>(
+                        <li key="sd">• <strong>{f.lancamentos} remessa(s) sem destinatário</strong> preenchido.</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+              </div>
+              );
+            })()}
 
             {/* ── CONTROLE GERAL ────────────────────────────────────────── */}
             {aba==='CONTROLE_GERAL'&&(
