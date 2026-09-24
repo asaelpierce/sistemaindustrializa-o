@@ -1224,10 +1224,23 @@ export default function App(){
   const [buscandoRelatorioBR,setBuscandoRelatorioBR]=useState(false);
   const [dadosRelatorioBR,setDadosRelatorioBR]=useState(null); // {br,ops:[{nroOP,codProdutoAcabado,descricaoProdutoAcabado,itens:[{codMP,descricao,quantidade,unidade}]}]}
   const [qtdPecasRelatorio,setQtdPecasRelatorio]=useState(''); // quantidade de peças que o PCP informa — usada pra calcular a quantidade certa de MP (composição × peças) e comparar com o apontamento bruto da OP
-  const [formRelatorioTerceiros,setFormRelatorioTerceiros]=useState({transportadora:'',codigoTransportadora:'',placa:'',quantidade:'',pesoTotal:'',destinatario:'',dataSaida:new Date().toISOString().split('T')[0],pallet:'',observacoes:'',remessaPara:''});
+  const [formRelatorioTerceiros,setFormRelatorioTerceiros]=useState({transportadora:'',codigoTransportadora:'',placa:'',quantidade:'',pesoTotal:'',destinatario:'',dataSaida:new Date().toISOString().split('T')[0],pallet:'',observacoes:'',remessaPara:'',deposito_saida:'1090'});
   const [projeto,setProjeto]=useState('');
   const [cliente,setCliente]=useState('');
   const [servico,setServico]=useState('Industrialização');
+  // Depósito de saída — exigido pela fiscal pra emitir a nota. Antes esse campo
+  // não existia: o SGQ saía com a OBSERVAÇÃO (o tipo de serviço, tipo
+  // "Autoclave") na coluna ESTOQUE, o que obrigava a fiscal a devolver o
+  // documento e travava a emissão. 1090 é o padrão porque material que sai pra
+  // industrialização em terceiro vai como processamento.
+  const DEPOSITOS=[
+    {cod:'1090',nome:'Processamento',recomendado:true},
+    {cod:'1001',nome:'Produto Acabado'},
+    {cod:'1002',nome:'Terceiros'},
+    {cod:'1050',nome:'Matéria-Prima'},
+  ];
+  const rotuloDeposito=cod=>{const d=DEPOSITOS.find(x=>x.cod===s(cod));return d?`${d.cod} - ${d.nome}`:s(cod)||'1090 - Processamento';};
+  const [depositoSaida,setDepositoSaida]=useState('1090');
   const [outrosTexto,setOutrosTexto]=useState('');
   const [obsExp,setObsExp]=useState('');
   const [prodEncontrado,setProdEncontrado]=useState(null);
@@ -4103,7 +4116,7 @@ export default function App(){
         // está na composição cadastrada; senão cai no valor bruto apontado.
         ws.getCell(`F${r}`).value=it.quantidadeEsperada!==null?it.quantidadeEsperada:it.quantidadeApontada;
         ws.getCell(`G${r}`).value=s(it.unidade);
-        ws.getCell(`H${r}`).value='EM PROCESSAMENTO';
+        ws.getCell(`H${r}`).value=rotuloDeposito(formRelatorioTerceiros.deposito_saida||'1090');
       });
       // Linhas do rodapé deslocadas na mesma proporção das linhas extras inseridas.
       const deslocamento=Math.max(0,todosItens.length-LINHAS_RESERVADAS);
@@ -4207,7 +4220,7 @@ export default function App(){
     setIsLoading(true);
     try{
       for(const it of itens){const{data:cur}=await supabase.from('estoque_mp').select('saldo_disponivel').eq('codigo_mp',it.codigoMP).single();await supabase.from('estoque_mp').update({saldo_disponivel:Number(((cur?.saldo_disponivel||0)-it.quantidadeTotal).toFixed(4))}).eq('codigo_mp',it.codigoMP);}
-      const nr={id:`REM-${Date.now()}`,produto_acabado:s(prodEncontrado.codigo_pa),descricao_produto:s(prodEncontrado.descricao),quantidade_op:parseN(qtdProd),projeto:s(projeto).toUpperCase(),cliente:s(cliente).toUpperCase(),observacao:s(servFinal),obs_expedicao:s(notaFinal),itens,itens_removidos:removidos,status:'PENDENTE_EXPEDICAO',criado_por:s(usuarioLogado?.nome||'PCP'),pecas_recebidas:0,remessa_pai_id:isComp?s(opPaiId):null,data_envio_prevista:dataEnvioPrevista||null,data_retorno_desejada:dataRetornoDesejada||null};
+      const nr={id:`REM-${Date.now()}`,produto_acabado:s(prodEncontrado.codigo_pa),descricao_produto:s(prodEncontrado.descricao),quantidade_op:parseN(qtdProd),projeto:s(projeto).toUpperCase(),cliente:s(cliente).toUpperCase(),observacao:s(servFinal),obs_expedicao:s(notaFinal),itens,itens_removidos:removidos,status:'PENDENTE_EXPEDICAO',criado_por:s(usuarioLogado?.nome||'PCP'),pecas_recebidas:0,remessa_pai_id:isComp?s(opPaiId):null,data_envio_prevista:dataEnvioPrevista||null,data_retorno_desejada:dataRetornoDesejada||null,deposito_saida:s(depositoSaida)||'1090'};
       const{error}=await supabase.from('remessas').insert([nr]);if(error)throw error;
       addToast('Remessa enviada para Expedição!');
       setIsLoading(false);setProdEncontrado(null);setOutrosTexto('');setObsExp('');setCliente('');setIsComp(false);setOpPaiId('');setModoManual(false);setAba('HISTORICO_PCP');fetchAll();
@@ -4247,7 +4260,13 @@ export default function App(){
       ws.getCell('B6').value=s(formExp.transporte);ws.getCell('C6').value=s(formExp.transportadora);
       ws.getCell('B8').value=Number(formExp.quantidade);ws.getCell('C8').value=s(formExp.pesoTotal);
       ws.getCell('E8').value=`${s(remSel.projeto)} — ${s(formExp.destinatario)}`;ws.getCell('G8').value=s(formExp.dataSaida);
-      (remSel.itens||[]).forEach((it,i)=>{const r=12+i;ws.getCell(`C${r}`).value=s(it.codigoMP);ws.getCell(`E${r}`).value=s(it.descricao);ws.getCell(`F${r}`).value=Number(it.quantidadeTotal);ws.getCell(`G${r}`).value=s(it.um);ws.getCell(`H${r}`).value=s(remSel.observacao);});
+      // BUG CORRIGIDO (reclamação da fiscal): a coluna ESTOQUE (H) recebia
+      // s(remSel.observacao), que é o TIPO DE SERVIÇO — por isso saía
+      // "Autoclave", "Jateamento Interno" etc. onde a fiscal espera o código do
+      // depósito de saída. Sem essa informação ela precisava devolver o SGQ e a
+      // emissão da nota travava. Agora usa o depósito escolhido pelo PCP.
+      const depSGQ=rotuloDeposito(remSel.deposito_saida);
+      (remSel.itens||[]).forEach((it,i)=>{const r=12+i;ws.getCell(`C${r}`).value=s(it.codigoMP);ws.getCell(`E${r}`).value=s(it.descricao);ws.getCell(`F${r}`).value=Number(it.quantidadeTotal);ws.getCell(`G${r}`).value=s(it.um);ws.getCell(`H${r}`).value=depSGQ;});
       const buf=await wb.xlsx.writeBuffer();
 
       // 3. Download local do arquivo
@@ -8048,6 +8067,11 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
                         <Field label="Quantidade (volumes)"><Inp type="number" value={formRelatorioTerceiros.quantidade} onChange={e=>setFormRelatorioTerceiros({...formRelatorioTerceiros,quantidade:e.target.value})}/></Field>
                         <Field label="Peso Total"><Inp value={formRelatorioTerceiros.pesoTotal} onChange={e=>setFormRelatorioTerceiros({...formRelatorioTerceiros,pesoTotal:e.target.value})}/></Field>
                         <Field label="Destinatário" required><Inp placeholder="Ex: MARFLEX" value={formRelatorioTerceiros.destinatario} onChange={e=>setFormRelatorioTerceiros({...formRelatorioTerceiros,destinatario:e.target.value})} className="border-amber-200 focus:border-amber-500 bg-amber-50/40"/></Field>
+                        <Field label="Depósito de saída" required>
+                          <Sel value={formRelatorioTerceiros.deposito_saida||'1090'} onChange={e=>setFormRelatorioTerceiros({...formRelatorioTerceiros,deposito_saida:e.target.value})}>
+                            {DEPOSITOS.map(d=>(<option key={d.cod} value={d.cod}>{d.cod} - {d.nome}{d.recomendado?' (recomendado)':''}</option>))}
+                          </Sel>
+                        </Field>
                         <Field label="Data de Saída"><Inp type="date" value={formRelatorioTerceiros.dataSaida} onChange={e=>setFormRelatorioTerceiros({...formRelatorioTerceiros,dataSaida:e.target.value})}/></Field>
                         <Field label="Pallet"><Inp value={formRelatorioTerceiros.pallet} onChange={e=>setFormRelatorioTerceiros({...formRelatorioTerceiros,pallet:e.target.value})}/></Field>
                         <Field label="Remessa Para (DT)"><Inp value={formRelatorioTerceiros.remessaPara} onChange={e=>setFormRelatorioTerceiros({...formRelatorioTerceiros,remessaPara:e.target.value})}/></Field>
@@ -8078,6 +8102,20 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
                       <Sel value={servico} onChange={e=>setServico(e.target.value)}><option>Industrialização</option><option>Jateamento Interno</option><option>Jateamento Externo</option><option>Jateamento Interno e Externo</option><option>Reforma</option><option>Autoclave</option><option>Montagem de Placas</option><option value="Outros">Outros</option></Sel>
                     </Field>
                     {servico==='Outros'&&<Field label="Especifique"><Inp placeholder="Descreva o serviço" value={outrosTexto} onChange={e=>setOutrosTexto(e.target.value)}/></Field>}
+                    {/* Depósito de saída — a fiscal precisa desse código pra emitir
+                        a nota. Sem ele o SGQ volta pra ajuste e a emissão trava. */}
+                    <Field label="Depósito de saída" required className="sm:col-span-2 lg:col-span-3">
+                      <Sel value={depositoSaida} onChange={e=>setDepositoSaida(e.target.value)}>
+                        {DEPOSITOS.map(d=>(
+                          <option key={d.cod} value={d.cod}>{d.cod} - {d.nome}{d.recomendado?' (recomendado)':''}</option>
+                        ))}
+                      </Sel>
+                      <p className={`text-[11px] mt-1 ${depositoSaida==='1090'?'text-slate-400':'text-amber-600 font-semibold'}`}>
+                        {depositoSaida==='1090'
+                          ?'Vai no campo ESTOQUE do SGQ. Processamento é o normal para material que sai para industrialização em terceiro.'
+                          :`⚠ Confirme se é isso mesmo — o normal para industrialização em terceiro é 1090 (Processamento).`}
+                      </p>
+                    </Field>
                     <div className="sm:col-span-2 lg:col-span-3 bg-slate-50 rounded-xl p-4 border border-slate-200">
                       <label className="flex items-start gap-3 cursor-pointer">
                         <input type="checkbox" className="mt-0.5 w-4 h-4 text-indigo-600 rounded border-slate-300" checked={isComp} onChange={e=>{setIsComp(e.target.checked);setOpPaiId('');}}/>
@@ -9172,6 +9210,19 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
                             </Field>
                             <Field label="Destinatário Final" required>
                               <Inp placeholder="Fornecedor / local de entrega" value={formExp.destinatario} onChange={e=>setFormExp({...formExp,destinatario:e.target.value})} className="border-amber-200 focus:border-amber-500 bg-amber-50/40"/>
+                            </Field>
+                            {/* Última chance de conferir o depósito antes do SGQ ir
+                                pra fiscal — é ele que vai na coluna ESTOQUE. */}
+                            <Field label="Depósito de saída (vai no SGQ)" required>
+                              <Sel value={remSel.deposito_saida||'1090'}
+                                onChange={async e=>{
+                                  const novo=e.target.value;
+                                  setRemSel(p=>({...p,deposito_saida:novo}));
+                                  try{await supabase.from('remessas').update({deposito_saida:novo}).eq('id',remSel.id);fetchAll();}
+                                  catch(_){addToast('Não consegui salvar o depósito.','error');}
+                                }}>
+                                {DEPOSITOS.map(d=>(<option key={d.cod} value={d.cod}>{d.cod} - {d.nome}{d.recomendado?' (recomendado)':''}</option>))}
+                              </Sel>
                             </Field>
                           </div>
                         </div>
