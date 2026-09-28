@@ -29,3 +29,26 @@ A função agora roda uma **segunda consulta** de saldo cobrindo todos os códig
 já presentes em `estoque_mp`, independentemente de estarem no BOM da lista.
 Sintoma diagnóstico: `saldo_almoxarifado IS NULL` indicava item nunca tocado
 pela sincronização completa.
+
+## Remessas de Compras (triangulação, devolução, conserto) — em construção
+
+Base técnica validada (set/2026), antes das telas:
+
+**TOPs do Sankhya identificados** para cada natureza:
+- `2307` COMPRA PASSAGEM DIRETA SEM PEDIDO — triangulação (59 notas)
+- `2302` COMPRA PASSAGEM DIRETA COM PEDIDO — triangulação (31)
+- `2412` DEVOLUÇÃO DE COMPRA MATÉRIA PRIMA NACIONAL (5)
+- `2410` RETORNO DE MERCADORIA CONSERTO ESTQ TERCEIRO (4)
+- `2409` RETORNO INDUSTR. ENCOMENDA ESTQ TERCEIRO (3)
+- `2407` RETORNO INDUSTR/CONSERTO ESTQ TERCEIRO (7)
+
+**Edge function `buscar-documento-compra-sankhya`**: recebe um número e
+devolve cabeçalho + itens. Aceita `tipo: NOTA | PEDIDO | AUTO`.
+- `NOTA` busca entradas já lançadas (TIPMOV C/E) — devolução e conserto.
+- `PEDIDO` busca ordem de compra (TIPMOV O/P) — triangulação, onde a nota
+  costuma não ter entrado ainda na empresa.
+- `AUTO` tenta nota e cai pro pedido.
+
+Retorna parceiro, **CNPJ**, TOP e sua descrição, BR, valor, situação e os
+itens com quantidade/unidade/valor. Testado com dados reais: pedido 119128
+(DNG Pinturas, BR14325/26) e nota 468 (Marflex, BR14323/26).
