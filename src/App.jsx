@@ -1245,6 +1245,22 @@ export default function App(){
   // abertura pros demais depósitos isso passa a depender da escolha — o 1050
   // (matéria-prima), por exemplo, é o maior estoque da empresa e não tinha
   // nenhuma relação com o número que era validado antes.
+  // Onde o item REALMENTE está, com saldo, em ordem decrescente. Serve pra
+  // sugerir o depósito de saída em vez de deixar a pessoa adivinhar — vários
+  // itens existem em mais de um depósito ao mesmo tempo (o 12320, por exemplo,
+  // tem 73.746 no 1050 e 3.934 no 1090), então errar é fácil.
+  const depositosComSaldo=codigoMP=>{
+    const e=estoqueDb[codigoMP];
+    if(!e)return [];
+    return DEPOSITOS
+      .map(d=>({...d,saldo:Number(
+        d.cod==='1001'?e.saldo_1001:
+        d.cod==='1002'?e.saldo_1002:
+        d.cod==='1050'?e.saldo_1050:
+        e.saldo_1090??0)||0}))
+      .filter(d=>d.saldo>0)
+      .sort((a,b)=>b.saldo-a.saldo);
+  };
   const saldoNoDeposito=(codigoMP,dep)=>{
     const e=estoqueDb[codigoMP];
     if(!e)return 0;
@@ -4217,15 +4233,25 @@ export default function App(){
       const d=json.documento;
       setDocCompras({...d,origem:json.origem});
       // Todos os itens vêm marcados: o padrão é levar 100%, que é o caso comum.
-      setItensCompras((d.itens||[]).map(i=>({...i,enviar:true,quantidadeEnviar:Number(i.quantidade||0)})));
+      const itensDoc=(d.itens||[]).map(i=>({...i,enviar:true,quantidadeEnviar:Number(i.quantidade||0)}));
+      setItensCompras(itensDoc);
+      // Sugere o depósito ONDE OS ITENS ESTÃO, em vez de deixar o padrão fixo.
+      // Escolhe o depósito que atende mais itens; empate vai pro de maior saldo.
+      const votos={};
+      itensDoc.forEach(i=>{
+        const d0=depositosComSaldo(s(i.cod_produto))[0];
+        if(d0){votos[d0.cod]=votos[d0.cod]||{itens:0,saldo:0};votos[d0.cod].itens++;votos[d0.cod].saldo+=d0.saldo;}
+      });
+      const sugerido=Object.entries(votos).sort((a,b)=>b[1].itens-a[1].itens||b[1].saldo-a[1].saldo)[0]?.[0];
       setFormCompras(p=>({
         ...p,
         fornecedor_origem:s(d.parceiro),
         nf_origem:json.origem==='NOTA'?s(d.numero):p.nf_origem,
         oc_origem:json.origem==='PEDIDO'?s(d.numero):p.oc_origem,
         projeto:p.projeto||s(d.br),
+        deposito_saida:sugerido||p.deposito_saida,
       }));
-      addToast(`${json.origem==='NOTA'?'Nota':'Pedido'} ${s(d.numero)} — ${s(d.parceiro)} · ${(d.itens||[]).length} item(ns).`);
+      addToast(`${json.origem==='NOTA'?'Nota':'Pedido'} ${s(d.numero)} — ${s(d.parceiro)} · ${itensDoc.length} item(ns).`);
     }catch(e){addToast('Erro ao buscar: '+e.message,'error');}
     finally{setBuscandoDoc(false);}
   };
@@ -8299,7 +8325,7 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
                         <thead className="bg-slate-50 border-b border-slate-100">
                           <tr className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">
                             <th className="px-5 py-3 w-12"/><th className="px-5 py-3">Código</th><th className="px-5 py-3">Descrição</th>
-                            <th className="px-5 py-3 text-center">No documento</th><th className="px-5 py-3 text-center">Vai sair</th>
+                            <th className="px-5 py-3 text-center">No documento</th><th className="px-5 py-3 text-center">Vai sair</th><th className="px-5 py-3">Onde está</th>
                           </tr>
                         </thead>
                         <tbody className="divide-y divide-slate-50">
@@ -8318,10 +8344,29 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
                                   onChange={e=>setItensCompras(p=>p.map((x,i)=>i===idx?{...x,quantidadeEnviar:e.target.value}:x))}
                                   className="w-24 text-center border border-slate-200 rounded-lg px-2 py-1 text-sm outline-none focus:border-indigo-400 disabled:bg-slate-50"/>
                               </td>
+                              {/* Mostra em que depósito o item tem saldo de verdade,
+                                  destacando o que está selecionado como saída. */}
+                              <td className="px-5 py-3">
+                                {(()=>{
+                                  const deps=depositosComSaldo(s(it.cod_produto));
+                                  if(deps.length===0)return <span className="text-[10px] text-amber-600">sem saldo no ERP</span>;
+                                  return(
+                                    <div className="flex flex-wrap gap-1">
+                                      {deps.map(d=>(
+                                        <span key={d.cod}
+                                          className={`text-[9px] font-bold px-1.5 py-0.5 rounded ${d.cod===f.deposito_saida?'bg-indigo-600 text-white':'bg-slate-100 text-slate-500'}`}
+                                          title={`${d.cod} - ${d.nome}`}>
+                                          {d.cod}: {fmtD(d.saldo)}
+                                        </span>
+                                      ))}
+                                    </div>
+                                  );
+                                })()}
+                              </td>
                             </tr>
                           ))}
                           {itensCompras.length===0&&(
-                            <tr><td colSpan={5} className="px-5 py-8 text-center text-slate-300 text-xs">O documento não tem itens.</td></tr>
+                            <tr><td colSpan={6} className="px-5 py-8 text-center text-slate-300 text-xs">O documento não tem itens.</td></tr>
                           )}
                         </tbody>
                       </table>
@@ -8340,6 +8385,13 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
                         <Sel value={f.deposito_saida} onChange={e=>setFormCompras(p=>({...p,deposito_saida:e.target.value}))}>
                           {DEPOSITOS.map(d=>(<option key={d.cod} value={d.cod}>{d.cod} - {d.nome}</option>))}
                         </Sel>
+                        {/* Confere se os itens marcados existem mesmo no depósito
+                            escolhido — errar aqui trava a nota na fiscal. */}
+                        {(()=>{
+                          const sem=selecionados.filter(i=>saldoNoDeposito(s(i.cod_produto),f.deposito_saida)<=0);
+                          if(sem.length===0)return <p className="text-[11px] text-emerald-600 mt-1">✓ Todos os itens têm saldo neste depósito.</p>;
+                          return <p className="text-[11px] text-amber-600 mt-1 font-semibold">⚠ {sem.length} item(ns) sem saldo no {f.deposito_saida}: {sem.slice(0,3).map(i=>s(i.cod_produto)).join(', ')}{sem.length>3?'...':''}. Veja a coluna "Onde está".</p>;
+                        })()}
                       </Field>
                       <Field label="Nota fiscal"><Inp value={f.nf_origem} onChange={e=>setFormCompras(p=>({...p,nf_origem:e.target.value}))}/></Field>
                       <Field label="Ordem de compra"><Inp value={f.oc_origem} onChange={e=>setFormCompras(p=>({...p,oc_origem:e.target.value}))}/></Field>
