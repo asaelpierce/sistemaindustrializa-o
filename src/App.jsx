@@ -1240,6 +1240,25 @@ export default function App(){
     {cod:'1050',nome:'Matéria-Prima'},
   ];
   const rotuloDeposito=cod=>{const d=DEPOSITOS.find(x=>x.cod===s(cod));return d?`${d.cod} - ${d.nome}`:s(cod)||'1090 - Processamento';};
+  // Saldo do item NO DEPÓSITO escolhido. Até agora o portal só trabalhava com
+  // processamento, então validava sempre saldo_disponivel (1090+1002). Com a
+  // abertura pros demais depósitos isso passa a depender da escolha — o 1050
+  // (matéria-prima), por exemplo, é o maior estoque da empresa e não tinha
+  // nenhuma relação com o número que era validado antes.
+  const saldoNoDeposito=(codigoMP,dep)=>{
+    const e=estoqueDb[codigoMP];
+    if(!e)return 0;
+    switch(s(dep)){
+      case '1001':return Number(e.saldo_1001??0);
+      case '1002':return Number(e.saldo_1002??0);
+      case '1050':return Number(e.saldo_1050??0);
+      case '1090':
+      default:
+        // Mantém a regra histórica do processamento (1090 + 1002), que é como o
+        // Sankhya considera disponível pra produção.
+        return Number(e.saldo_disponivel??0);
+    }
+  };
   const [depositoSaida,setDepositoSaida]=useState('1090');
   const [outrosTexto,setOutrosTexto]=useState('');
   const [obsExp,setObsExp]=useState('');
@@ -4203,7 +4222,9 @@ export default function App(){
     if(isComp&&!opPaiId)return addToast('Selecione a OP original.','error');
     // Valida contra o saldo ATUAL do estoque, não contra a cópia congelada no
     // item (que ficava desatualizada depois de sincronizar o ERP).
-    const semSaldo=itens.filter(it=>(estoqueDb[it.codigoMP]?.saldo_disponivel??it.saldoDisponivel)<it.quantidadeTotal);
+    // Valida contra o saldo do DEPÓSITO escolhido, não mais sempre o de
+    // processamento — ver saldoNoDeposito.
+    const semSaldo=itens.filter(it=>saldoNoDeposito(it.codigoMP,depositoSaida)<it.quantidadeTotal);
     if(semSaldo.length>0)return addToast(`Saldo insuficiente: ${semSaldo.map(s=>s.codigoMP).join(', ')}`,'error');
     const servFinal=servico==='Outros'?(outrosTexto||'Outros'):servico;
     const removidos=itensOrig.filter(o=>!itens.find(it=>it.codigoMP===o.codigoMP)).map(r=>({codigoMP:s(r.codigoMP),descricao:s(r.descricao),quantidade:Number(r.quantidadeTotal),um:s(r.um)}));
@@ -8263,7 +8284,7 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
                       <div><p className="text-xs font-black text-slate-900 uppercase">{s(prodEncontrado.codigo_pa)} — {s(prodEncontrado.descricao)}</p><p className="text-[10px] text-slate-500 mt-0.5">Itens removidos são auditados automaticamente</p></div>
                       <span className="bg-slate-100 text-slate-600 text-xs font-bold px-3 py-1 rounded-full">{itens.length} itens</span>
                     </div>
-                    <div className="overflow-x-auto"><table className="w-full text-left text-sm"><thead className="bg-slate-50 border-b border-slate-100"><tr className="text-[10px] font-bold text-slate-500 uppercase tracking-wider"><th className="px-5 py-3.5 w-12"/><th className="px-5 py-3.5">Código MP</th><th className="px-5 py-3.5">Descrição</th><th className="px-5 py-3.5 text-center">Qtd Requisitada</th><th className="px-5 py-3.5 text-center">Saldo ERP</th></tr></thead>
+                    <div className="overflow-x-auto"><table className="w-full text-left text-sm"><thead className="bg-slate-50 border-b border-slate-100"><tr className="text-[10px] font-bold text-slate-500 uppercase tracking-wider"><th className="px-5 py-3.5 w-12"/><th className="px-5 py-3.5">Código MP</th><th className="px-5 py-3.5">Descrição</th><th className="px-5 py-3.5 text-center">Qtd Requisitada</th><th className="px-5 py-3.5 text-center">Saldo no {depositoSaida}</th></tr></thead>
                     <tbody className="divide-y divide-slate-50">
                       {itens.map((it,i)=>{
                         const dU=s(it.descricao).toUpperCase();
@@ -8275,7 +8296,7 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
                         // tela continuava mostrando o número velho. Agora lê sempre o
                         // valor atual, caindo na cópia só se o item não existir no
                         // estoque (item manual/não catalogado).
-                        const saldoAtual=estoqueDb[it.codigoMP]?.saldo_disponivel??it.saldoDisponivel;
+                        const saldoAtual=saldoNoDeposito(it.codigoMP,depositoSaida);
                         const semSaldo=saldoAtual<it.quantidadeTotal;
                         return(
                           <tr key={i} className={semSaldo?'bg-red-50/40':'hover:bg-slate-50/50'}>
