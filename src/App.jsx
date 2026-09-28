@@ -13,7 +13,7 @@ import {
   ArrowUp, ArrowDown, TrendingUp, TrendingDown, Activity, MessageSquare,
   X, Send, Bot, Save, Menu, Bell, RefreshCw, RotateCcw, Factory,
   Layers, PieChart as PieChartIcon, BarChart as BarChartIcon, BarChart2, Link2,
-  AlertOctagon, KeyRound, Circle, ShieldAlert, Camera, Wrench, ChevronDown
+  AlertOctagon, KeyRound, Circle, ShieldAlert, Camera, Wrench, ChevronDown, Repeat
 } from 'lucide-react';
 
 // ============================================================================
@@ -1260,6 +1260,20 @@ export default function App(){
     }
   };
   const [depositoSaida,setDepositoSaida]=useState('1090');
+
+  // ── Remessa de Compras (devolução / conserto / triangulação) ─────────────
+  const [formCompras,setFormCompras]=useState({
+    natureza:'DEVOLUCAO',numeroDoc:'',nf_origem:'',oc_origem:'',
+    fornecedor_origem:'',fornecedor_destino:'',cnpj_destino:'',cod_parceiro_destino:null,
+    projeto:'',cliente:'',deposito_saida:'1050',observacao:'',
+    data_envio_prevista:'',data_retorno_desejada:'',
+  });
+  const [docCompras,setDocCompras]=useState(null);      // documento achado no Sankhya
+  const [buscandoDoc,setBuscandoDoc]=useState(false);
+  const [itensCompras,setItensCompras]=useState([]);     // itens com marcação de envio
+  const [parceiroBusca,setParceiroBusca]=useState('');
+  const [parceiroSugestoes,setParceiroSugestoes]=useState([]);
+  const [buscandoParceiro,setBuscandoParceiro]=useState(false);
   const [outrosTexto,setOutrosTexto]=useState('');
   const [obsExp,setObsExp]=useState('');
   const [prodEncontrado,setProdEncontrado]=useState(null);
@@ -1452,6 +1466,38 @@ export default function App(){
   // Aprovadores de Manutenção: perfil MANUTENCAO (Diogo, Daniel, Martins) — ADMIN
   // também conta, como já é padrão nos outros perfis (acesso total de backup).
   const isManutencao=usuarioLogado?.perfil==='MANUTENCAO'||isAdmin;
+  // Compras abre as remessas que não nascem de uma OP: devolução, conserto e
+  // triangulação. PCP continua dono da industrialização.
+  const isCompras=usuarioLogado?.perfil==='COMPRAS'||isAdmin;
+
+  // Cada natureza gera o texto que a fiscal lê — vai no assunto do e-mail e na
+  // observação do SGQ. É por ele que ela sabe se é devolução, conserto ou
+  // triangulação na hora de emitir a nota.
+  const NATUREZAS=[
+    {v:'DEVOLUCAO',label:'Devolução',icone:'↩️',
+     ajuda:'Material comprado voltando pro fornecedor. Informe a nota de entrada.',
+     precisa:'NOTA'},
+    {v:'CONSERTO',label:'Conserto / Reparo',icone:'🔧',
+     ajuda:'Material sai para conserto e volta. Informe a nota de entrada.',
+     precisa:'NOTA'},
+    {v:'TRIANGULACAO',label:'Triangulação',icone:'🔀',
+     ajuda:'Material vai direto de um fornecedor para outro. A nota costuma ainda não estar lançada — nesse caso informe a ordem de compra.',
+     precisa:'AUTO'},
+  ];
+  const montarTituloFiscal=d=>{
+    const nf=s(d.nf_origem).trim(), oc=s(d.oc_origem).trim();
+    const forn=s(d.fornecedor_origem).trim().toUpperCase();
+    const dest=s(d.fornecedor_destino).trim().toUpperCase();
+    switch(s(d.natureza)){
+      case 'DEVOLUCAO':return `DEVOLUÇÃO DE COMPRA — NF ${nf||'—'} — ${forn||'—'}`;
+      case 'CONSERTO':return `REMESSA PARA CONSERTO/REPARO — NF ${nf||'—'} — ${forn||'—'}`;
+      case 'TRIANGULACAO':{
+        const docs=[nf?`NF ${nf}`:null,oc?`OC ${oc}`:null].filter(Boolean).join(' / ');
+        return `TRIANGULAÇÃO — ${forn||'—'} → ${dest||'—'}${docs?` — ${docs}`:''}`;
+      }
+      default:return s(d.observacao)||'REMESSA PARA INDUSTRIALIZAÇÃO';
+    }
+  };
 
   const s=v=>(v===null||v===undefined)?'':String(v);
   const fmtD=(v,u='')=>{if(v===undefined||v===null||isNaN(v)||v==='')return'—';const n=parseFloat(v);const st=Number.isInteger(n)?n.toString():n.toFixed(2).replace('.',',');return u?`${st} ${u}`:st;};
@@ -4150,6 +4196,121 @@ export default function App(){
   };
 
   // Busca o código diretamente no Sankhya (PA ou MP) e cadastra automaticamente
+  // ── Remessa de Compras: busca do documento no Sankhya ───────────────────
+  const buscarDocumentoCompras=async()=>{
+    const numero=s(formCompras.numeroDoc).trim();
+    if(!numero)return addToast('Informe o número da nota ou da ordem de compra.','error');
+    const nat=NATUREZAS.find(n=>n.v===formCompras.natureza);
+    setBuscandoDoc(true);setDocCompras(null);setItensCompras([]);
+    try{
+      const res=await fetch(`${SUPABASE_URL}/functions/v1/buscar-documento-compra-sankhya`,{
+        method:'POST',headers:{'Content-Type':'application/json','apikey':SUPABASE_KEY},
+        body:JSON.stringify({numero,tipo:nat?.precisa||'AUTO'})
+      });
+      const json=await res.json();
+      if(!json.ok)throw new Error(json.erro||'Falha na consulta');
+      if(!json.encontrado){addToast(json.mensagem||'Documento não encontrado.','error');return;}
+      const d=json.documento;
+      setDocCompras({...d,origem:json.origem});
+      // Todos os itens vêm marcados: o padrão é levar 100%, que é o caso comum.
+      setItensCompras((d.itens||[]).map(i=>({...i,enviar:true,quantidadeEnviar:Number(i.quantidade||0)})));
+      setFormCompras(p=>({
+        ...p,
+        fornecedor_origem:s(d.parceiro),
+        nf_origem:json.origem==='NOTA'?s(d.numero):p.nf_origem,
+        oc_origem:json.origem==='PEDIDO'?s(d.numero):p.oc_origem,
+        projeto:p.projeto||s(d.br),
+      }));
+      addToast(`${json.origem==='NOTA'?'Nota':'Pedido'} ${s(d.numero)} — ${s(d.parceiro)} · ${(d.itens||[]).length} item(ns).`);
+    }catch(e){addToast('Erro ao buscar: '+e.message,'error');}
+    finally{setBuscandoDoc(false);}
+  };
+
+  // Autocomplete do fornecedor de destino (triangulação).
+  const buscarParceiroDestino=async termo=>{
+    setParceiroBusca(termo);
+    if(s(termo).trim().length<2){setParceiroSugestoes([]);return;}
+    setBuscandoParceiro(true);
+    try{
+      const res=await fetch(`${SUPABASE_URL}/functions/v1/buscar-parceiro-sankhya`,{
+        method:'POST',headers:{'Content-Type':'application/json','apikey':SUPABASE_KEY},
+        body:JSON.stringify({termo,limite:8})
+      });
+      const json=await res.json();
+      setParceiroSugestoes(json.ok?(json.parceiros||[]):[]);
+    }catch(_){setParceiroSugestoes([]);}
+    finally{setBuscandoParceiro(false);}
+  };
+
+  const limparFormCompras=()=>{
+    setFormCompras({natureza:formCompras.natureza,numeroDoc:'',nf_origem:'',oc_origem:'',
+      fornecedor_origem:'',fornecedor_destino:'',cnpj_destino:'',cod_parceiro_destino:null,
+      projeto:'',cliente:'',deposito_saida:'1050',observacao:'',
+      data_envio_prevista:'',data_retorno_desejada:''});
+    setDocCompras(null);setItensCompras([]);setParceiroBusca('');setParceiroSugestoes([]);
+  };
+
+  const criarRemessaCompras=async()=>{
+    const f=formCompras;
+    if(!docCompras)return addToast('Busque o documento primeiro.','error');
+    if(f.natureza==='TRIANGULACAO'&&!s(f.fornecedor_destino).trim())
+      return addToast('Na triangulação é obrigatório informar para qual fornecedor o material vai.','error');
+    const selecionados=itensCompras.filter(i=>i.enviar&&Number(i.quantidadeEnviar)>0);
+    if(selecionados.length===0)return addToast('Selecione ao menos um item para enviar.','error');
+
+    // Parcial = não leva todos os itens, ou leva algum em quantidade menor.
+    const parcial=selecionados.length!==itensCompras.length
+      ||selecionados.some(i=>Number(i.quantidadeEnviar)<Number(i.quantidade||0));
+
+    const titulo=montarTituloFiscal(f);
+    const itens=selecionados.map(i=>({
+      codigoMP:s(i.cod_produto),
+      descricao:s(i.descricao),
+      um:s(i.unidade)||'UN',
+      quantidadeTotal:Number(i.quantidadeEnviar),
+      quantidadeOriginal:Number(i.quantidade||0),
+      quantidadeRetornada:0,
+      rateiosExtras:[],
+      justificativa:Number(i.quantidadeEnviar)!==Number(i.quantidade||0)?'Envio parcial definido pelo Compras':'',
+    }));
+
+    setIsLoading(true);
+    try{
+      const nr={
+        id:`REM-${Date.now()}`,
+        produto_acabado:'—',
+        descricao_produto:titulo,
+        quantidade_op:selecionados.length,
+        projeto:s(f.projeto).toUpperCase()||'SEM PROJETO',
+        cliente:s(f.cliente).toUpperCase()||s(f.fornecedor_origem).toUpperCase(),
+        observacao:titulo,           // é o que a fiscal lê no SGQ
+        titulo_fiscal:titulo,
+        obs_expedicao:s(f.observacao),
+        natureza:f.natureza,
+        nf_origem:s(f.nf_origem)||null,
+        oc_origem:s(f.oc_origem)||null,
+        fornecedor_origem:s(f.fornecedor_origem)||null,
+        fornecedor_destino:s(f.fornecedor_destino)||null,
+        cnpj_destino:s(f.cnpj_destino)||null,
+        cod_parceiro_destino:f.cod_parceiro_destino||null,
+        envio_parcial:parcial,
+        deposito_saida:s(f.deposito_saida)||'1050',
+        itens,itens_removidos:[],
+        status:'PENDENTE_EXPEDICAO',
+        criado_por:s(usuarioLogado?.nome||'Compras'),
+        pecas_recebidas:0,
+        data_envio_prevista:f.data_envio_prevista||null,
+        data_retorno_desejada:f.data_retorno_desejada||null,
+      };
+      const{error}=await supabase.from('remessas').insert([nr]);
+      if(error)throw error;
+      addToast(`Remessa criada e enviada para a logística: ${titulo}`);
+      limparFormCompras();
+      fetchAll();
+    }catch(e){addToast('Erro ao criar remessa: '+e.message,'error');}
+    finally{setIsLoading(false);}
+  };
+
   const buscarNoSankhya=async()=>{
     const cod=codigoBusca.toUpperCase().trim();
     if(!cod)return addToast('Informe um código para buscar.','error');
@@ -6000,6 +6161,7 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
     // definida, é só reativar esta linha em vez de reconstruir tudo do zero.
     ...((isPCP||isExp)?[{id:'PRODUCAO',label:'Produção por Setor',icon:Factory,group:'PCP'}]:[]),
     ...(isPCP?[{id:'NOVA_OP',label:'Nova Remessa',icon:PackageOpen,group:'PCP'},{id:'HISTORICO_PCP',label:'Histórico de Envios',icon:History,group:'PCP'},{id:'UPLOAD_ESTOQUE',label:'Sincronizar ERP',icon:UploadCloud,group:'PCP'}]:[]),
+    ...(isCompras?[{id:'REMESSA_COMPRAS',label:'Nova Remessa',icon:Repeat,group:'Compras'}]:[]),
     ...(isExp?[{id:'EXPEDICAO',label:'Fila de Expedição',icon:Truck,group:'Logística',badge:remPend.length||null},{id:'FORNECEDORES',label:'Retorno de Peças',icon:RotateCcw,group:'Logística',badge:notasRemessaPendentesCount||null},{id:'CONTROLE_GERAL',label:'Controle Geral',icon:ListChecks,group:'Logística'},{id:'RELATORIO_REMESSAS',label:'Relatório de Remessas',icon:FileSearch,group:'Logística'}]:[]),
     ...(isAdmin?[{id:'IA_ANALISTA',label:'Analista IA',icon:Bot,group:'Inteligência'},{id:'AUDITORIA',label:'Auditoria BOM',icon:FileSearch,group:'Inteligência'},{id:'GESTAO_USUARIOS',label:'Gestão de Acessos',icon:Users,group:'Sistema'}]:[]),
     {id:'CHAT_INTERNO',label:'Chat da Equipe',icon:MessageSquare,group:'Comunicação',badge:chatNaoLidos||null},
@@ -8006,6 +8168,204 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
             )}
 
             {/* ── NOVA OP ───────────────────────────────────────────────── */}
+            {/* ── REMESSA DE COMPRAS (devolução / conserto / triangulação) ──
+                Start do setor de Compras. Diferente da remessa do PCP, que
+                nasce de uma OP, esta nasce de um documento de compra. */}
+            {aba==='REMESSA_COMPRAS'&&(()=>{
+              const f=formCompras;
+              const nat=NATUREZAS.find(n=>n.v===f.natureza);
+              const ehTriangulacao=f.natureza==='TRIANGULACAO';
+              const titulo=montarTituloFiscal(f);
+              const selecionados=itensCompras.filter(i=>i.enviar&&Number(i.quantidadeEnviar)>0);
+              const parcial=itensCompras.length>0&&(selecionados.length!==itensCompras.length
+                ||selecionados.some(i=>Number(i.quantidadeEnviar)<Number(i.quantidade||0)));
+              return(
+              <div className="max-w-5xl mx-auto space-y-5 pb-10" style={{animation:'fadeIn 0.2s ease'}}>
+                <SectionHeader title="🔀 Nova Remessa — Compras" subtitle="Devolução, conserto/reparo e triangulação. O material sai a partir de um documento de compra, não de uma OP."/>
+
+                {/* 1. Natureza */}
+                <div className="bg-white rounded-2xl border border-slate-200 p-6">
+                  <p className="text-[10px] font-black text-slate-400 uppercase tracking-wider mb-3">1. Do que se trata</p>
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                    {NATUREZAS.map(n=>(
+                      <button key={n.v} onClick={()=>{setFormCompras(p=>({...p,natureza:n.v}));setDocCompras(null);setItensCompras([]);}}
+                        className={`text-left rounded-xl p-4 border-2 transition-colors ${f.natureza===n.v?'bg-indigo-50 border-indigo-500':'bg-slate-50 border-slate-200 hover:border-slate-300'}`}>
+                        <p className={`text-sm font-black ${f.natureza===n.v?'text-indigo-700':'text-slate-600'}`}>{n.icone} {n.label}</p>
+                        <p className="text-[11px] text-slate-500 mt-1 leading-snug">{n.ajuda}</p>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* 2. Documento de origem */}
+                <div className="bg-white rounded-2xl border border-slate-200 p-6">
+                  <p className="text-[10px] font-black text-slate-400 uppercase tracking-wider mb-3">
+                    2. {ehTriangulacao?'Nota fiscal ou ordem de compra':'Nota fiscal de entrada'}
+                  </p>
+                  <div className="flex flex-wrap items-end gap-3">
+                    <Field label={ehTriangulacao?'Número da NF ou da OC':'Número da nota'} className="flex-1 min-w-[220px]">
+                      <Inp placeholder={ehTriangulacao?'Ex: 468 (nota) ou 12602 (ordem de compra)':'Ex: 468'}
+                        value={f.numeroDoc} onChange={e=>setFormCompras(p=>({...p,numeroDoc:e.target.value}))}
+                        onKeyDown={e=>{if(e.key==='Enter'){e.preventDefault();buscarDocumentoCompras();}}}/>
+                    </Field>
+                    <Btn variant="dark" onClick={buscarDocumentoCompras} disabled={buscandoDoc}>
+                      {buscandoDoc?<><Loader2 className="w-4 h-4 animate-spin"/>Buscando...</>:<><Search className="w-4 h-4"/>Buscar no Sankhya</>}
+                    </Btn>
+                  </div>
+                  {ehTriangulacao&&!docCompras&&(
+                    <p className="text-[11px] text-slate-400 mt-2">Na triangulação a nota costuma não estar lançada ainda. Se não achar pelo número da nota, informe a ordem de compra.</p>
+                  )}
+
+                  {docCompras&&(
+                    <div className="mt-4 bg-emerald-50 border border-emerald-200 rounded-xl p-4">
+                      <div className="flex items-start justify-between gap-3 flex-wrap">
+                        <div>
+                          <p className="text-sm font-black text-emerald-800">
+                            {docCompras.origem==='NOTA'?'Nota':'Ordem de compra'} {s(docCompras.numero)} · {s(docCompras.parceiro)}
+                          </p>
+                          <p className="text-[11px] text-emerald-700 mt-0.5">
+                            CNPJ {s(docCompras.cnpj)||'—'} · TOP {s(docCompras.top)} {s(docCompras.top_descricao)}
+                            {docCompras.br?` · ${s(docCompras.br)}`:''} · {fmtMoeda(docCompras.valor||0)}
+                          </p>
+                        </div>
+                        <button onClick={()=>{setDocCompras(null);setItensCompras([]);}} className="text-[11px] font-bold text-slate-500 hover:underline">trocar</button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {/* 3. Destino (triangulação) */}
+                {ehTriangulacao&&(
+                  <div className="bg-white rounded-2xl border border-slate-200 p-6">
+                    <p className="text-[10px] font-black text-slate-400 uppercase tracking-wider mb-3">3. Para qual fornecedor vai</p>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                      <div>
+                        <p className="text-[10px] font-black text-slate-400 uppercase tracking-wider mb-1">De (origem)</p>
+                        <div className="bg-slate-50 rounded-xl px-3 py-2.5 text-sm text-slate-700 font-semibold">
+                          {s(f.fornecedor_origem)||<span className="text-slate-300 font-normal">busque o documento acima</span>}
+                        </div>
+                      </div>
+                      <div className="relative">
+                        <Field label="Para (destino)" required>
+                          <Inp placeholder="Digite o nome do fornecedor..." value={parceiroBusca}
+                            onChange={e=>buscarParceiroDestino(e.target.value)}
+                            className="border-amber-200 focus:border-amber-500 bg-amber-50/40"/>
+                        </Field>
+                        {buscandoParceiro&&<p className="text-[10px] text-slate-400 mt-1">buscando...</p>}
+                        {parceiroSugestoes.length>0&&(
+                          <div className="absolute z-20 left-0 right-0 mt-1 bg-white border border-slate-200 rounded-xl shadow-lg max-h-56 overflow-y-auto">
+                            {parceiroSugestoes.map(p=>(
+                              <button key={p.cod_parceiro} onClick={()=>{
+                                  setFormCompras(prev=>({...prev,fornecedor_destino:s(p.nome),cnpj_destino:s(p.cnpj),cod_parceiro_destino:p.cod_parceiro}));
+                                  setParceiroBusca(s(p.nome));setParceiroSugestoes([]);
+                                }}
+                                className="w-full text-left px-3 py-2 hover:bg-indigo-50 border-b border-slate-50 last:border-0">
+                                <p className="text-sm font-bold text-slate-700">{s(p.nome)}</p>
+                                <p className="text-[10px] text-slate-400">{s(p.cnpj)||'sem CNPJ'}{p.cidade?` · ${s(p.cidade)}/${s(p.uf)}`:''}</p>
+                              </button>
+                            ))}
+                          </div>
+                        )}
+                        {f.fornecedor_destino&&(
+                          <p className="text-[11px] text-emerald-700 mt-1">✓ {s(f.fornecedor_destino)} — CNPJ {s(f.cnpj_destino)||'—'}</p>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* 4. Itens */}
+                {docCompras&&(
+                  <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
+                    <div className="flex items-center justify-between px-6 py-4 bg-slate-50 border-b border-slate-100 flex-wrap gap-2">
+                      <div>
+                        <p className="text-[10px] font-black text-slate-400 uppercase tracking-wider">{ehTriangulacao?'4':'3'}. O que vai sair</p>
+                        <p className="text-xs text-slate-500 mt-0.5">Por padrão vai 100%. Desmarque ou ajuste a quantidade para envio parcial.</p>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <span className={`text-[10px] font-black px-2.5 py-1 rounded-full ${parcial?'bg-amber-100 text-amber-700':'bg-emerald-100 text-emerald-700'}`}>
+                          {parcial?'ENVIO PARCIAL':'100% DOS ITENS'}
+                        </span>
+                        <button onClick={()=>setItensCompras(p=>p.map(i=>({...i,enviar:true,quantidadeEnviar:Number(i.quantidade||0)})))}
+                          className="text-[10px] font-bold text-indigo-600 hover:underline">marcar tudo</button>
+                      </div>
+                    </div>
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-left text-sm">
+                        <thead className="bg-slate-50 border-b border-slate-100">
+                          <tr className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">
+                            <th className="px-5 py-3 w-12"/><th className="px-5 py-3">Código</th><th className="px-5 py-3">Descrição</th>
+                            <th className="px-5 py-3 text-center">No documento</th><th className="px-5 py-3 text-center">Vai sair</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-50">
+                          {itensCompras.map((it,idx)=>(
+                            <tr key={idx} className={it.enviar?'':'opacity-40'}>
+                              <td className="px-5 py-3">
+                                <input type="checkbox" checked={it.enviar}
+                                  onChange={e=>setItensCompras(p=>p.map((x,i)=>i===idx?{...x,enviar:e.target.checked}:x))}
+                                  className="w-4 h-4 accent-indigo-600 cursor-pointer"/>
+                              </td>
+                              <td className="px-5 py-3 font-bold text-slate-700">{s(it.cod_produto)}</td>
+                              <td className="px-5 py-3 text-slate-600 text-xs">{s(it.descricao)}</td>
+                              <td className="px-5 py-3 text-center text-slate-500">{fmtD(it.quantidade)} {s(it.unidade)}</td>
+                              <td className="px-5 py-3 text-center">
+                                <input type="number" step="any" disabled={!it.enviar} value={it.quantidadeEnviar}
+                                  onChange={e=>setItensCompras(p=>p.map((x,i)=>i===idx?{...x,quantidadeEnviar:e.target.value}:x))}
+                                  className="w-24 text-center border border-slate-200 rounded-lg px-2 py-1 text-sm outline-none focus:border-indigo-400 disabled:bg-slate-50"/>
+                              </td>
+                            </tr>
+                          ))}
+                          {itensCompras.length===0&&(
+                            <tr><td colSpan={5} className="px-5 py-8 text-center text-slate-300 text-xs">O documento não tem itens.</td></tr>
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
+
+                {/* 5. Complementos + o texto que a fiscal lê */}
+                {docCompras&&(
+                  <div className="bg-white rounded-2xl border border-slate-200 p-6 space-y-4">
+                    <p className="text-[10px] font-black text-slate-400 uppercase tracking-wider">{ehTriangulacao?'5':'4'}. Complementos</p>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                      <Field label="Projeto BR"><Inp placeholder="Opcional" value={f.projeto} onChange={e=>setFormCompras(p=>({...p,projeto:e.target.value.toUpperCase()}))}/></Field>
+                      <Field label="Cliente / referência"><Inp placeholder="Opcional" value={f.cliente} onChange={e=>setFormCompras(p=>({...p,cliente:e.target.value}))}/></Field>
+                      <Field label="Depósito de saída" required>
+                        <Sel value={f.deposito_saida} onChange={e=>setFormCompras(p=>({...p,deposito_saida:e.target.value}))}>
+                          {DEPOSITOS.map(d=>(<option key={d.cod} value={d.cod}>{d.cod} - {d.nome}</option>))}
+                        </Sel>
+                      </Field>
+                      <Field label="Nota fiscal"><Inp value={f.nf_origem} onChange={e=>setFormCompras(p=>({...p,nf_origem:e.target.value}))}/></Field>
+                      <Field label="Ordem de compra"><Inp value={f.oc_origem} onChange={e=>setFormCompras(p=>({...p,oc_origem:e.target.value}))}/></Field>
+                      <Field label="Data prevista de envio"><Inp type="date" value={f.data_envio_prevista} onChange={e=>setFormCompras(p=>({...p,data_envio_prevista:e.target.value}))}/></Field>
+                    </div>
+                    <Field label="Observação para a logística">
+                      <textarea rows={2} value={f.observacao} onChange={e=>setFormCompras(p=>({...p,observacao:e.target.value}))}
+                        className="w-full border border-slate-200 rounded-xl px-3 py-2 text-sm outline-none focus:border-indigo-400 resize-none"
+                        placeholder="Alguma instrução para quem vai despachar"/>
+                    </Field>
+
+                    {/* Prévia do texto que vai pro SGQ e pro e-mail */}
+                    <div className="bg-slate-900 rounded-xl p-4">
+                      <p className="text-[10px] font-black text-slate-400 uppercase tracking-wider mb-1.5">O que a fiscal vai ler</p>
+                      <p className="text-sm font-black text-white">{titulo}</p>
+                      <p className="text-[11px] text-slate-400 mt-1.5">Vai no assunto do e-mail e na observação do SGQ.</p>
+                    </div>
+
+                    <div className="flex justify-end gap-2 pt-2">
+                      <Btn variant="secondary" onClick={limparFormCompras}>Limpar</Btn>
+                      <Btn variant="primary" size="lg" onClick={criarRemessaCompras} disabled={isLoading||selecionados.length===0}>
+                        {isLoading?<><Loader2 className="w-4 h-4 animate-spin"/>Enviando...</>:<><Send className="w-5 h-5"/>Enviar para a logística</>}
+                      </Btn>
+                    </div>
+                  </div>
+                )}
+              </div>
+              );
+            })()}
+
             {aba==='NOVA_OP'&&(
               <div className="max-w-4xl mx-auto space-y-6">
                 {/* ── Relatório de Matéria Prima para Terceiros — por BR ──────
