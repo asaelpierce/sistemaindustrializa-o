@@ -58,3 +58,21 @@ Compras escolher o fornecedor de destino da triangulação. Busca por nome, raz�
 social ou CNPJ (mínimo 2 letras), e ordena colocando primeiro quem **começa**
 com o termo digitado — "marf" traz MARFLEX antes de TINTAS MARFIM. Devolve
 código, nome, razão social, CNPJ, cidade, UF e se é fornecedor/cliente.
+
+### Amarração nota ↔ ordem de compra (TGFVAR)
+
+Identificada a partir do HAR do portal de compras. O Sankhya usa a entidade
+`CompraVendavariosPedido`, sobre a tabela **TGFVAR**, com duas direções:
+
+```
+ORIGENS  (o que deu origem a este)   NUNOTA     = X AND NUNOTA <> NUNOTAORIG
+DESTINOS (o que saiu deste)          NUNOTAORIG = X AND NUNOTA <> NUNOTAORIG
+```
+
+Campos: `NUNOTA`/`SEQUENCIA` (destino), `NUNOTAORIG`/`SEQUENCIAORIG` (origem) e
+`QTDATENDIDA`.
+
+Cobre o que o campo `NUMPEDIDO2` do item não cobria: nota atendida por vários
+pedidos, pedido atendido em várias notas, e devolução apontando para a nota de
+compra original. Confirmado em dados reais: NF 468 → OC 12855, NF 3240 → OC
+12849, devolução NF 9656 → nota de compra 31424.
