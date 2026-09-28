@@ -52,3 +52,9 @@ devolve cabeçalho + itens. Aceita `tipo: NOTA | PEDIDO | AUTO`.
 Retorna parceiro, **CNPJ**, TOP e sua descrição, BR, valor, situação e os
 itens com quantidade/unidade/valor. Testado com dados reais: pedido 119128
 (DNG Pinturas, BR14325/26) e nota 468 (Marflex, BR14323/26).
+
+**Edge function `buscar-parceiro-sankhya`**: autocomplete de parceiros para o
+Compras escolher o fornecedor de destino da triangulação. Busca por nome, razão
+social ou CNPJ (mínimo 2 letras), e ordena colocando primeiro quem **começa**
+com o termo digitado — "marf" traz MARFLEX antes de TINTAS MARFIM. Devolve
+código, nome, razão social, CNPJ, cidade, UF e se é fornecedor/cliente.
