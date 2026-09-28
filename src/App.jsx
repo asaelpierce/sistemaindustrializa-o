@@ -1461,14 +1461,18 @@ export default function App(){
 
   const isAdmin=usuarioLogado?.perfil==='ADMIN';
   const isPCP=usuarioLogado?.perfil==='PCP'||isAdmin;
-  const isExp=usuarioLogado?.perfil==='EXPEDICAO'||isAdmin;
+  // COORDENADOR (Danilo): enxerga todas as remessas como a Expedição já
+  // enxergava, e soma a aba de Compras. Não é ADMIN porque não precisa mexer em
+  // acessos nem em configuração do sistema.
+  const isCoordenador=usuarioLogado?.perfil==='COORDENADOR'||isAdmin;
+  const isExp=usuarioLogado?.perfil==='EXPEDICAO'||isCoordenador;
   const isQual=usuarioLogado?.perfil==='QUALIDADE'||isAdmin;
   // Aprovadores de Manutenção: perfil MANUTENCAO (Diogo, Daniel, Martins) — ADMIN
   // também conta, como já é padrão nos outros perfis (acesso total de backup).
   const isManutencao=usuarioLogado?.perfil==='MANUTENCAO'||isAdmin;
   // Compras abre as remessas que não nascem de uma OP: devolução, conserto e
   // triangulação. PCP continua dono da industrialização.
-  const isCompras=usuarioLogado?.perfil==='COMPRAS'||isAdmin;
+  const isCompras=usuarioLogado?.perfil==='COMPRAS'||isCoordenador;
 
   // Cada natureza gera o texto que a fiscal lê — vai no assunto do e-mail e na
   // observação do SGQ. É por ele que ela sabe se é devolução, conserto ou
@@ -10069,7 +10073,7 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
                       <Field label="Nome completo" required><Inp required placeholder="Nome e sobrenome" value={novoUser.nome} onChange={e=>setNovoUser({...novoUser,nome:e.target.value})}/></Field>
                       <Field label="E-mail" required><Inp required type="email" placeholder="usuario@empresa.com" value={novoUser.email} disabled={editUser} onChange={e=>setNovoUser({...novoUser,email:e.target.value.toLowerCase().trim()})} className={editUser?'opacity-50':''}/></Field>
                       <Field label="Senha" required><Inp required placeholder="Senha de acesso" value={novoUser.senha} onChange={e=>setNovoUser({...novoUser,senha:e.target.value.trim()})}/></Field>
-                      <Field label="Perfil"><Sel value={novoUser.perfil} onChange={e=>setNovoUser({...novoUser,perfil:e.target.value})}><option value="PCP">PCP — Planejamento e Controle</option><option value="EXPEDICAO">Logística — Expedição</option><option value="QUALIDADE">Qualidade</option><option value="ADMIN">Administrador — Acesso Total</option></Sel></Field>
+                      <Field label="Perfil"><Sel value={novoUser.perfil} onChange={e=>setNovoUser({...novoUser,perfil:e.target.value})}><option value="PCP">PCP — Planejamento e Controle</option><option value="EXPEDICAO">Logística — Expedição</option><option value="COMPRAS">Compras — Devolução, conserto e triangulação</option><option value="COORDENADOR">Coordenador — Compras + todas as remessas</option><option value="QUALIDADE">Qualidade</option><option value="MANUTENCAO">Manutenção</option><option value="ADMIN">Administrador — Acesso Total</option></Sel></Field>
                       <div className="flex gap-2 pt-2"><Btn type="submit" variant="primary" className="flex-1">Salvar</Btn>{editUser&&<Btn type="button" variant="secondary" onClick={()=>{setNovoUser({nome:'',email:'',senha:'',perfil:'PCP'});setEditUser(false);}}>Cancelar</Btn>}</div>
                     </form>
                   </div>
