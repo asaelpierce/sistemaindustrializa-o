@@ -4243,15 +4243,22 @@ export default function App(){
         if(d0){votos[d0.cod]=votos[d0.cod]||{itens:0,saldo:0};votos[d0.cod].itens++;votos[d0.cod].saldo+=d0.saldo;}
       });
       const sugerido=Object.entries(votos).sort((a,b)=>b[1].itens-a[1].itens||b[1].saldo-a[1].saldo)[0]?.[0];
+      // Preenche NF e OC a partir da amarração real do Sankhya (TGFVAR), em vez
+      // de deixar a pessoa procurar. Numa devolução, por exemplo, o documento
+      // buscado é a nota e a origem é a nota de compra — as duas interessam pra
+      // fiscal.
+      const origens=d.documentos_origem||[];
+      const pedidoLigado=origens.find(o=>['O','P'].includes(s(o.tipmov)));
+      const notaLigada=origens.find(o=>['C','E'].includes(s(o.tipmov)));
       setFormCompras(p=>({
         ...p,
         fornecedor_origem:s(d.parceiro),
-        nf_origem:json.origem==='NOTA'?s(d.numero):p.nf_origem,
-        oc_origem:json.origem==='PEDIDO'?s(d.numero):p.oc_origem,
-        projeto:p.projeto||s(d.br),
+        nf_origem:json.origem==='NOTA'?s(d.numero):(p.nf_origem||s(notaLigada?.numero)),
+        oc_origem:json.origem==='PEDIDO'?s(d.numero):(p.oc_origem||s(pedidoLigado?.numero)),
+        projeto:p.projeto||s(d.br)||s(origens[0]?.br),
         deposito_saida:sugerido||p.deposito_saida,
       }));
-      addToast(`${json.origem==='NOTA'?'Nota':'Pedido'} ${s(d.numero)} — ${s(d.parceiro)} · ${itensDoc.length} item(ns).`);
+      addToast(`${json.origem==='NOTA'?'Nota':'Pedido'} ${s(d.numero)} — ${s(d.parceiro)} · ${itensDoc.length} item(ns)${origens.length?` · ${origens.length} documento(s) de origem`:''}.`);
     }catch(e){addToast('Erro ao buscar: '+e.message,'error');}
     finally{setBuscandoDoc(false);}
   };
@@ -8260,6 +8267,46 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
                         </div>
                         <button onClick={()=>{setDocCompras(null);setItensCompras([]);}} className="text-[11px] font-bold text-slate-500 hover:underline">trocar</button>
                       </div>
+
+                      {/* Amarração real do Sankhya (TGFVAR): de onde este
+                          documento veio e o que saiu dele. Numa devolução é
+                          assim que a nota de compra original aparece sozinha,
+                          sem a pessoa precisar procurar. */}
+                      {[
+                        {lista:docCompras.documentos_origem||[],titulo:'Veio de',icone:'←'},
+                        {lista:docCompras.documentos_gerados||[],titulo:'Já gerou',icone:'→'},
+                      ].filter(g=>g.lista.length>0).map(g=>(
+                        <div key={g.titulo} className="mt-3 pt-3 border-t border-emerald-200">
+                          <p className="text-[10px] font-black text-emerald-700 uppercase tracking-wider mb-1.5">{g.icone} {g.titulo}</p>
+                          <div className="space-y-1.5">
+                            {g.lista.map(v=>{
+                              const qtd=(v.itens_ligados||[]).reduce((a2,i)=>a2+Number(i.qtd_atendida||0),0);
+                              return(
+                                <div key={v.nunota} className="bg-white/70 rounded-lg px-3 py-2 flex items-center justify-between gap-3 flex-wrap">
+                                  <div className="min-w-0">
+                                    <p className="text-xs font-bold text-slate-700">
+                                      {s(v.tipo_documento)} {s(v.numero)}
+                                      {v.br?<span className="text-slate-400 font-normal"> · {s(v.br)}</span>:null}
+                                    </p>
+                                    <p className="text-[10px] text-slate-500">
+                                      {s(v.parceiro)} · TOP {s(v.top)} {s(v.top_descricao)} · {fmtMoeda(v.valor||0)}
+                                      {qtd>0?` · ${fmtD(qtd)} atendida(s)`:''}
+                                    </p>
+                                  </div>
+                                  <button onClick={()=>setFormCompras(p2=>({
+                                      ...p2,
+                                      ...(['O','P'].includes(s(v.tipmov))?{oc_origem:s(v.numero)}:{nf_origem:s(v.numero)}),
+                                      projeto:p2.projeto||s(v.br),
+                                    }))}
+                                    className="text-[10px] font-black text-indigo-600 hover:underline flex-shrink-0">
+                                    usar este número
+                                  </button>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      ))}
                     </div>
                   )}
                 </div>
