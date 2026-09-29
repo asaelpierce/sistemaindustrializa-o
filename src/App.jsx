@@ -1457,7 +1457,18 @@ export default function App(){
   const [modalRNC,setModalRNC]=useState(false);
   const [rncSel,setRncSel]=useState(null);
   const [filtroQual,setFiltroQual]=useState({status:'',resultado:'',busca:''});
-  const [formInspecao,setFormInspecao]=useState({material:'',fornecedor:'',nota_fiscal:'',pedido:'',quantidade:'',unidade:'UN',observacoes:'',itens_ressalva:[],resultado:''});
+  // Categorias de desvio do PROC 047. Sem categorizar só há "reprovado" e texto
+  // livre — com elas dá pra ver se o fornecedor erra sempre no mesmo ponto.
+  const MOTIVOS_REPROVACAO=[
+    {v:'DIMENSIONAL',label:'Dimensional',desc:'Medidas fora da tolerância'},
+    {v:'MATERIAL',label:'Material',desc:'Composição, dureza ou espessura divergente'},
+    {v:'ACABAMENTO',label:'Acabamento',desc:'Superfície, solda, pintura ou tratamento'},
+    {v:'DOCUMENTACAO',label:'Documentação',desc:'Certificado ausente, incorreto ou ilegível'},
+    {v:'IDENTIFICACAO',label:'Identificação',desc:'Marcação ou rastreabilidade ausente'},
+    {v:'OUTRO',label:'Outro',desc:'Descrever na observação'},
+  ];
+  const rotuloMotivo=v=>MOTIVOS_REPROVACAO.find(m=>m.v===s(v))?.label||s(v);
+  const [formInspecao,setFormInspecao]=useState({material:'',fornecedor:'',nota_fiscal:'',pedido:'',quantidade:'',unidade:'UN',observacoes:'',itens_ressalva:[],resultado:'',cod_produto:'',motivo_reprovacao:'',reincidencia:null});
   const [formRNC,setFormRNC]=useState({descricao_nc:'',causa_raiz:'',acao_corretiva:'',responsavel:'',prazo:'',gravidade:'MEDIA',email_destinatario:'',itens:[],resolucao:''});
   const [fotosUpload,setFotosUpload]=useState([]);
   const [fotoAnotandoIdx,setFotoAnotandoIdx]=useState(null); // índice da foto sendo marcada/anotada agora
@@ -1557,7 +1568,7 @@ export default function App(){
     if(!supabase)return;
     try{
       const[insR,rncR,chR]=await Promise.all([
-        supabase.from('inspecoes').select('id,numero,material,fornecedor,nota_fiscal,pedido,quantidade,unidade,resultado,observacoes,itens_ressalva,qtd_fotos,inspetor,data_inspecao,data_criacao,status,notificado_teams,rnc_id,criado_por,resolucao,descricao_material').order('data_criacao',{ascending:false}),
+        supabase.from('inspecoes').select('id,numero,material,fornecedor,nota_fiscal,pedido,quantidade,unidade,resultado,observacoes,itens_ressalva,qtd_fotos,inspetor,data_inspecao,data_criacao,status,notificado_teams,rnc_id,criado_por,resolucao,descricao_material,cod_produto,motivo_reprovacao,reincidencia').order('data_criacao',{ascending:false}),
         supabase.from('rncs').select('id,numero,inspecao_id,material,fornecedor,nota_fiscal,descricao_nc,causa_raiz,acao_corretiva,responsavel,prazo,status,gravidade,itens,qtd_fotos,criado_por,data_abertura,data_encerramento,email_enviado,email_destinatario,numero_global,numero_fornecedor,data_recebimento,qtd_reprovada,descricao_produto,acao_contencao,comentario_fornecedor,descricao_material,data_inspecao,numero_seq').order('data_abertura',{ascending:false}),
         supabase.from('chat_interno').select('*').order('data_envio',{ascending:true}),
       ]);
@@ -5114,6 +5125,16 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
   const salvarInspecao = async(resultado) => {
     if(!formInspecao.material||!formInspecao.fornecedor) return addToast('Material e Fornecedor são obrigatórios.','error');
     if(fotosUpload.length===0) return addToast('Anexe pelo menos uma foto da inspeção.','error');
+    // Campos pedidos pelo Supply Chain (PROC 047). O código do produto é sempre
+    // obrigatório porque é o que liga a inspeção ao recebimento no Portal de
+    // Compras; motivo e reincidência só quando houve desvio.
+    const ehDesvio=['REPROVADO','APROVADO_RESSALVA'].includes(s(resultado));
+    if(!s(formInspecao.cod_produto).trim())
+      return addToast('Informe o código do produto (Sankhya) — é o que liga a inspeção ao recebimento no IDF.','error');
+    if(ehDesvio&&!s(formInspecao.motivo_reprovacao))
+      return addToast('Classifique o motivo do desvio.','error');
+    if(ehDesvio&&formInspecao.reincidencia===null)
+      return addToast('Informe se o desvio é reincidência — o PROC 047 pede providência diferente para desvio recorrente.','error');
     setIsLoading(true);
     try{
       const isExistente=!!inspecaoSel?.id;
@@ -5123,6 +5144,9 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
       const dadosInspecao={
         material:formInspecao.material,fornecedor:formInspecao.fornecedor,
         nota_fiscal:formInspecao.nota_fiscal,pedido:formInspecao.pedido,
+        cod_produto:s(formInspecao.cod_produto)||null,
+        motivo_reprovacao:ehDesvio?(s(formInspecao.motivo_reprovacao)||null):null,
+        reincidencia:ehDesvio?(formInspecao.reincidencia===true):null,
         quantidade:parseN(formInspecao.quantidade),unidade:formInspecao.unidade,
         resultado,observacoes:formInspecao.observacoes,
         itens_ressalva:formInspecao.itens_ressalva,fotos:fotosData,
@@ -5241,7 +5265,7 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
       }
 
       setModalNovaInspecao(false);
-      setFormInspecao({material:'',fornecedor:'',nota_fiscal:'',pedido:'',quantidade:'',unidade:'UN',observacoes:'',itens_ressalva:[],resultado:''});
+      setFormInspecao({material:'',fornecedor:'',nota_fiscal:'',pedido:'',quantidade:'',unidade:'UN',observacoes:'',itens_ressalva:[],resultado:'',cod_produto:'',motivo_reprovacao:'',reincidencia:null});
       setFotosUpload([]);
       fetchAll();
     }catch(e){addToast('Erro: '+e.message,'error');}finally{setIsLoading(false);}
@@ -10268,7 +10292,7 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
                     <h2 className="text-xl font-black text-slate-900">Inspeções de Qualidade</h2>
                     <p className="text-sm text-slate-500 mt-0.5">Controle de recebimento, aprovações e registros de não conformidade</p>
                   </div>
-                  <Btn variant="primary" onClick={()=>{setFormInspecao({material:'',fornecedor:'',nota_fiscal:'',pedido:'',quantidade:'',unidade:'UN',observacoes:'',itens_ressalva:[],resultado:'',resolucao:''});setFotosUpload([]);setInspecaoSel(null);setInsEtapa(1);setInsResultadoSel('');setModalNovaInspecao(true);}}>
+                  <Btn variant="primary" onClick={()=>{setFormInspecao({material:'',fornecedor:'',nota_fiscal:'',pedido:'',quantidade:'',unidade:'UN',observacoes:'',itens_ressalva:[],resultado:'',resolucao:'',cod_produto:'',motivo_reprovacao:'',reincidencia:null});setFotosUpload([]);setInspecaoSel(null);setInsEtapa(1);setInsResultadoSel('');setModalNovaInspecao(true);}}>
                     <ShieldAlert className="w-4 h-4"/>Nova Inspeção
                   </Btn>
                 </div>
@@ -11303,6 +11327,23 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
               </Field>
             </div>
 
+            {/* Código do produto — terceira via de cruzamento com o recebimento
+                no Portal de Compras. Pedido e nota fiscal se perdem quando
+                digitados com ponto, barra ou espaço; o código do Sankhya é
+                estável. A taxa de vínculo estava em 47% (112 de 236). */}
+            <Field label="Código do produto (Sankhya)" required>
+              <Inp placeholder="Ex: 14406" value={formInspecao.cod_produto||''}
+                onChange={e=>setFormInspecao({...formInspecao,cod_produto:e.target.value.trim()})}/>
+              <p className="text-[10px] text-slate-400 mt-1">
+                É o que liga esta inspeção ao recebimento no Portal de Compras e faz o resultado contar no IDF do fornecedor.
+                {formInspecao.cod_produto&&estoqueDb[formInspecao.cod_produto]
+                  ?<span className="text-emerald-600 font-semibold"> · {s(estoqueDb[formInspecao.cod_produto].descricao)}</span>
+                  :formInspecao.cod_produto
+                    ?<span className="text-amber-600 font-semibold"> · código não encontrado no estoque — confira</span>
+                    :null}
+              </p>
+            </Field>
+
             <Field label="O que é o material? (Descrição para o KdB143 — campo D6)" required>
               <Inp placeholder="Ex: Chapa de Aço Inox 3mm, Parafuso M8 x 50, Borracha Natural..." value={formInspecao.descricao_material||''} onChange={e=>setFormInspecao({...formInspecao,descricao_material:e.target.value})}/>
               <p className="text-[10px] text-slate-400 mt-1">Descrição resumida do material para identificação no documento de RNC.</p>
@@ -11340,6 +11381,43 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
         {/* ETAPA 2 — Detalhes conforme resultado */}
         {insEtapa===2&&(
           <div className="space-y-5">
+
+            {/* Motivo e reincidência — pedidos pelo Supply Chain (PROC 047).
+                Só aparecem quando há desvio, que hoje é menos de 1% das
+                inspeções, então não pesam na rotina de quem aprova. O motivo
+                mostra o padrão de falha do fornecedor; a reincidência define a
+                gravidade da providência. */}
+            {['REPROVADO','APROVADO_RESSALVA'].includes(insResultadoSel)&&(
+              <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 space-y-4">
+                <p className="text-xs font-black text-slate-600 uppercase tracking-wider">Classificação do desvio</p>
+                <div>
+                  <p className="text-[11px] font-bold text-slate-500 mb-2">Motivo <span className="text-red-500">*</span></p>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                    {MOTIVOS_REPROVACAO.map(m=>(
+                      <button key={m.v} onClick={()=>setFormInspecao(p2=>({...p2,motivo_reprovacao:m.v}))}
+                        className={`text-left rounded-lg px-3 py-2 border-2 transition-colors ${formInspecao.motivo_reprovacao===m.v?'bg-white border-indigo-500':'bg-white/60 border-slate-200 hover:border-slate-300'}`}>
+                        <p className={`text-xs font-bold ${formInspecao.motivo_reprovacao===m.v?'text-indigo-700':'text-slate-600'}`}>{m.label}</p>
+                        <p className="text-[10px] text-slate-400 leading-snug">{m.desc}</p>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <div>
+                  <p className="text-[11px] font-bold text-slate-500 mb-2">Já aconteceu antes com este fornecedor? <span className="text-red-500">*</span></p>
+                  <div className="grid grid-cols-2 gap-2 max-w-sm">
+                    {[{v:false,label:'Não — desvio isolado'},{v:true,label:'Sim — é reincidência'}].map(o=>(
+                      <button key={String(o.v)} onClick={()=>setFormInspecao(p2=>({...p2,reincidencia:o.v}))}
+                        className={`text-xs font-bold rounded-lg px-3 py-2.5 border-2 ${formInspecao.reincidencia===o.v?(o.v?'bg-red-50 border-red-400 text-red-700':'bg-white border-slate-400 text-slate-700'):'bg-white/60 border-slate-200 text-slate-500 hover:border-slate-300'}`}>
+                        {o.label}
+                      </button>
+                    ))}
+                  </div>
+                  {formInspecao.reincidencia===true&&(
+                    <p className="text-[11px] text-red-600 mt-1.5 font-semibold">O PROC 047 pede providência formal para desvio recorrente — notificação, plano de ação com prazo ou reavaliação do cadastro.</p>
+                  )}
+                </div>
+              </div>
+            )}
 
             {/* APROVADO TOTAL — só fotos e obs */}
             {insResultadoSel==='APROVADO'&&(
