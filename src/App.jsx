@@ -5125,12 +5125,12 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
   const salvarInspecao = async(resultado) => {
     if(!formInspecao.material||!formInspecao.fornecedor) return addToast('Material e Fornecedor são obrigatórios.','error');
     if(fotosUpload.length===0) return addToast('Anexe pelo menos uma foto da inspeção.','error');
-    // Campos pedidos pelo Supply Chain (PROC 047). O código do produto é sempre
-    // obrigatório porque é o que liga a inspeção ao recebimento no Portal de
-    // Compras; motivo e reincidência só quando houve desvio.
+    // Campos pedidos pelo Supply Chain (PROC 047). O código do produto ficou
+    // OPCIONAL: como exigência ele travou a Qualidade no meio de uma inspeção
+    // já em andamento, e segurar o registro do desvio é pior do que ficar sem o
+    // vínculo do IDF — o código pode ser completado depois. Motivo e
+    // reincidência seguem obrigatórios, mas só aparecem quando há desvio.
     const ehDesvio=['REPROVADO','APROVADO_RESSALVA'].includes(s(resultado));
-    if(!s(formInspecao.cod_produto).trim())
-      return addToast('Informe o código do produto (Sankhya) — é o que liga a inspeção ao recebimento no IDF.','error');
     if(ehDesvio&&!s(formInspecao.motivo_reprovacao))
       return addToast('Classifique o motivo do desvio.','error');
     if(ehDesvio&&formInspecao.reincidencia===null)
@@ -11331,11 +11331,11 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
                 no Portal de Compras. Pedido e nota fiscal se perdem quando
                 digitados com ponto, barra ou espaço; o código do Sankhya é
                 estável. A taxa de vínculo estava em 47% (112 de 236). */}
-            <Field label="Código do produto (Sankhya)" required>
+            <Field label="Código do produto (Sankhya)">
               <Inp placeholder="Ex: 14406" value={formInspecao.cod_produto||''}
                 onChange={e=>setFormInspecao({...formInspecao,cod_produto:e.target.value.trim()})}/>
               <p className="text-[10px] text-slate-400 mt-1">
-                É o que liga esta inspeção ao recebimento no Portal de Compras e faz o resultado contar no IDF do fornecedor.
+                Opcional, mas ajuda: é o que liga esta inspeção ao recebimento no Portal de Compras e faz o resultado contar no IDF do fornecedor.
                 {/* Só confirma quando reconhece. Não avisa quando não acha:
                     estoque_mp guarda apenas a matéria-prima da composição, e a
                     maioria dos itens inspecionados é peça comprada, que
