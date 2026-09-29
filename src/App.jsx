@@ -11336,11 +11336,14 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
                 onChange={e=>setFormInspecao({...formInspecao,cod_produto:e.target.value.trim()})}/>
               <p className="text-[10px] text-slate-400 mt-1">
                 É o que liga esta inspeção ao recebimento no Portal de Compras e faz o resultado contar no IDF do fornecedor.
+                {/* Só confirma quando reconhece. Não avisa quando não acha:
+                    estoque_mp guarda apenas a matéria-prima da composição, e a
+                    maioria dos itens inspecionados é peça comprada, que
+                    legitimamente não está lá — o aviso dispararia quase sempre
+                    e a pessoa aprenderia a ignorar. */}
                 {formInspecao.cod_produto&&estoqueDb[formInspecao.cod_produto]
                   ?<span className="text-emerald-600 font-semibold"> · {s(estoqueDb[formInspecao.cod_produto].descricao)}</span>
-                  :formInspecao.cod_produto
-                    ?<span className="text-amber-600 font-semibold"> · código não encontrado no estoque — confira</span>
-                    :null}
+                  :null}
               </p>
             </Field>
 
