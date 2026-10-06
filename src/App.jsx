@@ -1435,9 +1435,12 @@ export default function App(){
   // O setor vem do CADASTRO do usuário, não de um seletor. Foi decisão do
   // usuário: cada login de produção pertence a um setor, e não poder escolher
   // elimina o risco de apontar no setor errado.
+  // Sem usar o helper s(): ele é declarado bem mais abaixo no componente, e
+  // este useMemo roda durante a renderização — daria o mesmo
+  // "Cannot access before initialization" que derrubou o portal.
   const setorDoUsuario=useMemo(()=>({
     codigo:usuarioLogado?.setor_codigo??null,
-    nome:s(usuarioLogado?.setor_nome)||null,
+    nome:usuarioLogado?.setor_nome==null?null:(String(usuarioLogado.setor_nome).trim()||null),
   }),[usuarioLogado]);
   // AGORA = começa neste instante, sem digitar horário (uso no chão de fábrica).
   // RELANCAMENTO = registra trabalho que já aconteceu, com data e horas na mão.
@@ -6066,6 +6069,25 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
   // ── Relatório de Remessas ────────────────────────────────────────────────
   // Recalcula tudo ao vivo a partir de remessasDb. Filtro de período opcional.
   const [relPeriodo,setRelPeriodo]=useState({de:'',ate:''});
+  // Setores oficiais (AD_TPRSETOR do Sankhya), com o código de 3 dígitos como
+  // o usuário usa. O ERP tem ainda o 6 (Corte Aço), que não existe na prática
+  // e nunca teve lançamento — fica de fora.
+  //
+  // Declarado AQUI, antes de apontamentoResumo: estava no meio do arquivo,
+  // depois de quem o usa, e o useMemo roda durante a renderização — dava
+  // "Cannot access before initialization" e derrubava o portal inteiro.
+  const SETORES_PRODUCAO=[
+    {cod:1,codigo:'001',nome:'Vulcanização'},
+    {cod:2,codigo:'002',nome:'Revestimento'},
+    {cod:3,codigo:'003',nome:'Caldeiraria'},
+    {cod:4,codigo:'004',nome:'Pintura'},
+    {cod:5,codigo:'005',nome:'Corte Cerâmica'},
+  ];
+  const rotuloSetor=nome=>{
+    const st=SETORES_PRODUCAO.find(x=>x.nome===s(nome));
+    return st?`${st.codigo} - ${st.nome}`:s(nome);
+  };
+
   // ── Apontamento de horas ────────────────────────────────────────────────
   const apontamentoResumo=useMemo(()=>{
     const base=apontamentoDb.filter(a=>s(a.dh_inicial).slice(0,7)===apontMes);
@@ -6222,24 +6244,6 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
     if(setorDoUsuario.codigo==null)return colaboradoresDb;
     return colaboradoresDb.filter(c2=>c2.setor_codigo===setorDoUsuario.codigo);
   },[colaboradoresDb,setorDoUsuario]);
-
-  // Setores oficiais, da tabela AD_TPRSETOR do Sankhya. Não inferir da base:
-  // eu tinha chutado "Setor 2/4/5" e os nomes reais são outros — e "Corte" são
-  // dois setores distintos, cerâmica e aço.
-  // Lista oficial confirmada pelo usuário, com o código de 3 dígitos como ele
-  // usa. O ERP tem ainda o 6 (Corte Aço), que não existe na prática e nunca
-  // teve lançamento — fica de fora.
-  const SETORES_PRODUCAO=[
-    {cod:1,codigo:'001',nome:'Vulcanização'},
-    {cod:2,codigo:'002',nome:'Revestimento'},
-    {cod:3,codigo:'003',nome:'Caldeiraria'},
-    {cod:4,codigo:'004',nome:'Pintura'},
-    {cod:5,codigo:'005',nome:'Corte Cerâmica'},
-  ];
-  const rotuloSetor=nome=>{
-    const st=SETORES_PRODUCAO.find(x=>x.nome===s(nome));
-    return st?`${st.codigo} - ${st.nome}`:s(nome);
-  };
 
   const apIniciar=async()=>{
     const f=apForm;
