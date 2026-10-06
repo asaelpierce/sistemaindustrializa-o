@@ -6168,20 +6168,29 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
     if(!op)return;
     setApBuscandoOP(true);setApOpInfo(null);
     try{
-      const{data}=await supabase.from('ordens_producao_sankhya')
-        .select('nro_ordem_producao,br,br_confirmado,cod_produto_acabado,produto_acabado_descricao')
-        .eq('nro_ordem_producao',op).limit(1);
-      const o=(data||[])[0];
-      if(o){
-        const br=s(o.br_confirmado)||s(o.br);
-        setApOpInfo({achou:true,br,pa:s(o.cod_produto_acabado),descr:s(o.produto_acabado_descricao)});
-        setApForm(p2=>({...p2,nro_op:op,br,produto_acabado:s(o.cod_produto_acabado),descricao_produto:s(o.produto_acabado_descricao)}));
-      }else{
-        // Sem OP cadastrada não é erro: pode ser OP antiga ou projeto estoque.
-        // Deixa seguir, mas pedindo a descrição do que está sendo feito.
+      // Busca direto no Sankhya (TPRIPROC), não na ordens_producao_sankhya:
+      // aquela tabela só tem as OPs de industrialização, então OP de produção
+      // normal vinha sempre sem BR. O caminho do BR é
+      // TPRIPROC.NUNOTA -> TGFCAB.CODPROJ -> TCSPRJ.IDENTIFICACAO.
+      const res=await fetch(`${SUPABASE_URL}/functions/v1/buscar-op-sankhya`,{
+        method:'POST',headers:{'Content-Type':'application/json','apikey':SUPABASE_KEY},
+        body:JSON.stringify({op})
+      });
+      const j=await res.json();
+      if(!j.ok)throw new Error(j.erro||'Falha na consulta');
+      if(!j.encontrado){
+        // Não achar não é erro: pode ser OP antiga ou projeto estoque. Deixa
+        // seguir, pedindo a descrição do que está sendo feito.
         setApOpInfo({achou:false});
         setApForm(p2=>({...p2,nro_op:op,br:'',produto_acabado:'',descricao_produto:''}));
+        return;
       }
+      const prod=(j.produtos||[])[0]||{};
+      setApOpInfo({achou:true,br:s(j.br),situacao:s(j.situacao_label),
+        cliente:s(j.cliente),origemBR:s(j.br_origem),
+        producaoInterna:!!j.producao_interna,produtos:j.produtos||[]});
+      setApForm(p2=>({...p2,nro_op:op,br:s(j.br),
+        produto_acabado:s(prod.cod_produto),descricao_produto:s(prod.descricao)}));
     }catch(e){addToast('Erro ao buscar OP: '+e.message,'error');}
     finally{setApBuscandoOP(false);}
   };
@@ -9356,13 +9365,24 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
                   </div>
 
                   {apOpInfo?.achou&&(
-                    <div className="mt-3 bg-emerald-50 border border-emerald-200 rounded-xl p-3.5">
-                      <p className="text-sm font-black text-emerald-800">
+                    <div className={`mt-3 rounded-xl p-3.5 border ${f.br?'bg-emerald-50 border-emerald-200':'bg-amber-50 border-amber-200'}`}>
+                      <p className={`text-sm font-black ${f.br?'text-emerald-800':'text-amber-800'}`}>
                         {f.br?`Projeto ${s(f.br)}`:'OP sem projeto vinculado'}
-                        {f.produto_acabado?<span className="text-emerald-600 font-bold"> · PA {s(f.produto_acabado)}</span>:null}
+                        {f.produto_acabado?<span className="font-bold opacity-80"> · PA {s(f.produto_acabado)}</span>:null}
                       </p>
-                      <p className="text-[11px] text-emerald-700 mt-0.5">{s(f.descricao_produto)||'—'}</p>
-                      <p className="text-[10px] text-slate-500 mt-1">Confira se é isso mesmo antes de continuar.</p>
+                      <p className={`text-[11px] mt-0.5 ${f.br?'text-emerald-700':'text-amber-700'}`}>{s(f.descricao_produto)||'—'}</p>
+                      <div className="flex flex-wrap gap-2 mt-1.5">
+                        {apOpInfo.situacao&&<span className="text-[9px] font-black px-2 py-0.5 rounded-full bg-white/70 text-slate-600">OP {apOpInfo.situacao}</span>}
+                        {apOpInfo.cliente&&<span className="text-[9px] font-bold px-2 py-0.5 rounded-full bg-white/70 text-slate-500">{s(apOpInfo.cliente)}</span>}
+                        {apOpInfo.producaoInterna&&<span className="text-[9px] font-black px-2 py-0.5 rounded-full bg-slate-200 text-slate-600">Produção interna</span>}
+                        {apOpInfo.origemBR==='observacao da OP'&&<span className="text-[9px] font-bold px-2 py-0.5 rounded-full bg-amber-100 text-amber-700">BR veio da observação da OP</span>}
+                        {(apOpInfo.produtos||[]).length>1&&<span className="text-[9px] font-black px-2 py-0.5 rounded-full bg-indigo-100 text-indigo-700">{apOpInfo.produtos.length} produtos nesta OP</span>}
+                      </div>
+                      <p className="text-[10px] text-slate-500 mt-1.5">
+                        {f.br?'Confira se é isso mesmo antes de continuar.'
+                          :apOpInfo.producaoInterna?'Produção interna normalmente não tem projeto — escreva abaixo o que está sendo feito.'
+                          :'Escreva abaixo o que está sendo feito.'}
+                      </p>
                     </div>
                   )}
                   {apOpInfo&&!apOpInfo.achou&&(
