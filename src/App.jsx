@@ -1417,6 +1417,11 @@ export default function App(){
   // isManutencao mais abaixo. Qualquer um dos 3 aprovando já destrava a
   // solicitação (não precisa dos 3 juntos) — confirmado pelo usuário.
   const [manutencaoDb,setManutencaoDb]=useState([]);
+  // Apontamento de mão de obra na OP (Sankhya AD_TPRFUNC) — substitui a
+  // planilha mensal "Lançamento de Funcionários na OP".
+  const [apontamentoDb,setApontamentoDb]=useState([]);
+  const [apontMes,setApontMes]=useState(()=>new Date().toISOString().slice(0,7));
+  const [apontVisao,setApontVisao]=useState('OP'); // OP | PESSOA | SETOR
   const [manutencaoHistoricoDb,setManutencaoHistoricoDb]=useState({}); // por solicitacao_id
   const [manutencaoVisao,setManutencaoVisao]=useState('KANBAN'); // KANBAN | LISTA
   const [manutencaoFiltroTipo,setManutencaoFiltroTipo]=useState('TODOS'); // TODOS | MAQUINA | PREDIAL
@@ -1589,6 +1594,17 @@ export default function App(){
       if(chR.data)setChatInternoDb(chR.data);
       setDbOnline(true);
     }catch(e){setDbOnline(false);}
+  },[supabase]);
+
+  const fetchApontamento=useCallback(async()=>{
+    if(!supabase)return;
+    try{
+      const{data,error}=await supabase.from('apontamento_horas')
+        .select('idiproc,id,dh_inicial,dh_final,executante,setor,setor_nome,br,horas,status_op')
+        .order('dh_inicial',{ascending:false}).limit(20000);
+      if(error)throw error;
+      setApontamentoDb(data||[]);
+    }catch(e){console.warn('Erro ao buscar apontamento:',e);}
   },[supabase]);
 
   const fetchManutencao=useCallback(async()=>{
@@ -4055,7 +4071,7 @@ export default function App(){
   },[supabase,usuarioLogado?.perfil]);
 
   // fetchAll na inicialização + a cada 60s (dados pesados)
-  useEffect(()=>{if(supabase){fetchAll();fetchQual();fetchManutencao();fetchEquipamentosPreventivas();const iv=setInterval(fetchAll,90000);return()=>clearInterval(iv);}},[supabase]);
+  useEffect(()=>{if(supabase){fetchAll();fetchQual();fetchManutencao();fetchEquipamentosPreventivas();fetchApontamento();const iv=setInterval(fetchAll,90000);return()=>clearInterval(iv);}},[supabase]);
 
   // Bug real encontrado: como o logout não recarrega a página (só limpa
   // usuarioLogado), filtros deixados marcados numa sessão (ex: "Predial")
@@ -6009,6 +6025,40 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
   // ── Relatório de Remessas ────────────────────────────────────────────────
   // Recalcula tudo ao vivo a partir de remessasDb. Filtro de período opcional.
   const [relPeriodo,setRelPeriodo]=useState({de:'',ate:''});
+  // ── Apontamento de horas ────────────────────────────────────────────────
+  const apontamentoResumo=useMemo(()=>{
+    const base=apontamentoDb.filter(a=>s(a.dh_inicial).slice(0,7)===apontMes);
+    const agrupar=(chaveFn,rotuloFn)=>{
+      const m={};
+      base.forEach(a=>{
+        const k=chaveFn(a)||'(sem informação)';
+        if(!m[k])m[k]={chave:k,rotulo:rotuloFn?rotuloFn(a):k,horas:0,lancamentos:0,ops:new Set(),pessoas:new Set(),dias:new Set()};
+        m[k].horas+=Number(a.horas||0);
+        m[k].lancamentos++;
+        m[k].ops.add(a.idiproc);
+        if(a.executante)m[k].pessoas.add(a.executante);
+        m[k].dias.add(s(a.dh_inicial).slice(0,10));
+      });
+      return Object.values(m).map(x=>({...x,ops:x.ops.size,pessoas:x.pessoas.size,dias:x.dias.size}))
+        .sort((x,y)=>y.horas-x.horas);
+    };
+    const totalHoras=base.reduce((acc,a)=>acc+Number(a.horas||0),0);
+    // Meses disponíveis, pra montar o seletor sem depender de lista fixa.
+    const meses=[...new Set(apontamentoDb.map(a=>s(a.dh_inicial).slice(0,7)).filter(Boolean))].sort().reverse();
+    return{
+      base,totalHoras,meses,
+      lancamentos:base.length,
+      pessoas:new Set(base.map(a=>a.executante).filter(Boolean)).size,
+      ops:new Set(base.map(a=>a.idiproc)).size,
+      brs:new Set(base.map(a=>a.br).filter(Boolean)).size,
+      semBR:base.filter(a=>!a.br).length,
+      porOP:agrupar(a=>`${a.idiproc}`),
+      porBR:agrupar(a=>a.br),
+      porPessoa:agrupar(a=>a.executante),
+      porSetor:agrupar(a=>a.setor_nome),
+    };
+  },[apontamentoDb,apontMes]);
+
   const relatorioRemessas=useMemo(()=>{
     const base=remessasDb.filter(r=>{
       const d=s(r.data_criacao).slice(0,10);
@@ -6086,6 +6136,66 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
       totalComRetorno:dias.length,
     };
   },[remessasDb,relPeriodo]);
+
+  // Exporta o apontamento do mês — substitui a planilha que era montada à mão.
+  const exportarApontamento=async()=>{
+    if(!window.ExcelJS)return addToast('ExcelJS não carregado. Recarregue a página.','error');
+    try{
+      const A=apontamentoResumo;
+      const wb=new window.ExcelJS.Workbook();
+      const AZUL='FF1F3864';
+      const cab=(ws,cols)=>{
+        const row=ws.getRow(1);
+        cols.forEach((cl,i)=>{
+          const cel=row.getCell(i+1);
+          cel.value=cl.t;
+          cel.font={name:'Arial',bold:true,color:{argb:'FFFFFFFF'},size:10};
+          cel.fill={type:'pattern',pattern:'solid',fgColor:{argb:AZUL}};
+          cel.alignment={horizontal:'center',vertical:'middle',wrapText:true};
+          ws.getColumn(i+1).width=cl.w;
+        });
+        row.height=26;
+        ws.views=[{state:'frozen',ySplit:1}];
+      };
+      const addLinhas=(ws,linhas)=>linhas.forEach((l,i)=>{
+        const row=ws.getRow(2+i);
+        l.forEach((v,j)=>{row.getCell(j+1).value=v;});
+      });
+
+      const w1=wb.addWorksheet('Base');
+      cab(w1,[{t:'OP',w:10},{t:'Projeto',w:16},{t:'Início',w:18},{t:'Fim',w:18},
+              {t:'Horas',w:10},{t:'Executante',w:20},{t:'Setor',w:16},{t:'Status OP',w:15}]);
+      addLinhas(w1,A.base.map(a2=>[
+        a2.idiproc, s(a2.br)||'(sem BR)',
+        s(a2.dh_inicial).replace('T',' ').slice(0,16),
+        s(a2.dh_final).replace('T',' ').slice(0,16),
+        Number(a2.horas||0), s(a2.executante), s(a2.setor_nome), s(a2.status_op),
+      ]));
+      w1.getColumn(5).numFmt='0.00';
+
+      const abas=[['Por projeto',A.porBR,'Projeto'],['Por pessoa',A.porPessoa,'Pessoa'],['Por setor',A.porSetor,'Setor'],['Por OP',A.porOP,'OP']];
+      abas.forEach(([nome,dados,rotulo])=>{
+        const ws=wb.addWorksheet(nome);
+        cab(ws,[{t:rotulo,w:24},{t:'Horas',w:12},{t:'Lançamentos',w:14},{t:'Pessoas',w:12},{t:'OPs',w:10},{t:'Dias',w:10}]);
+        addLinhas(ws,dados.map(x=>[x.rotulo,Number(x.horas.toFixed(2)),x.lancamentos,x.pessoas,x.ops,x.dias]));
+        ws.getColumn(2).numFmt='0.00';
+        const tot=ws.getRow(2+dados.length);
+        tot.getCell(1).value='TOTAL';
+        tot.getCell(1).font={name:'Arial',bold:true};
+        tot.getCell(2).value=Number(A.totalHoras.toFixed(2));
+        tot.getCell(2).font={name:'Arial',bold:true};
+        tot.getCell(2).numFmt='0.00';
+      });
+
+      const buf=await wb.xlsx.writeBuffer();
+      const blob=new Blob([buf],{type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'});
+      const a3=document.createElement('a');
+      a3.href=URL.createObjectURL(blob);
+      a3.download=`Apontamento_Horas_${apontMes}.xlsx`;
+      a3.click();
+      addToast('Apontamento exportado!');
+    }catch(e){addToast('Erro ao exportar: '+e.message,'error');}
+  };
 
   // Exporta o relatório de remessas pra Excel, com as mesmas 5 visões da tela
   // (aqui a lista de itens vai completa, não só os 30 primeiros).
@@ -6237,6 +6347,7 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
     ...((isPCP||isExp)?[{id:'PRODUCAO',label:'Produção por Setor',icon:Factory,group:'PCP'}]:[]),
     ...(isPCP?[{id:'NOVA_OP',label:'Nova Remessa',icon:PackageOpen,group:'PCP'},{id:'HISTORICO_PCP',label:'Histórico de Envios',icon:History,group:'PCP'},{id:'UPLOAD_ESTOQUE',label:'Sincronizar ERP',icon:UploadCloud,group:'PCP'}]:[]),
     ...(isCompras?[{id:'REMESSA_COMPRAS',label:'Nova Remessa',icon:Repeat,group:'Compras'}]:[]),
+    ...(isPCP?[{id:'APONTAMENTO_HORAS',label:'Horas por OP',icon:Clock,group:'PCP'}]:[]),
     ...(isExp?[{id:'EXPEDICAO',label:'Fila de Expedição',icon:Truck,group:'Logística',badge:remPend.length||null},{id:'FORNECEDORES',label:'Retorno de Peças',icon:RotateCcw,group:'Logística',badge:notasRemessaPendentesCount||null},{id:'CONTROLE_GERAL',label:'Controle Geral',icon:ListChecks,group:'Logística'},{id:'RELATORIO_REMESSAS',label:'Relatório de Remessas',icon:FileSearch,group:'Logística'}]:[]),
     ...(isAdmin?[{id:'IA_ANALISTA',label:'Analista IA',icon:Bot,group:'Inteligência'},{id:'AUDITORIA',label:'Auditoria BOM',icon:FileSearch,group:'Inteligência'},{id:'GESTAO_USUARIOS',label:'Gestão de Acessos',icon:Users,group:'Sistema'}]:[]),
     {id:'CHAT_INTERNO',label:'Chat da Equipe',icon:MessageSquare,group:'Comunicação',badge:chatNaoLidos||null},
@@ -8960,6 +9071,152 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
                 </div>
               </div>
             )}
+
+            {/* ── APONTAMENTO DE HORAS POR OP ──────────────────────────────
+                Substitui a planilha mensal "Lançamento de Funcionários na OP".
+                As horas são calculadas na sincronização, porque o Sankhya não
+                preenche esses campos. */}
+            {aba==='APONTAMENTO_HORAS'&&(()=>{
+              const A=apontamentoResumo;
+              const fmtH=h=>{const n=Number(h||0);const hh=Math.floor(n);const mm=Math.round((n-hh)*60);return `${hh}h${String(mm).padStart(2,'0')}`;};
+              const nomeMes=m=>{const[a2,me]=s(m).split('-');return `${['','janeiro','fevereiro','março','abril','maio','junho','julho','agosto','setembro','outubro','novembro','dezembro'][Number(me)]||me} de ${a2}`;};
+              const visoes=[{v:'OP',l:'Por OP / BR'},{v:'PESSOA',l:'Por pessoa'},{v:'SETOR',l:'Por setor'}];
+              const lista=apontVisao==='PESSOA'?A.porPessoa:apontVisao==='SETOR'?A.porSetor:A.porBR;
+              const maxH=Math.max(1,...lista.map(x=>x.horas));
+              return(
+              <div className="space-y-5 pb-10" style={{animation:'fadeIn 0.2s ease'}}>
+                <div className="flex flex-wrap items-end justify-between gap-3">
+                  <SectionHeader title="⏱️ Horas por OP" subtitle="Apontamento de mão de obra na produção — vem do Sankhya, atualizado automaticamente"/>
+                  <div className="flex items-end gap-2">
+                    <Field label="Mês">
+                      <Sel value={apontMes} onChange={e=>setApontMes(e.target.value)} className="w-48">
+                        {A.meses.length===0&&<option value={apontMes}>{nomeMes(apontMes)}</option>}
+                        {A.meses.map(m=><option key={m} value={m}>{nomeMes(m)}</option>)}
+                      </Sel>
+                    </Field>
+                    <Btn variant="dark" onClick={exportarApontamento} disabled={A.lancamentos===0}>
+                      <FileSpreadsheet className="w-4 h-4"/>Exportar Excel
+                    </Btn>
+                  </div>
+                </div>
+
+                {/* Totais do mês */}
+                <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
+                  {[
+                    {l:'Horas apontadas',v:fmtH(A.totalHoras),d:`${A.lancamentos} lançamentos`,destaque:true},
+                    {l:'Pessoas',v:A.pessoas,d:'com apontamento no mês'},
+                    {l:'OPs',v:A.ops,d:'com horas lançadas'},
+                    {l:'Projetos (BR)',v:A.brs,d:'distintos'},
+                    {l:'Média por pessoa',v:A.pessoas?fmtH(A.totalHoras/A.pessoas):'—',d:'no mês'},
+                  ].map(c2=>(
+                    <div key={c2.l} className={`rounded-2xl border-2 p-4 ${c2.destaque?'bg-indigo-50 border-indigo-300':'bg-white border-slate-200'}`}>
+                      <p className="text-[10px] font-black text-slate-400 uppercase tracking-wider">{c2.l}</p>
+                      <p className={`text-2xl font-black mt-1 ${c2.destaque?'text-indigo-600':'text-slate-800'}`}>{c2.v}</p>
+                      <p className="text-[10px] text-slate-400 mt-0.5">{c2.d}</p>
+                    </div>
+                  ))}
+                </div>
+
+                {A.semBR>0&&(
+                  <div className="bg-amber-50 border border-amber-200 rounded-xl px-4 py-3">
+                    <p className="text-[11px] text-amber-800">
+                      <strong>{A.semBR} lançamento(s) sem projeto vinculado</strong> — essas horas entram no total do mês, mas não aparecem em nenhum BR.
+                    </p>
+                  </div>
+                )}
+
+                {/* Seletor de visão */}
+                <div className="flex items-center gap-1 bg-slate-100 rounded-xl p-1 w-fit">
+                  {visoes.map(o=>(
+                    <button key={o.v} onClick={()=>setApontVisao(o.v)}
+                      className={`text-xs font-bold px-4 py-2 rounded-lg transition-colors ${apontVisao===o.v?'bg-white text-slate-800 shadow-sm':'text-slate-500 hover:text-slate-700'}`}>
+                      {o.l}
+                    </button>
+                  ))}
+                </div>
+
+                {/* Ranking da visão escolhida */}
+                <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
+                  <div className="px-5 py-3 bg-slate-50 border-b border-slate-100">
+                    <p className="text-xs font-black text-slate-600 uppercase tracking-wider">
+                      {apontVisao==='PESSOA'?'Horas por pessoa':apontVisao==='SETOR'?'Horas por setor':'Horas por projeto'}
+                    </p>
+                  </div>
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left text-sm">
+                      <thead className="bg-slate-50 border-b border-slate-100">
+                        <tr className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">
+                          <th className="px-5 py-2.5">{apontVisao==='PESSOA'?'Pessoa':apontVisao==='SETOR'?'Setor':'Projeto'}</th>
+                          <th className="px-5 py-2.5 text-right">Horas</th>
+                          <th className="px-5 py-2.5 text-right">Lançamentos</th>
+                          <th className="px-5 py-2.5 text-right">{apontVisao==='PESSOA'?'OPs':'Pessoas'}</th>
+                          <th className="px-5 py-2.5 text-right">Dias</th>
+                          <th className="px-5 py-2.5 w-40"/>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-50">
+                        {lista.map(x=>(
+                          <tr key={x.chave} className="hover:bg-slate-50/60">
+                            <td className="px-5 py-2.5 font-bold text-slate-700">{x.rotulo}</td>
+                            <td className="px-5 py-2.5 text-right font-black text-slate-800">{fmtH(x.horas)}</td>
+                            <td className="px-5 py-2.5 text-right text-slate-500">{x.lancamentos}</td>
+                            <td className="px-5 py-2.5 text-right text-slate-500">{apontVisao==='PESSOA'?x.ops:x.pessoas}</td>
+                            <td className="px-5 py-2.5 text-right text-slate-500">{x.dias}</td>
+                            <td className="px-5 py-2.5">
+                              <div className="h-2 bg-slate-100 rounded-full overflow-hidden">
+                                <div className="h-full bg-indigo-400 rounded-full" style={{width:`${(x.horas/maxH)*100}%`}}/>
+                              </div>
+                            </td>
+                          </tr>
+                        ))}
+                        {lista.length===0&&(
+                          <tr><td colSpan={6} className="px-5 py-10 text-center text-slate-300 text-xs">Nenhum apontamento neste mês.</td></tr>
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+
+                {/* Detalhe por OP — útil pra achar a OP que consumiu mais */}
+                {apontVisao==='OP'&&A.porOP.length>0&&(
+                  <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
+                    <div className="px-5 py-3 bg-slate-50 border-b border-slate-100">
+                      <p className="text-xs font-black text-slate-600 uppercase tracking-wider">Detalhe por OP</p>
+                      <p className="text-[11px] text-slate-400 mt-0.5">Uma OP pode aparecer em mais de um projeto — o BR é escolhido lançamento a lançamento no Sankhya.</p>
+                    </div>
+                    <div className="overflow-x-auto max-h-96 overflow-y-auto custom-scrollbar">
+                      <table className="w-full text-left text-sm">
+                        <thead className="bg-slate-50 border-b border-slate-100 sticky top-0">
+                          <tr className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">
+                            <th className="px-5 py-2.5">OP</th><th className="px-5 py-2.5">Projeto(s)</th>
+                            <th className="px-5 py-2.5 text-right">Horas</th><th className="px-5 py-2.5 text-right">Pessoas</th>
+                            <th className="px-5 py-2.5 text-right">Dias</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-50">
+                          {A.porOP.map(op=>{
+                            const brs=[...new Set(A.base.filter(a=>`${a.idiproc}`===op.chave).map(a=>a.br||'(sem BR)'))];
+                            return(
+                              <tr key={op.chave} className="hover:bg-slate-50/60">
+                                <td className="px-5 py-2.5 font-bold text-slate-700">{op.chave}</td>
+                                <td className="px-5 py-2.5 text-xs text-slate-500">
+                                  {brs.join(' · ')}
+                                  {brs.length>1&&<span className="ml-1 text-[9px] font-black text-amber-600">({brs.length} projetos)</span>}
+                                </td>
+                                <td className="px-5 py-2.5 text-right font-bold text-slate-700">{fmtH(op.horas)}</td>
+                                <td className="px-5 py-2.5 text-right text-slate-500">{op.pessoas}</td>
+                                <td className="px-5 py-2.5 text-right text-slate-500">{op.dias}</td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
+              </div>
+              );
+            })()}
 
             {/* ── RELATÓRIO DE REMESSAS ──────────────────────────────────
                 Mesmo conteúdo do relatório gerado em Excel, só que vivo:
