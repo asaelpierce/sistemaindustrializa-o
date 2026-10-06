@@ -6203,10 +6203,18 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
     return [...new Set([...doSankhya,...doPortal])].sort((a,b)=>a.localeCompare(b));
   },[apontamentoDb,apontPortalDb]);
 
-  const apSetoresConhecidos=useMemo(()=>{
-    const l=[...new Set(apontamentoDb.map(a=>s(a.setor_nome)).filter(Boolean))].sort();
-    return l.length?l:['Vulcanizacao','Caldeiraria'];
-  },[apontamentoDb]);
+  // Setores oficiais, da tabela AD_TPRSETOR do Sankhya. Não inferir da base:
+  // eu tinha chutado "Setor 2/4/5" e os nomes reais são outros — e "Corte" são
+  // dois setores distintos, cerâmica e aço.
+  const SETORES_PRODUCAO=[
+    {cod:1,nome:'Vulcanização'},
+    {cod:2,nome:'Revestimento'},
+    {cod:3,nome:'Caldeiraria'},
+    {cod:4,nome:'Pintura'},
+    {cod:5,nome:'Corte Cerâmica'},
+    {cod:6,nome:'Corte Aço'},
+  ];
+  const apSetoresConhecidos=SETORES_PRODUCAO.map(x=>x.nome);
 
   const apIniciar=async()=>{
     const f=apForm;
