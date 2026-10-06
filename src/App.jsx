@@ -1468,7 +1468,19 @@ export default function App(){
     {v:'OUTRO',label:'Outro',desc:'Descrever na observação'},
   ];
   const rotuloMotivo=v=>MOTIVOS_REPROVACAO.find(m=>m.v===s(v))?.label||s(v);
-  const [formInspecao,setFormInspecao]=useState({material:'',fornecedor:'',nota_fiscal:'',pedido:'',quantidade:'',unidade:'UN',observacoes:'',itens_ressalva:[],resultado:'',cod_produto:'',motivo_reprovacao:'',reincidencia:null});
+  // Condição física no recebimento — critério de 5% do IDF (PROC 047), que era
+  // preenchido só pelo Almoxarifado. A Qualidade vê o material de perto na
+  // inspeção, então consegue registrar com mais precisão.
+  const CONDICOES_MATERIAL=[
+    {v:'INTEGRO',label:'Íntegro',desc:'Sem avaria, conforme esperado',cor:'emerald'},
+    {v:'AVARIA_LEVE',label:'Avaria leve',desc:'Marca ou amassado que não compromete o uso',cor:'amber'},
+    {v:'AVARIA_GRAVE',label:'Avaria grave',desc:'Dano que compromete o uso do material',cor:'red'},
+    {v:'OXIDACAO',label:'Oxidação',desc:'Ferrugem ou corrosão aparente',cor:'amber'},
+    {v:'UMIDADE',label:'Umidade',desc:'Material molhado ou com sinal de umidade',cor:'amber'},
+    {v:'EMBALAGEM_VIOLADA',label:'Embalagem violada',desc:'Embalagem aberta, rasgada ou refeita',cor:'amber'},
+  ];
+  const rotuloCondicao=v=>CONDICOES_MATERIAL.find(m=>m.v===s(v))?.label||s(v);
+  const [formInspecao,setFormInspecao]=useState({material:'',fornecedor:'',nota_fiscal:'',pedido:'',quantidade:'',unidade:'UN',observacoes:'',itens_ressalva:[],resultado:'',cod_produto:'',motivo_reprovacao:'',reincidencia:null,condicao_material:'',enviar_compras:true});
   const [formRNC,setFormRNC]=useState({descricao_nc:'',causa_raiz:'',acao_corretiva:'',responsavel:'',prazo:'',gravidade:'MEDIA',email_destinatario:'',itens:[],resolucao:''});
   const [fotosUpload,setFotosUpload]=useState([]);
   const [fotoAnotandoIdx,setFotoAnotandoIdx]=useState(null); // índice da foto sendo marcada/anotada agora
@@ -1568,7 +1580,7 @@ export default function App(){
     if(!supabase)return;
     try{
       const[insR,rncR,chR]=await Promise.all([
-        supabase.from('inspecoes').select('id,numero,material,fornecedor,nota_fiscal,pedido,quantidade,unidade,resultado,observacoes,itens_ressalva,qtd_fotos,inspetor,data_inspecao,data_criacao,status,notificado_teams,rnc_id,criado_por,resolucao,descricao_material,cod_produto,motivo_reprovacao,reincidencia').order('data_criacao',{ascending:false}),
+        supabase.from('inspecoes').select('id,numero,material,fornecedor,nota_fiscal,pedido,quantidade,unidade,resultado,observacoes,itens_ressalva,qtd_fotos,inspetor,data_inspecao,data_criacao,status,notificado_teams,rnc_id,criado_por,resolucao,descricao_material,cod_produto,motivo_reprovacao,reincidencia,condicao_material,enviar_compras').order('data_criacao',{ascending:false}),
         supabase.from('rncs').select('id,numero,inspecao_id,material,fornecedor,nota_fiscal,descricao_nc,causa_raiz,acao_corretiva,responsavel,prazo,status,gravidade,itens,qtd_fotos,criado_por,data_abertura,data_encerramento,email_enviado,email_destinatario,numero_global,numero_fornecedor,data_recebimento,qtd_reprovada,descricao_produto,acao_contencao,comentario_fornecedor,descricao_material,data_inspecao,numero_seq').order('data_abertura',{ascending:false}),
         supabase.from('chat_interno').select('*').order('data_envio',{ascending:true}),
       ]);
@@ -5146,6 +5158,8 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
         nota_fiscal:formInspecao.nota_fiscal,pedido:formInspecao.pedido,
         cod_produto:s(formInspecao.cod_produto)||null,
         motivo_reprovacao:ehDesvio?(s(formInspecao.motivo_reprovacao)||null):null,
+        condicao_material:s(formInspecao.condicao_material)||null,
+        enviar_compras:formInspecao.enviar_compras!==false,
         reincidencia:ehDesvio?(formInspecao.reincidencia===true):null,
         quantidade:parseN(formInspecao.quantidade),unidade:formInspecao.unidade,
         resultado,observacoes:formInspecao.observacoes,
@@ -5265,7 +5279,7 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
       }
 
       setModalNovaInspecao(false);
-      setFormInspecao({material:'',fornecedor:'',nota_fiscal:'',pedido:'',quantidade:'',unidade:'UN',observacoes:'',itens_ressalva:[],resultado:'',cod_produto:'',motivo_reprovacao:'',reincidencia:null});
+      setFormInspecao({material:'',fornecedor:'',nota_fiscal:'',pedido:'',quantidade:'',unidade:'UN',observacoes:'',itens_ressalva:[],resultado:'',cod_produto:'',motivo_reprovacao:'',reincidencia:null,condicao_material:'',enviar_compras:true});
       setFotosUpload([]);
       fetchAll();
     }catch(e){addToast('Erro: '+e.message,'error');}finally{setIsLoading(false);}
@@ -10292,7 +10306,7 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
                     <h2 className="text-xl font-black text-slate-900">Inspeções de Qualidade</h2>
                     <p className="text-sm text-slate-500 mt-0.5">Controle de recebimento, aprovações e registros de não conformidade</p>
                   </div>
-                  <Btn variant="primary" onClick={()=>{setFormInspecao({material:'',fornecedor:'',nota_fiscal:'',pedido:'',quantidade:'',unidade:'UN',observacoes:'',itens_ressalva:[],resultado:'',resolucao:'',cod_produto:'',motivo_reprovacao:'',reincidencia:null});setFotosUpload([]);setInspecaoSel(null);setInsEtapa(1);setInsResultadoSel('');setModalNovaInspecao(true);}}>
+                  <Btn variant="primary" onClick={()=>{setFormInspecao({material:'',fornecedor:'',nota_fiscal:'',pedido:'',quantidade:'',unidade:'UN',observacoes:'',itens_ressalva:[],resultado:'',resolucao:'',cod_produto:'',motivo_reprovacao:'',reincidencia:null,condicao_material:'',enviar_compras:true});setFotosUpload([]);setInspecaoSel(null);setInsEtapa(1);setInsResultadoSel('');setModalNovaInspecao(true);}}>
                     <ShieldAlert className="w-4 h-4"/>Nova Inspeção
                   </Btn>
                 </div>
@@ -11384,6 +11398,49 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
         {/* ETAPA 2 — Detalhes conforme resultado */}
         {insEtapa===2&&(
           <div className="space-y-5">
+
+            {/* Condição física do material. Vale pra toda inspeção, não só
+                reprovação: material íntegro também é informação pro IDF. */}
+            <div className="bg-slate-50 border border-slate-200 rounded-xl p-4">
+              <p className="text-xs font-black text-slate-600 uppercase tracking-wider mb-1">Como o material chegou?</p>
+              <p className="text-[11px] text-slate-400 mb-3">Condição física no recebimento — conta 5% na nota do fornecedor.</p>
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                {CONDICOES_MATERIAL.map(cm=>{
+                  const sel=formInspecao.condicao_material===cm.v;
+                  const cls=sel
+                    ?(cm.cor==='emerald'?'bg-emerald-50 border-emerald-500 text-emerald-700'
+                      :cm.cor==='red'?'bg-red-50 border-red-500 text-red-700'
+                      :'bg-amber-50 border-amber-500 text-amber-700')
+                    :'bg-white border-slate-200 text-slate-500 hover:border-slate-300';
+                  return(
+                    <button key={cm.v} onClick={()=>setFormInspecao(p2=>({...p2,condicao_material:sel?'':cm.v}))}
+                      className={`text-left rounded-lg px-3 py-2 border-2 transition-colors ${cls}`}>
+                      <p className="text-xs font-bold">{cm.label}</p>
+                      <p className="text-[10px] opacity-70 leading-snug">{cm.desc}</p>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Marca se esta inspeção entra no IDF. O Portal de Compras lê as
+                inspeções 3x/dia e usa esta marcação pra saber o que pegar. */}
+            <button onClick={()=>setFormInspecao(p2=>({...p2,enviar_compras:p2.enviar_compras===false}))}
+              className={`w-full flex items-center justify-between rounded-xl border-2 p-4 text-left transition-colors ${formInspecao.enviar_compras!==false?'bg-indigo-50 border-indigo-300':'bg-slate-50 border-slate-200'}`}>
+              <div>
+                <p className={`text-sm font-black ${formInspecao.enviar_compras!==false?'text-indigo-700':'text-slate-500'}`}>
+                  {formInspecao.enviar_compras!==false?'Enviar para o Portal de Compras':'Não enviar para o Portal de Compras'}
+                </p>
+                <p className="text-[11px] text-slate-500 mt-0.5">
+                  {formInspecao.enviar_compras!==false
+                    ?'O resultado vai contar na nota do fornecedor (IDF). O Portal busca às 7h15, 13h15 e 18h15.'
+                    :'Fica só registrado aqui. Use para teste, duplicidade ou item que não avalia fornecedor.'}
+                </p>
+              </div>
+              <div className={`w-12 h-7 rounded-full flex items-center px-1 flex-shrink-0 transition-colors ${formInspecao.enviar_compras!==false?'bg-indigo-500 justify-end':'bg-slate-300 justify-start'}`}>
+                <div className="w-5 h-5 bg-white rounded-full shadow"/>
+              </div>
+            </button>
 
             {/* Motivo e reincidência — pedidos pelo Supply Chain (PROC 047).
                 Só aparecem quando há desvio, que hoje é menos de 1% das
