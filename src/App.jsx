@@ -6077,7 +6077,8 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
       porOP:agrupar(a=>`${a.idiproc}`),
       porBR:agrupar(a=>a.br),
       porPessoa:agrupar(a=>a.executante),
-      porSetor:agrupar(a=>a.setor_nome),
+      // Mostra com o código, como o usuário usa ("003 - Caldeiraria").
+      porSetor:agrupar(a=>a.setor_nome,a=>rotuloSetor(a.setor_nome)),
     };
   },[apontamentoDb,apontMes]);
 
@@ -6206,17 +6207,20 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
   // Setores oficiais, da tabela AD_TPRSETOR do Sankhya. Não inferir da base:
   // eu tinha chutado "Setor 2/4/5" e os nomes reais são outros — e "Corte" são
   // dois setores distintos, cerâmica e aço.
-  // O ERP separa em "Corte Cerâmica" (cod 5) e "Corte Aço" (cod 6), mas na
-  // prática é um setor só: o Corte Aço nunca teve lançamento nenhum e o
-  // usuário confirmou que não existe. Os dois aparecem como "Corte".
+  // Lista oficial confirmada pelo usuário, com o código de 3 dígitos como ele
+  // usa. O ERP tem ainda o 6 (Corte Aço), que não existe na prática e nunca
+  // teve lançamento — fica de fora.
   const SETORES_PRODUCAO=[
-    {cod:1,nome:'Vulcanização'},
-    {cod:2,nome:'Revestimento'},
-    {cod:3,nome:'Caldeiraria'},
-    {cod:4,nome:'Pintura'},
-    {cod:5,nome:'Corte'},
+    {cod:1,codigo:'001',nome:'Vulcanização'},
+    {cod:2,codigo:'002',nome:'Revestimento'},
+    {cod:3,codigo:'003',nome:'Caldeiraria'},
+    {cod:4,codigo:'004',nome:'Pintura'},
+    {cod:5,codigo:'005',nome:'Corte Cerâmica'},
   ];
-  const apSetoresConhecidos=SETORES_PRODUCAO.map(x=>x.nome);
+  const rotuloSetor=nome=>{
+    const st=SETORES_PRODUCAO.find(x=>x.nome===s(nome));
+    return st?`${st.codigo} - ${st.nome}`:s(nome);
+  };
 
   const apIniciar=async()=>{
     const f=apForm;
@@ -9437,7 +9441,7 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
                       <Field label="Setor">
                         <Sel value={f.setor} onChange={e=>setApForm(p2=>({...p2,setor:e.target.value}))}>
                           <option value="">— selecione —</option>
-                          {apSetoresConhecidos.map(st=><option key={st} value={st}>{st}</option>)}
+                          {SETORES_PRODUCAO.map(st=><option key={st.cod} value={st.nome}>{st.codigo} - {st.nome}</option>)}
                         </Sel>
                       </Field>
                       <Field label="Buscar pessoa">
