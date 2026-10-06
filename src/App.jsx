@@ -6280,12 +6280,57 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
       const fim=new Date();
       const horas=Number(((fim-new Date(linha.dh_inicial))/36e5).toFixed(4));
       const{error}=await supabase.from('apontamento_portal')
-        .update({dh_final:fim.toISOString(),horas,status:'FINALIZADO',atualizado_em:fim.toISOString()})
+        .update({dh_final:fim.toISOString(),horas,status:'FINALIZADO',
+          tipo_encerramento:'MANUAL',encerrado_por:s(usuarioLogado?.nome||'Produção'),
+          atualizado_em:fim.toISOString()})
         .eq('id',linha.id);
       if(error)throw error;
       addToast(`Finalizado: ${s(linha.colaborador)} — ${horas.toFixed(2)}h`);
       fetchApontPortal();
     }catch(e){addToast('Erro ao finalizar: '+e.message,'error');}
+  };
+
+  // Parada: encerra o apontamento registrando POR QUE parou. Diferente do
+  // "finalizar", que é a conclusão normal do trabalho.
+  const apRegistrarParada=async(linha)=>{
+    const motivo=window.prompt(`Por que ${s(linha.colaborador)} parou na OP ${s(linha.nro_op)}?\n\nEx: máquina parada, falta de material, aguardando liberação`);
+    if(motivo===null)return;                 // cancelou
+    if(!s(motivo).trim())return addToast('Escreva o motivo da parada.','error');
+    try{
+      const fim=new Date();
+      const horas=Number(((fim-new Date(linha.dh_inicial))/36e5).toFixed(4));
+      const{error}=await supabase.from('apontamento_portal').update({
+        dh_final:fim.toISOString(),horas,status:'FINALIZADO',
+        tipo_encerramento:'PARADA',motivo_encerramento:s(motivo).trim(),
+        encerrado_por:s(usuarioLogado?.nome||'Produção'),
+        atualizado_em:fim.toISOString(),
+      }).eq('id',linha.id);
+      if(error)throw error;
+      addToast(`Parada registrada: ${s(linha.colaborador)} — ${horas.toFixed(2)}h`);
+      fetchApontPortal();
+    }catch(e){addToast('Erro ao registrar parada: '+e.message,'error');}
+  };
+
+  const apPararTodosDaOP=async(nroOp)=>{
+    const abertos=apontPortalDb.filter(a=>a.nro_op===nroOp&&a.status==='EM_ANDAMENTO');
+    if(abertos.length===0)return;
+    const motivo=window.prompt(`Motivo da parada na OP ${nroOp} (${abertos.length} pessoa(s))?`);
+    if(motivo===null)return;
+    if(!s(motivo).trim())return addToast('Escreva o motivo da parada.','error');
+    try{
+      const fim=new Date();
+      for(const l of abertos){
+        const horas=Number(((fim-new Date(l.dh_inicial))/36e5).toFixed(4));
+        await supabase.from('apontamento_portal').update({
+          dh_final:fim.toISOString(),horas,status:'FINALIZADO',
+          tipo_encerramento:'PARADA',motivo_encerramento:s(motivo).trim(),
+          encerrado_por:s(usuarioLogado?.nome||'Produção'),
+          atualizado_em:fim.toISOString(),
+        }).eq('id',l.id);
+      }
+      addToast(`Parada registrada para ${abertos.length} pessoa(s).`);
+      fetchApontPortal();
+    }catch(e){addToast('Erro: '+e.message,'error');}
   };
 
   const apFinalizarTodosDaOP=async(nroOp)=>{
@@ -6322,7 +6367,8 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
       const ws=wb.addWorksheet('Apontamentos');
       const cols=[{t:'OP',w:10},{t:'Projeto',w:16},{t:'Produto',w:12},{t:'Descrição',w:42},
                   {t:'Setor',w:16},{t:'Colaborador',w:22},{t:'Início',w:18},{t:'Fim',w:18},
-                  {t:'Horas',w:10},{t:'O que fez',w:28},{t:'Situação',w:14},{t:'Lançado por',w:18}];
+                  {t:'Horas',w:10},{t:'O que fez',w:28},{t:'Situação',w:14},{t:'Lançado por',w:18},
+                  {t:'Como encerrou',w:18},{t:'Motivo',w:34}];
       const row=ws.getRow(1);
       cols.forEach((cl,i)=>{
         const cel=row.getCell(i+1);
@@ -6341,11 +6387,12 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
          fmtDataHoraLocal(a.dh_inicial),
          fmtDataHoraLocal(a.dh_final)||'—',
          a.horas!==null&&a.horas!==undefined?Number(a.horas):null,
-         s(a.o_que_fez),s(a.status).replace('_',' '),s(a.lancado_por)
+         s(a.o_que_fez),s(a.status).replace('_',' '),s(a.lancado_por),
+         s(a.tipo_encerramento).replace('_',' ')||'—',s(a.motivo_encerramento)||'—'
         ].forEach((v,j)=>{r2.getCell(j+1).value=v;});
       });
       ws.getColumn(9).numFmt='0.00';
-      ws.autoFilter={from:{row:1,column:1},to:{row:1,column:12}};
+      ws.autoFilter={from:{row:1,column:1},to:{row:1,column:14}};
       const buf=await wb.xlsx.writeBuffer();
       const blob=new Blob([buf],{type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'});
       const a4=document.createElement('a');
@@ -9335,9 +9382,12 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
                               <p className="text-[11px] text-slate-500">{s(linhas[0].descricao_produto)||'—'}</p>
                             </div>
                             {linhas.length>1&&(
-                              <Btn variant="dark" size="sm" onClick={()=>apFinalizarTodosDaOP(op)}>
-                                Finalizar todos ({linhas.length})
-                              </Btn>
+                              <div className="flex gap-2">
+                                <Btn variant="secondary" size="sm" onClick={()=>apPararTodosDaOP(op)}>Parada</Btn>
+                                <Btn variant="dark" size="sm" onClick={()=>apFinalizarTodosDaOP(op)}>
+                                  Finalizar todos ({linhas.length})
+                                </Btn>
+                              </div>
                             )}
                           </div>
                           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
@@ -9349,6 +9399,7 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
                                 </div>
                                 <div className="flex gap-1 flex-shrink-0">
                                   <button onClick={()=>apFinalizar(l)} className="text-[10px] font-black text-white bg-emerald-600 hover:bg-emerald-700 rounded px-2 py-1">Finalizar</button>
+                                  <button onClick={()=>apRegistrarParada(l)} title="Parou por algum motivo" className="text-[10px] font-black text-amber-700 bg-amber-100 hover:bg-amber-200 rounded px-2 py-1">Parada</button>
                                   <button onClick={()=>apCancelar(l)} className="text-[10px] font-bold text-slate-400 hover:text-red-500 px-1">✕</button>
                                 </div>
                               </div>
@@ -9496,6 +9547,7 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
                         <div>
                           <p className="text-sm font-black text-emerald-800">Começa agora — {new Date().toLocaleString('pt-BR',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'})}</p>
                           <p className="text-[11px] text-emerald-700">Fica em andamento até alguém finalizar aqui na tela.</p>
+                          <p className="text-[10px] text-emerald-600 mt-0.5">O sistema fecha sozinho às 12h (almoço), 15h (pausa) e 17h (fim do expediente) — depois é só iniciar de novo.</p>
                         </div>
                       </div>
                     ):(
@@ -9563,6 +9615,7 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
                             <th className="px-5 py-2.5">OP</th><th className="px-5 py-2.5">Projeto</th>
                             <th className="px-5 py-2.5">Colaborador</th><th className="px-5 py-2.5">Início</th>
                             <th className="px-5 py-2.5">Fim</th><th className="px-5 py-2.5 text-right">Horas</th>
+                            <th className="px-5 py-2.5">Encerramento</th>
                           </tr>
                         </thead>
                         <tbody className="divide-y divide-slate-50">
@@ -9574,6 +9627,19 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
                               <td className="px-5 py-2 text-xs text-slate-500">{fmtHora(a.dh_inicial)}</td>
                               <td className="px-5 py-2 text-xs text-slate-500">{fmtHora(a.dh_final)}</td>
                               <td className="px-5 py-2 text-right font-bold text-slate-700">{Number(a.horas||0).toFixed(2)}h</td>
+                              <td className="px-5 py-2">
+                                {(()=>{
+                                  const t=s(a.tipo_encerramento);
+                                  if(!t||t==='MANUAL')return <span className="text-[10px] text-slate-400">concluído</span>;
+                                  const cor=t==='PARADA'?'bg-amber-100 text-amber-700':'bg-slate-100 text-slate-500';
+                                  const rot=t==='PARADA'?'parada':t==='ALMOCO'?'almoço (12h)':t==='PAUSA'?'pausa (15h)':'fim do expediente';
+                                  return(
+                                    <span className={`text-[9px] font-black px-1.5 py-0.5 rounded ${cor}`} title={s(a.motivo_encerramento)}>
+                                      {rot}{t==='PARADA'&&a.motivo_encerramento?`: ${s(a.motivo_encerramento).slice(0,28)}`:''}
+                                    </span>
+                                  );
+                                })()}
+                              </td>
                             </tr>
                           ))}
                         </tbody>
