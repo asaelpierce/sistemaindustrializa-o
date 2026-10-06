@@ -6206,13 +6206,15 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
   // Setores oficiais, da tabela AD_TPRSETOR do Sankhya. Não inferir da base:
   // eu tinha chutado "Setor 2/4/5" e os nomes reais são outros — e "Corte" são
   // dois setores distintos, cerâmica e aço.
+  // O ERP separa em "Corte Cerâmica" (cod 5) e "Corte Aço" (cod 6), mas na
+  // prática é um setor só: o Corte Aço nunca teve lançamento nenhum e o
+  // usuário confirmou que não existe. Os dois aparecem como "Corte".
   const SETORES_PRODUCAO=[
     {cod:1,nome:'Vulcanização'},
     {cod:2,nome:'Revestimento'},
     {cod:3,nome:'Caldeiraria'},
     {cod:4,nome:'Pintura'},
-    {cod:5,nome:'Corte Cerâmica'},
-    {cod:6,nome:'Corte Aço'},
+    {cod:5,nome:'Corte'},
   ];
   const apSetoresConhecidos=SETORES_PRODUCAO.map(x=>x.nome);
 
@@ -6298,6 +6300,17 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
     }catch(e){addToast('Erro: '+e.message,'error');}
   };
 
+  // O banco guarda em UTC. Pegar a string crua e cortar com slice mostrava 3h
+  // a mais na planilha do que na tela (16:37 em vez de 13:37) — a tela usava
+  // toLocaleString e a exportação não. Converte sempre pro horário local.
+  const fmtDataHoraLocal=iso=>{
+    if(!iso)return '';
+    const d=new Date(iso);
+    if(isNaN(d))return '';
+    const p2=n=>String(n).padStart(2,'0');
+    return `${d.getFullYear()}-${p2(d.getMonth()+1)}-${p2(d.getDate())} ${p2(d.getHours())}:${p2(d.getMinutes())}`;
+  };
+
   const exportarApontPortal=async()=>{
     if(!window.ExcelJS)return addToast('ExcelJS não carregado. Recarregue a página.','error');
     try{
@@ -6321,8 +6334,8 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
         const r2=ws.getRow(2+i);
         [s(a.nro_op),s(a.br)||'(sem projeto)',s(a.produto_acabado),s(a.descricao_produto),
          s(a.setor),s(a.colaborador),
-         s(a.dh_inicial).replace('T',' ').slice(0,16),
-         s(a.dh_final).replace('T',' ').slice(0,16)||'—',
+         fmtDataHoraLocal(a.dh_inicial),
+         fmtDataHoraLocal(a.dh_final)||'—',
          a.horas!==null&&a.horas!==undefined?Number(a.horas):null,
          s(a.o_que_fez),s(a.status).replace('_',' '),s(a.lancado_por)
         ].forEach((v,j)=>{r2.getCell(j+1).value=v;});
@@ -6369,8 +6382,8 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
               {t:'Horas',w:10},{t:'Executante',w:20},{t:'Setor',w:16},{t:'Status OP',w:15}]);
       addLinhas(w1,A.base.map(a2=>[
         a2.idiproc, s(a2.br)||'(sem BR)',
-        s(a2.dh_inicial).replace('T',' ').slice(0,16),
-        s(a2.dh_final).replace('T',' ').slice(0,16),
+        fmtDataHoraLocal(a2.dh_inicial),
+        fmtDataHoraLocal(a2.dh_final),
         Number(a2.horas||0), s(a2.executante), s(a2.setor_nome), s(a2.status_op),
       ]));
       w1.getColumn(5).numFmt='0.00';
