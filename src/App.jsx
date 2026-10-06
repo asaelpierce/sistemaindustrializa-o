@@ -1422,6 +1422,25 @@ export default function App(){
   const [apontamentoDb,setApontamentoDb]=useState([]);
   const [apontMes,setApontMes]=useState(()=>new Date().toISOString().slice(0,7));
   const [apontVisao,setApontVisao]=useState('OP'); // OP | PESSOA | SETOR
+
+  // ── Apontar Produção (tela de lançamento, grava só no portal) ───────────
+  const [apontPortalDb,setApontPortalDb]=useState([]);
+  const [apForm,setApForm]=useState({nro_op:'',br:'',produto_acabado:'',descricao_produto:'',
+    setor:'',colaboradores:[],o_que_fez:'',observacao:'',
+    dh_inicial:'',dh_final:''});
+  const [apOpInfo,setApOpInfo]=useState(null);      // o que achamos da OP
+  const [apBuscandoOP,setApBuscandoOP]=useState(false);
+  const [apColabBusca,setApColabBusca]=useState('');
+
+  const fetchApontPortal=useCallback(async()=>{
+    if(!supabase)return;
+    try{
+      const{data,error}=await supabase.from('apontamento_portal').select('*')
+        .order('dh_inicial',{ascending:false}).limit(500);
+      if(error)throw error;
+      setApontPortalDb(data||[]);
+    }catch(e){console.warn('Erro ao buscar apontamento do portal:',e);}
+  },[supabase]);
   const [manutencaoHistoricoDb,setManutencaoHistoricoDb]=useState({}); // por solicitacao_id
   const [manutencaoVisao,setManutencaoVisao]=useState('KANBAN'); // KANBAN | LISTA
   const [manutencaoFiltroTipo,setManutencaoFiltroTipo]=useState('TODOS'); // TODOS | MAQUINA | PREDIAL
@@ -4071,7 +4090,7 @@ export default function App(){
   },[supabase,usuarioLogado?.perfil]);
 
   // fetchAll na inicialização + a cada 60s (dados pesados)
-  useEffect(()=>{if(supabase){fetchAll();fetchQual();fetchManutencao();fetchEquipamentosPreventivas();fetchApontamento();const iv=setInterval(fetchAll,90000);return()=>clearInterval(iv);}},[supabase]);
+  useEffect(()=>{if(supabase){fetchAll();fetchQual();fetchManutencao();fetchEquipamentosPreventivas();fetchApontamento();fetchApontPortal();const iv=setInterval(fetchAll,90000);return()=>clearInterval(iv);}},[supabase]);
 
   // Bug real encontrado: como o logout não recarrega a página (só limpa
   // usuarioLogado), filtros deixados marcados numa sessão (ex: "Predial")
@@ -6137,6 +6156,148 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
     };
   },[remessasDb,relPeriodo]);
 
+  // ── Apontar Produção ────────────────────────────────────────────────────
+  // Busca a OP e já traz o que o operador precisa conferir de bate-pronto:
+  // projeto e produto acabado. Quando a OP não tem projeto, o campo "o que
+  // está fazendo" entra no lugar, em vez de deixar o registro sem contexto.
+  const apBuscarOP=async(numero)=>{
+    const op=s(numero||apForm.nro_op).trim();
+    if(!op)return;
+    setApBuscandoOP(true);setApOpInfo(null);
+    try{
+      const{data}=await supabase.from('ordens_producao_sankhya')
+        .select('nro_ordem_producao,br,br_confirmado,cod_produto_acabado,produto_acabado_descricao')
+        .eq('nro_ordem_producao',op).limit(1);
+      const o=(data||[])[0];
+      if(o){
+        const br=s(o.br_confirmado)||s(o.br);
+        setApOpInfo({achou:true,br,pa:s(o.cod_produto_acabado),descr:s(o.produto_acabado_descricao)});
+        setApForm(p2=>({...p2,nro_op:op,br,produto_acabado:s(o.cod_produto_acabado),descricao_produto:s(o.produto_acabado_descricao)}));
+      }else{
+        // Sem OP cadastrada não é erro: pode ser OP antiga ou projeto estoque.
+        // Deixa seguir, mas pedindo a descrição do que está sendo feito.
+        setApOpInfo({achou:false});
+        setApForm(p2=>({...p2,nro_op:op,br:'',produto_acabado:'',descricao_produto:''}));
+      }
+    }catch(e){addToast('Erro ao buscar OP: '+e.message,'error');}
+    finally{setApBuscandoOP(false);}
+  };
+
+  // Nomes já usados no histórico do Sankhya — serve de lista enquanto o
+  // cadastro de colaboradores por setor não existe.
+  const apColaboradoresConhecidos=useMemo(()=>{
+    const doSankhya=apontamentoDb.map(a=>s(a.executante)).filter(Boolean);
+    const doPortal=apontPortalDb.map(a=>s(a.colaborador)).filter(Boolean);
+    return [...new Set([...doSankhya,...doPortal])].sort((a,b)=>a.localeCompare(b));
+  },[apontamentoDb,apontPortalDb]);
+
+  const apSetoresConhecidos=useMemo(()=>{
+    const l=[...new Set(apontamentoDb.map(a=>s(a.setor_nome)).filter(Boolean))].sort();
+    return l.length?l:['Vulcanizacao','Caldeiraria'];
+  },[apontamentoDb]);
+
+  const apIniciar=async()=>{
+    const f=apForm;
+    if(!s(f.nro_op).trim())return addToast('Informe o número da OP.','error');
+    if(f.colaboradores.length===0)return addToast('Selecione quem está trabalhando.','error');
+    if(!s(f.br)&&!s(f.o_que_fez).trim())
+      return addToast('Esta OP não tem projeto. Escreva o que está sendo feito.','error');
+    const inicio=f.dh_inicial?new Date(f.dh_inicial).toISOString():new Date().toISOString();
+    try{
+      // Uma linha por pessoa, igual ao Sankhya — assim a exportação e a
+      // automação futura não precisam desmontar nada.
+      const linhas=f.colaboradores.map(col=>({
+        nro_op:s(f.nro_op).trim(),br:s(f.br)||null,
+        produto_acabado:s(f.produto_acabado)||null,
+        descricao_produto:s(f.descricao_produto)||null,
+        setor:s(f.setor)||null,colaborador:col,
+        dh_inicial:inicio,
+        dh_final:f.dh_final?new Date(f.dh_final).toISOString():null,
+        horas:f.dh_final?Number(((new Date(f.dh_final)-new Date(inicio))/36e5).toFixed(4)):null,
+        o_que_fez:s(f.o_que_fez)||null,observacao:s(f.observacao)||null,
+        status:f.dh_final?'FINALIZADO':'EM_ANDAMENTO',
+        lancado_por:s(usuarioLogado?.nome||'Produção'),
+      }));
+      const{error}=await supabase.from('apontamento_portal').insert(linhas);
+      if(error)throw error;
+      addToast(`${linhas.length} apontamento(s) registrado(s) na OP ${s(f.nro_op)}.`);
+      setApForm({nro_op:'',br:'',produto_acabado:'',descricao_produto:'',setor:f.setor,
+        colaboradores:[],o_que_fez:'',observacao:'',dh_inicial:'',dh_final:''});
+      setApOpInfo(null);
+      fetchApontPortal();
+    }catch(e){addToast('Erro ao registrar: '+e.message,'error');}
+  };
+
+  const apFinalizar=async(linha)=>{
+    try{
+      const fim=new Date();
+      const horas=Number(((fim-new Date(linha.dh_inicial))/36e5).toFixed(4));
+      const{error}=await supabase.from('apontamento_portal')
+        .update({dh_final:fim.toISOString(),horas,status:'FINALIZADO',atualizado_em:fim.toISOString()})
+        .eq('id',linha.id);
+      if(error)throw error;
+      addToast(`Finalizado: ${s(linha.colaborador)} — ${horas.toFixed(2)}h`);
+      fetchApontPortal();
+    }catch(e){addToast('Erro ao finalizar: '+e.message,'error');}
+  };
+
+  const apFinalizarTodosDaOP=async(nroOp)=>{
+    const abertos=apontPortalDb.filter(a=>a.nro_op===nroOp&&a.status==='EM_ANDAMENTO');
+    if(abertos.length===0)return;
+    if(!window.confirm(`Finalizar os ${abertos.length} apontamentos em aberto da OP ${nroOp}?`))return;
+    for(const a of abertos)await apFinalizar(a);
+  };
+
+  const apCancelar=async(linha)=>{
+    if(!window.confirm(`Cancelar o apontamento de ${s(linha.colaborador)} na OP ${s(linha.nro_op)}?`))return;
+    try{
+      await supabase.from('apontamento_portal').update({status:'CANCELADO',atualizado_em:new Date().toISOString()}).eq('id',linha.id);
+      addToast('Apontamento cancelado.');
+      fetchApontPortal();
+    }catch(e){addToast('Erro: '+e.message,'error');}
+  };
+
+  const exportarApontPortal=async()=>{
+    if(!window.ExcelJS)return addToast('ExcelJS não carregado. Recarregue a página.','error');
+    try{
+      const wb=new window.ExcelJS.Workbook();
+      const ws=wb.addWorksheet('Apontamentos');
+      const cols=[{t:'OP',w:10},{t:'Projeto',w:16},{t:'Produto',w:12},{t:'Descrição',w:42},
+                  {t:'Setor',w:16},{t:'Colaborador',w:22},{t:'Início',w:18},{t:'Fim',w:18},
+                  {t:'Horas',w:10},{t:'O que fez',w:28},{t:'Situação',w:14},{t:'Lançado por',w:18}];
+      const row=ws.getRow(1);
+      cols.forEach((cl,i)=>{
+        const cel=row.getCell(i+1);
+        cel.value=cl.t;
+        cel.font={name:'Arial',bold:true,color:{argb:'FFFFFFFF'},size:10};
+        cel.fill={type:'pattern',pattern:'solid',fgColor:{argb:'FF1F3864'}};
+        cel.alignment={horizontal:'center',vertical:'middle',wrapText:true};
+        ws.getColumn(i+1).width=cl.w;
+      });
+      row.height=26;
+      ws.views=[{state:'frozen',ySplit:1}];
+      apontPortalDb.forEach((a,i)=>{
+        const r2=ws.getRow(2+i);
+        [s(a.nro_op),s(a.br)||'(sem projeto)',s(a.produto_acabado),s(a.descricao_produto),
+         s(a.setor),s(a.colaborador),
+         s(a.dh_inicial).replace('T',' ').slice(0,16),
+         s(a.dh_final).replace('T',' ').slice(0,16)||'—',
+         a.horas!==null&&a.horas!==undefined?Number(a.horas):null,
+         s(a.o_que_fez),s(a.status).replace('_',' '),s(a.lancado_por)
+        ].forEach((v,j)=>{r2.getCell(j+1).value=v;});
+      });
+      ws.getColumn(9).numFmt='0.00';
+      ws.autoFilter={from:{row:1,column:1},to:{row:1,column:12}};
+      const buf=await wb.xlsx.writeBuffer();
+      const blob=new Blob([buf],{type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'});
+      const a4=document.createElement('a');
+      a4.href=URL.createObjectURL(blob);
+      a4.download=`Apontamento_Producao_${new Date().toISOString().slice(0,10)}.xlsx`;
+      a4.click();
+      addToast('Exportado!');
+    }catch(e){addToast('Erro ao exportar: '+e.message,'error');}
+  };
+
   // Exporta o apontamento do mês — substitui a planilha que era montada à mão.
   const exportarApontamento=async()=>{
     if(!window.ExcelJS)return addToast('ExcelJS não carregado. Recarregue a página.','error');
@@ -6348,6 +6509,7 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
     ...(isPCP?[{id:'NOVA_OP',label:'Nova Remessa',icon:PackageOpen,group:'PCP'},{id:'HISTORICO_PCP',label:'Histórico de Envios',icon:History,group:'PCP'},{id:'UPLOAD_ESTOQUE',label:'Sincronizar ERP',icon:UploadCloud,group:'PCP'}]:[]),
     ...(isCompras?[{id:'REMESSA_COMPRAS',label:'Nova Remessa',icon:Repeat,group:'Compras'}]:[]),
     ...(isPCP?[{id:'APONTAMENTO_HORAS',label:'Horas por OP',icon:Clock,group:'PCP'}]:[]),
+    {id:'APONTAR_PRODUCAO',label:'Apontar Produção',icon:Factory,group:'Produção'},
     ...(isExp?[{id:'EXPEDICAO',label:'Fila de Expedição',icon:Truck,group:'Logística',badge:remPend.length||null},{id:'FORNECEDORES',label:'Retorno de Peças',icon:RotateCcw,group:'Logística',badge:notasRemessaPendentesCount||null},{id:'CONTROLE_GERAL',label:'Controle Geral',icon:ListChecks,group:'Logística'},{id:'RELATORIO_REMESSAS',label:'Relatório de Remessas',icon:FileSearch,group:'Logística'}]:[]),
     ...(isAdmin?[{id:'IA_ANALISTA',label:'Analista IA',icon:Bot,group:'Inteligência'},{id:'AUDITORIA',label:'Auditoria BOM',icon:FileSearch,group:'Inteligência'},{id:'GESTAO_USUARIOS',label:'Gestão de Acessos',icon:Users,group:'Sistema'}]:[]),
     {id:'CHAT_INTERNO',label:'Chat da Equipe',icon:MessageSquare,group:'Comunicação',badge:chatNaoLidos||null},
@@ -9071,6 +9233,250 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
                 </div>
               </div>
             )}
+
+            {/* ── APONTAR PRODUÇÃO ─────────────────────────────────────────
+                Tela de teste, grava só no portal. Pensada pro chão de fábrica:
+                passos grandes, poucos cliques, campo da OP já em foco (mais
+                pra frente vai receber leitura de código de barras, que digita
+                o número e dá Enter sozinho — por isso o Enter já busca). */}
+            {aba==='APONTAR_PRODUCAO'&&(()=>{
+              const f=apForm;
+              const emAndamento=apontPortalDb.filter(a=>a.status==='EM_ANDAMENTO');
+              const porOPAberta={};
+              emAndamento.forEach(a=>{(porOPAberta[a.nro_op]=porOPAberta[a.nro_op]||[]).push(a);});
+              const finalizadosHoje=apontPortalDb.filter(a=>a.status==='FINALIZADO'&&s(a.dh_final).slice(0,10)===new Date().toISOString().slice(0,10));
+              const colabFiltrados=apColaboradoresConhecidos.filter(n=>
+                !apColabBusca||n.toLowerCase().includes(apColabBusca.toLowerCase()));
+              const fmtHora=iso=>s(iso)?new Date(iso).toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'}):'—';
+              const decorrido=iso=>{const m=Math.floor((Date.now()-new Date(iso))/60000);return `${Math.floor(m/60)}h${String(m%60).padStart(2,'0')}`;};
+              return(
+              <div className="space-y-5 pb-10" style={{animation:'fadeIn 0.2s ease'}}>
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <SectionHeader title="🏭 Apontar Produção" subtitle="Registro de quem está trabalhando em cada OP"/>
+                  <Btn variant="secondary" onClick={exportarApontPortal} disabled={apontPortalDb.length===0}>
+                    <FileSpreadsheet className="w-4 h-4"/>Exportar Excel
+                  </Btn>
+                </div>
+
+                {/* Em andamento — o que importa ver primeiro ao abrir a tela */}
+                {emAndamento.length>0&&(
+                  <div className="bg-emerald-50 border-2 border-emerald-300 rounded-2xl p-4">
+                    <p className="text-xs font-black text-emerald-800 uppercase tracking-wider mb-3">
+                      ▶ Trabalhando agora ({emAndamento.length})
+                    </p>
+                    <div className="space-y-2">
+                      {Object.entries(porOPAberta).map(([op,linhas])=>(
+                        <div key={op} className="bg-white rounded-xl p-3">
+                          <div className="flex items-center justify-between gap-3 flex-wrap mb-2">
+                            <div>
+                              <p className="text-sm font-black text-slate-800">
+                                OP {op}
+                                {linhas[0].br?<span className="text-indigo-600"> · {s(linhas[0].br)}</span>
+                                  :<span className="text-slate-400 font-normal"> · {s(linhas[0].o_que_fez)||'sem projeto'}</span>}
+                              </p>
+                              <p className="text-[11px] text-slate-500">{s(linhas[0].descricao_produto)||'—'}</p>
+                            </div>
+                            {linhas.length>1&&(
+                              <Btn variant="dark" size="sm" onClick={()=>apFinalizarTodosDaOP(op)}>
+                                Finalizar todos ({linhas.length})
+                              </Btn>
+                            )}
+                          </div>
+                          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
+                            {linhas.map(l=>(
+                              <div key={l.id} className="bg-slate-50 rounded-lg px-3 py-2 flex items-center justify-between gap-2">
+                                <div className="min-w-0">
+                                  <p className="text-xs font-bold text-slate-700 truncate">{s(l.colaborador)}</p>
+                                  <p className="text-[10px] text-slate-400">desde {fmtHora(l.dh_inicial)} · {decorrido(l.dh_inicial)}</p>
+                                </div>
+                                <div className="flex gap-1 flex-shrink-0">
+                                  <button onClick={()=>apFinalizar(l)} className="text-[10px] font-black text-white bg-emerald-600 hover:bg-emerald-700 rounded px-2 py-1">Finalizar</button>
+                                  <button onClick={()=>apCancelar(l)} className="text-[10px] font-bold text-slate-400 hover:text-red-500 px-1">✕</button>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Passo 1 — a OP */}
+                <div className="bg-white rounded-2xl border border-slate-200 p-6">
+                  <p className="text-[10px] font-black text-slate-400 uppercase tracking-wider mb-3">1. Qual OP?</p>
+                  <div className="flex flex-wrap items-end gap-3">
+                    <Field label="Número da OP" required className="flex-1 min-w-[200px]">
+                      <Inp autoFocus placeholder="Digite ou bipe o código" value={f.nro_op}
+                        onChange={e=>setApForm(p2=>({...p2,nro_op:e.target.value.replace(/\D/g,'')}))}
+                        onKeyDown={e=>{if(e.key==='Enter'){e.preventDefault();apBuscarOP();}}}
+                        className="text-lg font-black"/>
+                    </Field>
+                    <Btn variant="dark" onClick={()=>apBuscarOP()} disabled={apBuscandoOP||!f.nro_op}>
+                      {apBuscandoOP?<><Loader2 className="w-4 h-4 animate-spin"/>Buscando...</>:<><Search className="w-4 h-4"/>Buscar</>}
+                    </Btn>
+                  </div>
+
+                  {apOpInfo?.achou&&(
+                    <div className="mt-3 bg-emerald-50 border border-emerald-200 rounded-xl p-3.5">
+                      <p className="text-sm font-black text-emerald-800">
+                        {f.br?`Projeto ${s(f.br)}`:'OP sem projeto vinculado'}
+                        {f.produto_acabado?<span className="text-emerald-600 font-bold"> · PA {s(f.produto_acabado)}</span>:null}
+                      </p>
+                      <p className="text-[11px] text-emerald-700 mt-0.5">{s(f.descricao_produto)||'—'}</p>
+                      <p className="text-[10px] text-slate-500 mt-1">Confira se é isso mesmo antes de continuar.</p>
+                    </div>
+                  )}
+                  {apOpInfo&&!apOpInfo.achou&&(
+                    <div className="mt-3 bg-amber-50 border border-amber-200 rounded-xl p-3.5">
+                      <p className="text-sm font-black text-amber-800">OP não encontrada no sistema</p>
+                      <p className="text-[11px] text-amber-700 mt-0.5">Pode seguir mesmo assim — escreva abaixo o que está sendo feito.</p>
+                    </div>
+                  )}
+
+                  {apOpInfo&&!f.br&&(
+                    <Field label="O que está sendo feito?" required className="mt-3">
+                      <Inp placeholder="Ex: projeto estoque, retrabalho, manutenção de molde"
+                        value={f.o_que_fez} onChange={e=>setApForm(p2=>({...p2,o_que_fez:e.target.value}))}/>
+                    </Field>
+                  )}
+                </div>
+
+                {/* Passo 2 — quem está trabalhando */}
+                {apOpInfo&&(
+                  <div className="bg-white rounded-2xl border border-slate-200 p-6">
+                    <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
+                      <p className="text-[10px] font-black text-slate-400 uppercase tracking-wider">2. Quem está trabalhando?</p>
+                      {f.colaboradores.length>0&&(
+                        <span className="text-[10px] font-black text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded-full">
+                          {f.colaboradores.length} selecionado(s)
+                        </span>
+                      )}
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-3">
+                      <Field label="Setor">
+                        <Sel value={f.setor} onChange={e=>setApForm(p2=>({...p2,setor:e.target.value}))}>
+                          <option value="">— selecione —</option>
+                          {apSetoresConhecidos.map(st=><option key={st} value={st}>{st}</option>)}
+                        </Sel>
+                      </Field>
+                      <Field label="Buscar pessoa">
+                        <Inp placeholder="Digite para filtrar..." value={apColabBusca} onChange={e=>setApColabBusca(e.target.value)}/>
+                      </Field>
+                    </div>
+
+                    {/* Selecionados em destaque, pra não sumir no meio da lista */}
+                    {f.colaboradores.length>0&&(
+                      <div className="flex flex-wrap gap-1.5 mb-3">
+                        {f.colaboradores.map(cl=>(
+                          <button key={cl} onClick={()=>setApForm(p2=>({...p2,colaboradores:p2.colaboradores.filter(x=>x!==cl)}))}
+                            className="text-xs font-bold bg-indigo-600 text-white rounded-full px-3 py-1.5 flex items-center gap-1.5">
+                            {cl} <span className="opacity-70">✕</span>
+                          </button>
+                        ))}
+                      </div>
+                    )}
+
+                    <div className="border border-slate-200 rounded-xl max-h-52 overflow-y-auto custom-scrollbar">
+                      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-1 p-2">
+                        {colabFiltrados.map(nome=>{
+                          const sel=f.colaboradores.includes(nome);
+                          return(
+                            <button key={nome} onClick={()=>setApForm(p2=>({...p2,
+                                colaboradores:sel?p2.colaboradores.filter(x=>x!==nome):[...p2.colaboradores,nome]}))}
+                              className={`text-xs font-bold rounded-lg px-2.5 py-2 text-left truncate border ${sel?'bg-indigo-50 border-indigo-400 text-indigo-700':'bg-white border-slate-200 text-slate-600 hover:border-slate-300'}`}>
+                              {sel?'✓ ':''}{nome}
+                            </button>
+                          );
+                        })}
+                      </div>
+                      {colabFiltrados.length===0&&<p className="text-xs text-slate-300 text-center py-6">Ninguém encontrado com esse nome.</p>}
+                    </div>
+
+                    {/* Nome que ainda não está na lista */}
+                    {apColabBusca.trim().length>2&&!apColaboradoresConhecidos.some(n=>n.toLowerCase()===apColabBusca.trim().toLowerCase())&&(
+                      <button onClick={()=>{const n=apColabBusca.trim();setApForm(p2=>({...p2,colaboradores:[...p2.colaboradores,n]}));setApColabBusca('');}}
+                        className="mt-2 text-[11px] font-black text-indigo-600 hover:underline">
+                        + Adicionar "{apColabBusca.trim()}" (ainda não está na lista)
+                      </button>
+                    )}
+                  </div>
+                )}
+
+                {/* Passo 3 — horário e registro */}
+                {apOpInfo&&f.colaboradores.length>0&&(
+                  <div className="bg-white rounded-2xl border border-slate-200 p-6 space-y-4">
+                    <p className="text-[10px] font-black text-slate-400 uppercase tracking-wider">3. Horário</p>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                      <Field label="Início">
+                        <Inp type="datetime-local" value={f.dh_inicial} onChange={e=>setApForm(p2=>({...p2,dh_inicial:e.target.value}))}/>
+                        <p className="text-[10px] text-slate-400 mt-1">Em branco = começa agora.</p>
+                      </Field>
+                      <Field label="Fim">
+                        <Inp type="datetime-local" value={f.dh_final} onChange={e=>setApForm(p2=>({...p2,dh_final:e.target.value}))}/>
+                        <p className="text-[10px] text-slate-400 mt-1">Em branco = fica em andamento, finaliza depois.</p>
+                      </Field>
+                    </div>
+                    <Field label="Observação">
+                      <Inp placeholder="Opcional" value={f.observacao} onChange={e=>setApForm(p2=>({...p2,observacao:e.target.value}))}/>
+                    </Field>
+                    <div className="bg-slate-900 rounded-xl p-4">
+                      <p className="text-[10px] font-black text-slate-400 uppercase tracking-wider mb-1">Vai registrar</p>
+                      <p className="text-sm font-black text-white">
+                        OP {s(f.nro_op)}{f.br?` · ${s(f.br)}`:f.o_que_fez?` · ${s(f.o_que_fez)}`:''} — {f.colaboradores.length} pessoa(s)
+                      </p>
+                      <p className="text-[11px] text-slate-400 mt-1">
+                        {f.colaboradores.join(', ')}
+                      </p>
+                    </div>
+                    <div className="flex justify-end gap-2">
+                      <Btn variant="secondary" onClick={()=>{setApForm({nro_op:'',br:'',produto_acabado:'',descricao_produto:'',setor:f.setor,colaboradores:[],o_que_fez:'',observacao:'',dh_inicial:'',dh_final:''});setApOpInfo(null);}}>Limpar</Btn>
+                      <Btn variant="primary" size="lg" onClick={apIniciar}>
+                        <Clock className="w-5 h-5"/>{f.dh_final?'Registrar':'Iniciar agora'}
+                      </Btn>
+                    </div>
+                  </div>
+                )}
+
+                {/* Finalizados hoje */}
+                {finalizadosHoje.length>0&&(
+                  <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
+                    <div className="px-5 py-3 bg-slate-50 border-b border-slate-100">
+                      <p className="text-xs font-black text-slate-600 uppercase tracking-wider">Finalizados hoje ({finalizadosHoje.length})</p>
+                    </div>
+                    <div className="overflow-x-auto max-h-72 overflow-y-auto custom-scrollbar">
+                      <table className="w-full text-left text-sm">
+                        <thead className="bg-slate-50 border-b border-slate-100 sticky top-0">
+                          <tr className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">
+                            <th className="px-5 py-2.5">OP</th><th className="px-5 py-2.5">Projeto</th>
+                            <th className="px-5 py-2.5">Colaborador</th><th className="px-5 py-2.5">Início</th>
+                            <th className="px-5 py-2.5">Fim</th><th className="px-5 py-2.5 text-right">Horas</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-50">
+                          {finalizadosHoje.map(a=>(
+                            <tr key={a.id}>
+                              <td className="px-5 py-2 font-bold text-slate-700">{s(a.nro_op)}</td>
+                              <td className="px-5 py-2 text-xs text-slate-500">{s(a.br)||s(a.o_que_fez)||'—'}</td>
+                              <td className="px-5 py-2 text-slate-600">{s(a.colaborador)}</td>
+                              <td className="px-5 py-2 text-xs text-slate-500">{fmtHora(a.dh_inicial)}</td>
+                              <td className="px-5 py-2 text-xs text-slate-500">{fmtHora(a.dh_final)}</td>
+                              <td className="px-5 py-2 text-right font-bold text-slate-700">{Number(a.horas||0).toFixed(2)}h</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
+
+                <p className="text-[11px] text-slate-400 text-center">
+                  Tela de teste — os registros ficam no portal e podem ser exportados em Excel. Ainda não são enviados ao Sankhya.
+                </p>
+              </div>
+              );
+            })()}
 
             {/* ── APONTAMENTO DE HORAS POR OP ──────────────────────────────
                 Substitui a planilha mensal "Lançamento de Funcionários na OP".
