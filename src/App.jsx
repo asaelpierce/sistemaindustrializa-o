@@ -1431,9 +1431,28 @@ export default function App(){
   const [apOpInfo,setApOpInfo]=useState(null);      // o que achamos da OP
   const [apBuscandoOP,setApBuscandoOP]=useState(false);
   const [apColabBusca,setApColabBusca]=useState('');
+  const [colaboradoresDb,setColaboradoresDb]=useState([]);
+  // O setor vem do CADASTRO do usuário, não de um seletor. Foi decisão do
+  // usuário: cada login de produção pertence a um setor, e não poder escolher
+  // elimina o risco de apontar no setor errado.
+  const setorDoUsuario=useMemo(()=>({
+    codigo:usuarioLogado?.setor_codigo??null,
+    nome:s(usuarioLogado?.setor_nome)||null,
+  }),[usuarioLogado]);
   // AGORA = começa neste instante, sem digitar horário (uso no chão de fábrica).
   // RELANCAMENTO = registra trabalho que já aconteceu, com data e horas na mão.
   const [apModo,setApModo]=useState('AGORA');
+
+  const fetchColaboradores=useCallback(async()=>{
+    if(!supabase)return;
+    try{
+      const{data,error}=await supabase.from('colaboradores_producao')
+        .select('cod_usuario,nome,setor_codigo,setor_nome,lancamentos')
+        .eq('ativo',true).order('nome');
+      if(error)throw error;
+      setColaboradoresDb(data||[]);
+    }catch(e){console.warn('Erro ao buscar colaboradores:',e);}
+  },[supabase]);
 
   const fetchApontPortal=useCallback(async()=>{
     if(!supabase)return;
@@ -4093,7 +4112,7 @@ export default function App(){
   },[supabase,usuarioLogado?.perfil]);
 
   // fetchAll na inicialização + a cada 60s (dados pesados)
-  useEffect(()=>{if(supabase){fetchAll();fetchQual();fetchManutencao();fetchEquipamentosPreventivas();fetchApontamento();fetchApontPortal();const iv=setInterval(fetchAll,90000);return()=>clearInterval(iv);}},[supabase]);
+  useEffect(()=>{if(supabase){fetchAll();fetchQual();fetchManutencao();fetchEquipamentosPreventivas();fetchApontamento();fetchApontPortal();fetchColaboradores();const iv=setInterval(fetchAll,90000);return()=>clearInterval(iv);}},[supabase]);
 
   // Bug real encontrado: como o logout não recarrega a página (só limpa
   // usuarioLogado), filtros deixados marcados numa sessão (ex: "Predial")
@@ -6188,7 +6207,7 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
       }
       const prod=(j.produtos||[])[0]||{};
       setApOpInfo({achou:true,br:s(j.br),situacao:s(j.situacao_label),
-        cliente:s(j.cliente),origemBR:s(j.br_origem),
+        cliente:s(j.cliente),origemBR:s(j.br_origem),codProjeto:j.cod_projeto??null,
         producaoInterna:!!j.producao_interna,produtos:j.produtos||[]});
       setApForm(p2=>({...p2,nro_op:op,br:s(j.br),
         produto_acabado:s(prod.cod_produto),descricao_produto:s(prod.descricao)}));
@@ -6196,13 +6215,13 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
     finally{setApBuscandoOP(false);}
   };
 
-  // Nomes já usados no histórico do Sankhya — serve de lista enquanto o
-  // cadastro de colaboradores por setor não existe.
-  const apColaboradoresConhecidos=useMemo(()=>{
-    const doSankhya=apontamentoDb.map(a=>s(a.executante)).filter(Boolean);
-    const doPortal=apontPortalDb.map(a=>s(a.colaborador)).filter(Boolean);
-    return [...new Set([...doSankhya,...doPortal])].sort((a,b)=>a.localeCompare(b));
-  },[apontamentoDb,apontPortalDb]);
+  // Só os colaboradores DO SETOR do usuário logado. Quem é de outro setor nem
+  // aparece — é o que evita apontar pessoa errada. Sem setor definido no
+  // cadastro, mostra todos e a tela avisa.
+  const apColaboradoresDoSetor=useMemo(()=>{
+    if(setorDoUsuario.codigo==null)return colaboradoresDb;
+    return colaboradoresDb.filter(c2=>c2.setor_codigo===setorDoUsuario.codigo);
+  },[colaboradoresDb,setorDoUsuario]);
 
   // Setores oficiais, da tabela AD_TPRSETOR do Sankhya. Não inferir da base:
   // eu tinha chutado "Setor 2/4/5" e os nomes reais são outros — e "Corte" são
@@ -6249,11 +6268,21 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
     try{
       // Uma linha por pessoa, igual ao Sankhya — assim a exportação e a
       // automação futura não precisam desmontar nada.
+      // Grava também os CÓDIGOS do Sankhya, não só os nomes: a tela de
+      // lançamento do ERP exige CODUSU do executante, CODPROJ do projeto,
+      // CODUSU de quem incluiu e o código numérico do setor. Sem eles a
+      // automação futura não teria como lançar.
       const linhas=f.colaboradores.map(col=>({
         nro_op:s(f.nro_op).trim(),br:s(f.br)||null,
+        cod_projeto:apOpInfo?.codProjeto??null,
         produto_acabado:s(f.produto_acabado)||null,
         descricao_produto:s(f.descricao_produto)||null,
-        setor:s(f.setor)||null,colaborador:col,
+        setor:setorDoUsuario.nome?`${String(setorDoUsuario.codigo).padStart(3,'0')} - ${setorDoUsuario.nome}`:null,
+        setor_codigo:setorDoUsuario.codigo??null,
+        colaborador:s(col.nome),
+        cod_usuario_executante:col.cod_usuario??null,
+        cod_usuario_inclusao:usuarioLogado?.cod_usuario_sankhya??null,
+        complemento:'opdereferencia',
         dh_inicial:inicio,dh_final:fim,
         horas:fim?Number(((new Date(fim)-new Date(inicio))/36e5).toFixed(4)):null,
         o_que_fez:s(f.o_que_fez)||null,observacao:s(f.observacao)||null,
@@ -6265,8 +6294,7 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
       addToast(apModo==='AGORA'
         ?`Iniciado: ${linhas.length} pessoa(s) na OP ${s(f.nro_op)}.`
         :`${linhas.length} apontamento(s) lançado(s) na OP ${s(f.nro_op)}.`);
-      setApForm({nro_op:'',br:'',produto_acabado:'',descricao_produto:'',setor:f.setor,
-        colaboradores:[],o_que_fez:'',observacao:'',
+      setApForm({nro_op:'',br:'',produto_acabado:'',descricao_produto:'',colaboradores:[],o_que_fez:'',observacao:'',
         // No relançamento mantém a data: quem lança o dia anterior costuma
         // lançar várias OPs do mesmo dia em sequência.
         data:apModo==='RELANCAMENTO'?f.data:'',hora_inicio:'',hora_fim:''});
@@ -9350,8 +9378,8 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
               const porOPAberta={};
               emAndamento.forEach(a=>{(porOPAberta[a.nro_op]=porOPAberta[a.nro_op]||[]).push(a);});
               const finalizadosHoje=apontPortalDb.filter(a=>a.status==='FINALIZADO'&&s(a.dh_final).slice(0,10)===new Date().toISOString().slice(0,10));
-              const colabFiltrados=apColaboradoresConhecidos.filter(n=>
-                !apColabBusca||n.toLowerCase().includes(apColabBusca.toLowerCase()));
+              const colabFiltrados=apColaboradoresDoSetor.filter(cb=>
+                !apColabBusca||s(cb.nome).toLowerCase().includes(apColabBusca.toLowerCase()));
               const fmtHora=iso=>s(iso)?new Date(iso).toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'}):'—';
               const decorrido=iso=>{const m=Math.floor((Date.now()-new Date(iso))/60000);return `${Math.floor(m/60)}h${String(m%60).padStart(2,'0')}`;};
               return(
@@ -9488,25 +9516,31 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
                       )}
                     </div>
 
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-3">
-                      <Field label="Setor">
-                        <Sel value={f.setor} onChange={e=>setApForm(p2=>({...p2,setor:e.target.value}))}>
-                          <option value="">— selecione —</option>
-                          {SETORES_PRODUCAO.map(st=><option key={st.cod} value={st.nome}>{st.codigo} - {st.nome}</option>)}
-                        </Sel>
-                      </Field>
-                      <Field label="Buscar pessoa">
-                        <Inp placeholder="Digite para filtrar..." value={apColabBusca} onChange={e=>setApColabBusca(e.target.value)}/>
-                      </Field>
-                    </div>
+                    {/* O setor não é escolhido: vem do cadastro do usuário. */}
+                    {setorDoUsuario.codigo!=null?(
+                      <div className="bg-slate-50 rounded-xl px-4 py-2.5 mb-3 flex items-center justify-between gap-3 flex-wrap">
+                        <p className="text-xs text-slate-500">
+                          Setor: <strong className="text-slate-700">{String(setorDoUsuario.codigo).padStart(3,'0')} - {s(setorDoUsuario.nome)}</strong>
+                        </p>
+                        <p className="text-[10px] text-slate-400">{apColaboradoresDoSetor.length} pessoa(s) neste setor</p>
+                      </div>
+                    ):(
+                      <div className="bg-amber-50 border border-amber-200 rounded-xl px-4 py-2.5 mb-3">
+                        <p className="text-xs font-bold text-amber-800">Seu usuário não tem setor definido</p>
+                        <p className="text-[11px] text-amber-700">Mostrando todos os colaboradores. Peça ao PCP para definir seu setor no cadastro.</p>
+                      </div>
+                    )}
+                    <Field label="Buscar pessoa" className="mb-3">
+                      <Inp placeholder="Digite para filtrar..." value={apColabBusca} onChange={e=>setApColabBusca(e.target.value)}/>
+                    </Field>
 
                     {/* Selecionados em destaque, pra não sumir no meio da lista */}
                     {f.colaboradores.length>0&&(
                       <div className="flex flex-wrap gap-1.5 mb-3">
                         {f.colaboradores.map(cl=>(
-                          <button key={cl} onClick={()=>setApForm(p2=>({...p2,colaboradores:p2.colaboradores.filter(x=>x!==cl)}))}
+                          <button key={cl.cod_usuario||cl.nome} onClick={()=>setApForm(p2=>({...p2,colaboradores:p2.colaboradores.filter(x=>x.nome!==cl.nome)}))}
                             className="text-xs font-bold bg-indigo-600 text-white rounded-full px-3 py-1.5 flex items-center gap-1.5">
-                            {cl} <span className="opacity-70">✕</span>
+                            {s(cl.nome)} <span className="opacity-70">✕</span>
                           </button>
                         ))}
                       </div>
@@ -9514,11 +9548,14 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
 
                     <div className="border border-slate-200 rounded-xl max-h-52 overflow-y-auto custom-scrollbar">
                       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-1 p-2">
-                        {colabFiltrados.map(nome=>{
-                          const sel=f.colaboradores.includes(nome);
+                        {colabFiltrados.map(cb=>{
+                          const nome=s(cb.nome);
+                          const sel=f.colaboradores.some(x=>x.nome===nome);
                           return(
-                            <button key={nome} onClick={()=>setApForm(p2=>({...p2,
-                                colaboradores:sel?p2.colaboradores.filter(x=>x!==nome):[...p2.colaboradores,nome]}))}
+                            <button key={cb.cod_usuario} onClick={()=>setApForm(p2=>({...p2,
+                                colaboradores:sel?p2.colaboradores.filter(x=>x.nome!==nome)
+                                  :[...p2.colaboradores,{nome,cod_usuario:cb.cod_usuario}]}))}
+                              title={`Código Sankhya: ${cb.cod_usuario}`}
                               className={`text-xs font-bold rounded-lg px-2.5 py-2 text-left truncate border ${sel?'bg-indigo-50 border-indigo-400 text-indigo-700':'bg-white border-slate-200 text-slate-600 hover:border-slate-300'}`}>
                               {sel?'✓ ':''}{nome}
                             </button>
@@ -9529,10 +9566,13 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
                     </div>
 
                     {/* Nome que ainda não está na lista */}
-                    {apColabBusca.trim().length>2&&!apColaboradoresConhecidos.some(n=>n.toLowerCase()===apColabBusca.trim().toLowerCase())&&(
-                      <button onClick={()=>{const n=apColabBusca.trim();setApForm(p2=>({...p2,colaboradores:[...p2.colaboradores,n]}));setApColabBusca('');}}
-                        className="mt-2 text-[11px] font-black text-indigo-600 hover:underline">
-                        + Adicionar "{apColabBusca.trim()}" (ainda não está na lista)
+                    {/* Nome fora da lista entra sem código do Sankhya — o
+                        lançamento automático não vai conseguir usar, então a
+                        tela avisa em vez de deixar passar silencioso. */}
+                    {apColabBusca.trim().length>2&&!apColaboradoresDoSetor.some(cb=>s(cb.nome).toLowerCase()===apColabBusca.trim().toLowerCase())&&(
+                      <button onClick={()=>{const n=apColabBusca.trim();setApForm(p2=>({...p2,colaboradores:[...p2.colaboradores,{nome:n,cod_usuario:null}]}));setApColabBusca('');}}
+                        className="mt-2 text-[11px] font-black text-amber-600 hover:underline">
+                        + Adicionar "{apColabBusca.trim()}" — não está no setor, vai sem código do Sankhya
                       </button>
                     )}
                   </div>
@@ -9590,11 +9630,11 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
                         OP {s(f.nro_op)}{f.br?` · ${s(f.br)}`:f.o_que_fez?` · ${s(f.o_que_fez)}`:''} — {f.colaboradores.length} pessoa(s)
                       </p>
                       <p className="text-[11px] text-slate-400 mt-1">
-                        {f.colaboradores.join(', ')}
+                        {f.colaboradores.map(x=>s(x.nome)).join(', ')}
                       </p>
                     </div>
                     <div className="flex justify-end gap-2">
-                      <Btn variant="secondary" onClick={()=>{setApForm({nro_op:'',br:'',produto_acabado:'',descricao_produto:'',setor:f.setor,colaboradores:[],o_que_fez:'',observacao:'',data:'',hora_inicio:'',hora_fim:''});setApOpInfo(null);}}>Limpar</Btn>
+                      <Btn variant="secondary" onClick={()=>{setApForm({nro_op:'',br:'',produto_acabado:'',descricao_produto:'',colaboradores:[],o_que_fez:'',observacao:'',data:'',hora_inicio:'',hora_fim:''});setApOpInfo(null);}}>Limpar</Btn>
                       <Btn variant="primary" size="lg" onClick={apIniciar}>
                         <Clock className="w-5 h-5"/>{apModo==='AGORA'?'Iniciar agora':'Lançar'}
                       </Btn>
