@@ -1427,10 +1427,13 @@ export default function App(){
   const [apontPortalDb,setApontPortalDb]=useState([]);
   const [apForm,setApForm]=useState({nro_op:'',br:'',produto_acabado:'',descricao_produto:'',
     setor:'',colaboradores:[],o_que_fez:'',observacao:'',
-    dh_inicial:'',dh_final:''});
+    data:'',hora_inicio:'',hora_fim:''});
   const [apOpInfo,setApOpInfo]=useState(null);      // o que achamos da OP
   const [apBuscandoOP,setApBuscandoOP]=useState(false);
   const [apColabBusca,setApColabBusca]=useState('');
+  // AGORA = começa neste instante, sem digitar horário (uso no chão de fábrica).
+  // RELANCAMENTO = registra trabalho que já aconteceu, com data e horas na mão.
+  const [apModo,setApModo]=useState('AGORA');
 
   const fetchApontPortal=useCallback(async()=>{
     if(!supabase)return;
@@ -6202,7 +6205,24 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
     if(f.colaboradores.length===0)return addToast('Selecione quem está trabalhando.','error');
     if(!s(f.br)&&!s(f.o_que_fez).trim())
       return addToast('Esta OP não tem projeto. Escreva o que está sendo feito.','error');
-    const inicio=f.dh_inicial?new Date(f.dh_inicial).toISOString():new Date().toISOString();
+
+    let inicio,fim=null;
+    if(apModo==='AGORA'){
+      // Sem digitar nada: começa neste instante e fica em andamento.
+      inicio=new Date().toISOString();
+    }else{
+      if(!f.data)return addToast('Informe a data do trabalho.','error');
+      if(!f.hora_inicio)return addToast('Informe a hora de início.','error');
+      if(!f.hora_fim)return addToast('Informe a hora de término.','error');
+      const ini=new Date(`${f.data}T${f.hora_inicio}:00`);
+      let fi=new Date(`${f.data}T${f.hora_fim}:00`);
+      // Turno que vira o dia: fim menor que início significa madrugada
+      // seguinte, não erro de digitação.
+      if(fi<=ini)fi=new Date(fi.getTime()+24*60*60*1000);
+      if((fi-ini)/36e5>16)return addToast('Mais de 16 horas seguidas — confira os horários.','error');
+      inicio=ini.toISOString();fim=fi.toISOString();
+    }
+
     try{
       // Uma linha por pessoa, igual ao Sankhya — assim a exportação e a
       // automação futura não precisam desmontar nada.
@@ -6211,18 +6231,22 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
         produto_acabado:s(f.produto_acabado)||null,
         descricao_produto:s(f.descricao_produto)||null,
         setor:s(f.setor)||null,colaborador:col,
-        dh_inicial:inicio,
-        dh_final:f.dh_final?new Date(f.dh_final).toISOString():null,
-        horas:f.dh_final?Number(((new Date(f.dh_final)-new Date(inicio))/36e5).toFixed(4)):null,
+        dh_inicial:inicio,dh_final:fim,
+        horas:fim?Number(((new Date(fim)-new Date(inicio))/36e5).toFixed(4)):null,
         o_que_fez:s(f.o_que_fez)||null,observacao:s(f.observacao)||null,
-        status:f.dh_final?'FINALIZADO':'EM_ANDAMENTO',
+        status:fim?'FINALIZADO':'EM_ANDAMENTO',
         lancado_por:s(usuarioLogado?.nome||'Produção'),
       }));
       const{error}=await supabase.from('apontamento_portal').insert(linhas);
       if(error)throw error;
-      addToast(`${linhas.length} apontamento(s) registrado(s) na OP ${s(f.nro_op)}.`);
+      addToast(apModo==='AGORA'
+        ?`Iniciado: ${linhas.length} pessoa(s) na OP ${s(f.nro_op)}.`
+        :`${linhas.length} apontamento(s) lançado(s) na OP ${s(f.nro_op)}.`);
       setApForm({nro_op:'',br:'',produto_acabado:'',descricao_produto:'',setor:f.setor,
-        colaboradores:[],o_que_fez:'',observacao:'',dh_inicial:'',dh_final:''});
+        colaboradores:[],o_que_fez:'',observacao:'',
+        // No relançamento mantém a data: quem lança o dia anterior costuma
+        // lançar várias OPs do mesmo dia em sequência.
+        data:apModo==='RELANCAMENTO'?f.data:'',hora_inicio:'',hora_fim:''});
       setApOpInfo(null);
       fetchApontPortal();
     }catch(e){addToast('Erro ao registrar: '+e.message,'error');}
@@ -9302,6 +9326,20 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
                   </div>
                 )}
 
+                {/* Escolha do modo antes de tudo: muda o que a tela vai pedir */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  {[
+                    {v:'AGORA',icone:'▶',titulo:'Começar agora',desc:'Seleciona a OP e as pessoas. Data e hora entram sozinhas.'},
+                    {v:'RELANCAMENTO',icone:'📅',titulo:'Lançar trabalho já feito',desc:'Informa a data e os horários na mão.'},
+                  ].map(m=>(
+                    <button key={m.v} onClick={()=>setApModo(m.v)}
+                      className={`text-left rounded-2xl p-4 border-2 transition-colors ${apModo===m.v?'bg-indigo-50 border-indigo-500':'bg-white border-slate-200 hover:border-slate-300'}`}>
+                      <p className={`text-sm font-black ${apModo===m.v?'text-indigo-700':'text-slate-600'}`}>{m.icone} {m.titulo}</p>
+                      <p className="text-[11px] text-slate-500 mt-0.5 leading-snug">{m.desc}</p>
+                    </button>
+                  ))}
+                </div>
+
                 {/* Passo 1 — a OP */}
                 <div className="bg-white rounded-2xl border border-slate-200 p-6">
                   <p className="text-[10px] font-black text-slate-400 uppercase tracking-wider mb-3">1. Qual OP?</p>
@@ -9404,20 +9442,48 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
                   </div>
                 )}
 
-                {/* Passo 3 — horário e registro */}
+                {/* Passo 3 — depende do modo */}
                 {apOpInfo&&f.colaboradores.length>0&&(
                   <div className="bg-white rounded-2xl border border-slate-200 p-6 space-y-4">
-                    <p className="text-[10px] font-black text-slate-400 uppercase tracking-wider">3. Horário</p>
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                      <Field label="Início">
-                        <Inp type="datetime-local" value={f.dh_inicial} onChange={e=>setApForm(p2=>({...p2,dh_inicial:e.target.value}))}/>
-                        <p className="text-[10px] text-slate-400 mt-1">Em branco = começa agora.</p>
-                      </Field>
-                      <Field label="Fim">
-                        <Inp type="datetime-local" value={f.dh_final} onChange={e=>setApForm(p2=>({...p2,dh_final:e.target.value}))}/>
-                        <p className="text-[10px] text-slate-400 mt-1">Em branco = fica em andamento, finaliza depois.</p>
-                      </Field>
-                    </div>
+                    {apModo==='AGORA'?(
+                      <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-4 flex items-center gap-3">
+                        <Clock className="w-5 h-5 text-emerald-600 flex-shrink-0"/>
+                        <div>
+                          <p className="text-sm font-black text-emerald-800">Começa agora — {new Date().toLocaleString('pt-BR',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'})}</p>
+                          <p className="text-[11px] text-emerald-700">Fica em andamento até alguém finalizar aqui na tela.</p>
+                        </div>
+                      </div>
+                    ):(
+                      <>
+                        <p className="text-[10px] font-black text-slate-400 uppercase tracking-wider">3. Quando foi feito</p>
+                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                          <Field label="Data" required>
+                            <Inp type="date" max={new Date().toISOString().slice(0,10)}
+                              value={f.data} onChange={e=>setApForm(p2=>({...p2,data:e.target.value}))}/>
+                          </Field>
+                          <Field label="Hora de início" required>
+                            <Inp type="time" value={f.hora_inicio} onChange={e=>setApForm(p2=>({...p2,hora_inicio:e.target.value}))}/>
+                          </Field>
+                          <Field label="Hora de término" required>
+                            <Inp type="time" value={f.hora_fim} onChange={e=>setApForm(p2=>({...p2,hora_fim:e.target.value}))}/>
+                          </Field>
+                        </div>
+                        {f.data&&f.hora_inicio&&f.hora_fim&&(()=>{
+                          const i=new Date(`${f.data}T${f.hora_inicio}:00`);
+                          let fi=new Date(`${f.data}T${f.hora_fim}:00`);
+                          const virou=fi<=i;
+                          if(virou)fi=new Date(fi.getTime()+864e5);
+                          const h=(fi-i)/36e5;
+                          return(
+                            <p className={`text-xs font-bold ${h>16?'text-red-600':'text-slate-600'}`}>
+                              {h.toFixed(2)}h por pessoa · {(h*f.colaboradores.length).toFixed(2)}h no total
+                              {virou&&<span className="text-amber-600 font-normal"> · termina no dia seguinte</span>}
+                              {h>16&&<span className="block text-red-600">Mais de 16 horas seguidas — confira os horários.</span>}
+                            </p>
+                          );
+                        })()}
+                      </>
+                    )}
                     <Field label="Observação">
                       <Inp placeholder="Opcional" value={f.observacao} onChange={e=>setApForm(p2=>({...p2,observacao:e.target.value}))}/>
                     </Field>
@@ -9431,9 +9497,9 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
                       </p>
                     </div>
                     <div className="flex justify-end gap-2">
-                      <Btn variant="secondary" onClick={()=>{setApForm({nro_op:'',br:'',produto_acabado:'',descricao_produto:'',setor:f.setor,colaboradores:[],o_que_fez:'',observacao:'',dh_inicial:'',dh_final:''});setApOpInfo(null);}}>Limpar</Btn>
+                      <Btn variant="secondary" onClick={()=>{setApForm({nro_op:'',br:'',produto_acabado:'',descricao_produto:'',setor:f.setor,colaboradores:[],o_que_fez:'',observacao:'',data:'',hora_inicio:'',hora_fim:''});setApOpInfo(null);}}>Limpar</Btn>
                       <Btn variant="primary" size="lg" onClick={apIniciar}>
-                        <Clock className="w-5 h-5"/>{f.dh_final?'Registrar':'Iniciar agora'}
+                        <Clock className="w-5 h-5"/>{apModo==='AGORA'?'Iniciar agora':'Lançar'}
                       </Btn>
                     </div>
                   </div>
