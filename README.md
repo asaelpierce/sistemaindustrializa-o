@@ -76,3 +76,21 @@ Cobre o que o campo `NUMPEDIDO2` do item não cobria: nota atendida por vários
 pedidos, pedido atendido em várias notas, e devolução apontando para a nota de
 compra original. Confirmado em dados reais: NF 468 → OC 12855, NF 3240 → OC
 12849, devolução NF 9656 → nota de compra 31424.
+
+## Hora extra e sinalização do chão de fábrica
+
+**`hora_extra`** — o líder declara antes: data, setor, OP/BR, motivo, horário
+previsto de término, quem fica, se precisa lanche. Serve a dois propósitos:
+
+1. O encerramento automático das 17h **não corta** quem está na lista — fecha
+   no horário previsto da extra (`FIM_HORA_EXTRA`).
+2. O RH recebe a contagem de lanches pronta, hoje feita numa lista à mão.
+
+**`hora-extra-avisar-rh`** — roda às 15h (seg-sex), manda pro sino do portal
+sempre e pro Power Automate se houver `flow_url` em `configuracoes.hora_extra_rh`.
+Conta cada pessoa **uma vez** mesmo que esteja em duas extras no dia, e marca
+`rh_notificado_em` para não pedir lanche duas vezes.
+
+**`apontamento_sinalizacao`** — quem está apontando sinaliza o problema ali
+mesmo, já amarrado à OP e ao BR: falta de material, problema de máquina,
+dúvida de projeto, qualidade, segurança.
