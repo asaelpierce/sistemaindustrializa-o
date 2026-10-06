@@ -9547,7 +9547,7 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
                         <div>
                           <p className="text-sm font-black text-emerald-800">Começa agora — {new Date().toLocaleString('pt-BR',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'})}</p>
                           <p className="text-[11px] text-emerald-700">Fica em andamento até alguém finalizar aqui na tela.</p>
-                          <p className="text-[10px] text-emerald-600 mt-0.5">O sistema fecha sozinho às 12h (almoço), 15h (pausa) e 17h (fim do expediente) — depois é só iniciar de novo.</p>
+                          <p className="text-[10px] text-emerald-600 mt-0.5">O sistema fecha sozinho às 12h (almoço), 15h (café) e 17h (fim do expediente) — depois é só iniciar de novo. Quem está em hora extra autorizada não é cortado às 17h.</p>
                         </div>
                       </div>
                     ):(
@@ -9632,7 +9632,8 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
                                   const t=s(a.tipo_encerramento);
                                   if(!t||t==='MANUAL')return <span className="text-[10px] text-slate-400">concluído</span>;
                                   const cor=t==='PARADA'?'bg-amber-100 text-amber-700':'bg-slate-100 text-slate-500';
-                                  const rot=t==='PARADA'?'parada':t==='ALMOCO'?'almoço (12h)':t==='PAUSA'?'pausa (15h)':'fim do expediente';
+                                  const rot=t==='PARADA'?'parada':t==='ALMOCO'?'almoço (12h)':t==='PAUSA'?'café (15h)'
+                                    :t==='FIM_HORA_EXTRA'?'fim da hora extra':'fim do expediente';
                                   return(
                                     <span className={`text-[9px] font-black px-1.5 py-0.5 rounded ${cor}`} title={s(a.motivo_encerramento)}>
                                       {rot}{t==='PARADA'&&a.motivo_encerramento?`: ${s(a.motivo_encerramento).slice(0,28)}`:''}
