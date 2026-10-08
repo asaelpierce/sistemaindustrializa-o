@@ -2597,6 +2597,40 @@ export default function App(){
   },[planejamentoDoMes,planejamentoBusca,planejamentoFiltros]);
 
   const planejamentoAtrasados=useMemo(()=>planilhaMestreComMesEfetivo.filter(r=>r.mesEfetivo&&r.mesEfetivo<planejamentoMesRef&&!r.jaFaturado&&(r.valorVencidoSemAviso>0)),[planilhaMestreComMesEfetivo,planejamentoMesRef]);
+
+  // ARRASTADO: tudo que era previsto para meses ANTERIORES e ainda não faturou.
+  // Diferente de planejamentoAtrasados, que só pega o "vencido sem aviso" — aqui
+  // entra todo pendente, inclusive o que foi reprogramado, porque o dinheiro
+  // continua sem entrar de qualquer forma.
+  const planejamentoArrastado=useMemo(()=>{
+    const linhas=planilhaMestreComMesEfetivo
+      .filter(r=>r.mesEfetivo&&r.mesEfetivo<planejamentoMesRef&&r.andamentoEfetivo!=='FATURADO'&&!r.jaFaturado)
+      .map(r=>{
+        const bruto=Number(r.valorTotal||0);
+        const jaEmitido=Number(r.valorFaturadoNaBaseDoPedido||0);
+        const aFaturar=Math.max(0,bruto-jaEmitido);
+        // Quantos meses o projeto está parado — é o que separa o atraso novo do
+        // problema velho.
+        const [ay,am]=s(r.mesEfetivo).split('-').map(Number);
+        const [by,bm]=s(planejamentoMesRef).split('-').map(Number);
+        const mesesParado=(by-ay)*12+(bm-am);
+        return{...r,valorAFaturarArrastado:aFaturar,mesesParado};
+      })
+      .filter(r=>r.valorAFaturarArrastado>0)
+      .sort((a,b)=>b.mesesParado-a.mesesParado||b.valorAFaturarArrastado-a.valorAFaturarArrastado);
+    const total=linhas.reduce((acc,r)=>acc+r.valorAFaturarArrastado,0);
+    const porMes={};
+    linhas.forEach(r=>{
+      if(!porMes[r.mesEfetivo])porMes[r.mesEfetivo]={mes:r.mesEfetivo,projetos:0,valor:0};
+      porMes[r.mesEfetivo].projetos++;porMes[r.mesEfetivo].valor+=r.valorAFaturarArrastado;
+    });
+    return{
+      linhas,total,
+      projetos:linhas.length,
+      meses:Object.values(porMes).sort((a,b)=>a.mes.localeCompare(b.mes)),
+      maisDe3Meses:linhas.filter(r=>r.mesesParado>=3).length,
+    };
+  },[planilhaMestreComMesEfetivo,planejamentoMesRef]);
   const planejamentoFaturadosNoMes=useMemo(()=>planilhaMestreComMesEfetivo.filter(r=>(r.notas||[]).some(n=>s(n.dataFaturamento).slice(0,7)===planejamentoMesRef)),[planilhaMestreComMesEfetivo,planejamentoMesRef]);
   const planejamentoAcompanhamento=useMemo(()=>calcularAcompanhamentoSemanal(planejamentoMesRef),[calcularAcompanhamentoSemanal,planejamentoMesRef]);
   // Valor de cada BR NO MOMENTO DO FECHAMENTO — é o alvo/meta, nunca muda depois.
@@ -7474,7 +7508,8 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
 
                 {/* ── Seletor de visão ── */}
                 <div className="flex items-center gap-1 bg-slate-100 rounded-xl p-1 w-fit">
-                  {[{id:'RESUMO',label:'Resumo'},{id:'PROJETOS',label:'Projetos'}].map(v=>(
+                  {[{id:'RESUMO',label:'Resumo'},{id:'PROJETOS',label:'Projetos'},
+                    {id:'ARRASTADO',label:`Pendente de meses anteriores${planejamentoArrastado.projetos?` (${planejamentoArrastado.projetos})`:''}`}].map(v=>(
                     <button key={v.id} onClick={()=>setPlanejamentoVisao(v.id)}
                       className={`text-xs font-bold px-4 py-2 rounded-lg transition-all ${planejamentoVisao===v.id?'bg-white text-slate-900 shadow-sm':'text-slate-500 hover:text-slate-700'}`}>
                       {v.label}
@@ -7588,6 +7623,117 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
                     </div>
                   </div>
                 )}
+
+                {/* ── PENDENTE DE MESES ANTERIORES ──────────────────────────
+                    O que era previsto pra antes e ainda não faturou. Fica numa
+                    aba própria pra não poluir a meta do mês corrente, mas
+                    visível — é dinheiro que já devia ter entrado. */}
+                {planejamentoVisao==='ARRASTADO'&&(()=>{
+                  const A=planejamentoArrastado;
+                  const nomeMes=m=>{const[a2,me]=s(m).split('-');return `${MESES_PT[Number(me)-1]}/${a2.slice(2)}`;};
+                  return(
+                  <div className="space-y-4">
+                    {A.projetos===0?(
+                      <div className="bg-emerald-50 border border-emerald-200 rounded-2xl p-8 text-center">
+                        <p className="text-sm font-black text-emerald-800">Nada pendente de meses anteriores</p>
+                        <p className="text-xs text-emerald-700 mt-1">Todo projeto previsto até {nomeMes(planejamentoMesRef)} já foi faturado ou reprogramado para frente.</p>
+                      </div>
+                    ):(<>
+                      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+                        {[
+                          {l:'Valor pendente',v:fmtMoeda(A.total),d:'ainda não faturado',destaque:true},
+                          {l:'Projetos',v:A.projetos,d:'de meses anteriores'},
+                          {l:'Parados há 3+ meses',v:A.maisDe3Meses,d:'merecem decisão',alerta:A.maisDe3Meses>0},
+                          {l:'Mês mais antigo',v:A.meses[0]?nomeMes(A.meses[0].mes):'—',d:'primeiro pendente'},
+                        ].map(c2=>(
+                          <div key={c2.l} className={`rounded-2xl border-2 p-4 ${c2.destaque?'bg-amber-50 border-amber-300':c2.alerta?'bg-red-50 border-red-200':'bg-white border-slate-200'}`}>
+                            <p className="text-[10px] font-black text-slate-400 uppercase tracking-wider">{c2.l}</p>
+                            <p className={`text-xl font-black mt-1 ${c2.destaque?'text-amber-700':c2.alerta?'text-red-600':'text-slate-800'}`}>{c2.v}</p>
+                            <p className="text-[10px] text-slate-400 mt-0.5">{c2.d}</p>
+                          </div>
+                        ))}
+                      </div>
+
+                      {/* Quanto veio de cada mês */}
+                      <div className="bg-white rounded-2xl border border-slate-200 p-5">
+                        <p className="text-xs font-black text-slate-600 uppercase tracking-wider mb-3">De onde vem o pendente</p>
+                        <div className="space-y-2">
+                          {A.meses.map(m=>{
+                            const pct=A.total?(m.valor/A.total*100):0;
+                            return(
+                              <div key={m.mes}>
+                                <div className="flex items-center justify-between text-xs mb-0.5">
+                                  <span className="font-bold text-slate-700">{nomeMes(m.mes)} <span className="text-slate-400 font-normal">· {m.projetos} projeto(s)</span></span>
+                                  <span className="text-slate-600 font-bold">{fmtMoeda(m.valor)}</span>
+                                </div>
+                                <div className="h-2 bg-slate-100 rounded-full overflow-hidden"><div className="h-full bg-amber-400 rounded-full" style={{width:`${pct}%`}}/></div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+
+                      {/* Lista */}
+                      <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
+                        <div className="px-5 py-3 bg-slate-50 border-b border-slate-100 flex items-center justify-between flex-wrap gap-2">
+                          <p className="text-xs font-black text-slate-600 uppercase tracking-wider">Projetos pendentes</p>
+                          <p className="text-[11px] text-slate-400">do mais parado para o mais recente</p>
+                        </div>
+                        <div className="overflow-x-auto">
+                          <table className="w-full text-left text-sm">
+                            <thead className="bg-slate-50 border-b border-slate-100">
+                              <tr className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">
+                                <th className="px-5 py-2.5">BR</th><th className="px-5 py-2.5">Cliente</th>
+                                <th className="px-5 py-2.5">Era previsto</th><th className="px-5 py-2.5 text-center">Parado há</th>
+                                <th className="px-5 py-2.5 text-right">Valor do projeto</th>
+                                <th className="px-5 py-2.5 text-right">Já faturado</th>
+                                <th className="px-5 py-2.5 text-right">Falta faturar</th>
+                                <th className="px-5 py-2.5">Situação</th>
+                              </tr>
+                            </thead>
+                            <tbody className="divide-y divide-slate-50">
+                              {A.linhas.map(r=>{
+                                const jaEmitido=Number(r.valorFaturadoNaBaseDoPedido||0);
+                                return(
+                                  <tr key={r.br} className="hover:bg-slate-50/60">
+                                    <td className="px-5 py-2.5 font-bold text-slate-700">{s(r.br)}</td>
+                                    <td className="px-5 py-2.5 text-xs text-slate-500 truncate max-w-[200px]">{s(r.cliente)}</td>
+                                    <td className="px-5 py-2.5 text-xs text-slate-500">{nomeMes(r.mesEfetivo)}</td>
+                                    <td className="px-5 py-2.5 text-center">
+                                      <span className={`text-[10px] font-black px-2 py-0.5 rounded-full ${r.mesesParado>=3?'bg-red-100 text-red-700':r.mesesParado===2?'bg-amber-100 text-amber-700':'bg-slate-100 text-slate-600'}`}>
+                                        {r.mesesParado} {r.mesesParado===1?'mês':'meses'}
+                                      </span>
+                                    </td>
+                                    <td className="px-5 py-2.5 text-right text-slate-500">{fmtMoeda(r.valorTotal||0)}</td>
+                                    <td className="px-5 py-2.5 text-right text-slate-500">{jaEmitido>0?fmtMoeda(jaEmitido):'—'}</td>
+                                    <td className="px-5 py-2.5 text-right font-black text-amber-700">{fmtMoeda(r.valorAFaturarArrastado)}</td>
+                                    <td className="px-5 py-2.5 text-xs text-slate-500">{s(r.andamentoEfetivo)||'—'}</td>
+                                  </tr>
+                                );
+                              })}
+                            </tbody>
+                            <tfoot>
+                              <tr className="bg-slate-50 border-t-2 border-slate-200">
+                                <td colSpan={6} className="px-5 py-3 font-black text-slate-700">TOTAL</td>
+                                <td className="px-5 py-3 text-right font-black text-amber-700">{fmtMoeda(A.total)}</td>
+                                <td/>
+                              </tr>
+                            </tfoot>
+                          </table>
+                        </div>
+                      </div>
+
+                      {A.maisDe3Meses>0&&(
+                        <div className="bg-red-50 border border-red-200 rounded-xl px-4 py-3">
+                          <p className="text-[11px] text-red-800">
+                            <strong>{A.maisDe3Meses} projeto(s) parado(s) há 3 meses ou mais.</strong> Vale decidir: reprogramar com data real, cancelar, ou tratar como perda — carregar indefinidamente distorce a leitura de todo mês seguinte.
+                          </p>
+                        </div>
+                      )}
+                    </>)}
+                  </div>
+                  );
+                })()}
 
                 {planejamentoVisao==='PROJETOS'&&(<>
 
