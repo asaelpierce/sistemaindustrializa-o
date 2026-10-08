@@ -1302,6 +1302,10 @@ export default function App(){
   const [buscandoSankhya,setBuscandoSankhya]=useState(false);
   const [produtoNaoEncontrado,setProdutoNaoEncontrado]=useState(false);
   const [sincronizandoERP,setSincronizandoERP]=useState(false);
+  // Conferência portal × Sankhya: roda sem alterar nada e mostra o que diverge.
+  const [conferencia,setConferencia]=useState(null);
+  const [conferindo,setConferindo]=useState(false);
+  const [corrigindoConf,setCorrigindoConf]=useState(false);
   const [ultimaSync,setUltimaSync]=useState(null);
 
   // Prazos e Planner
@@ -4528,6 +4532,46 @@ export default function App(){
   };
 
   // Sincroniza TODO o estoque/BOM agora (mesmo job do cron, disparado manualmente)
+  // Conferência: compara item a item o portal com o Sankhya. Não altera nada —
+  // a sincronização normal só adiciona e atualiza, então item APAGADO no ERP
+  // ficava aqui inflando o valor do BR sem ninguém perceber.
+  const rodarConferencia=async()=>{
+    setConferindo(true);setConferencia(null);
+    try{
+      const res=await fetch(`${SUPABASE_URL}/functions/v1/conferir-pedidos-sankhya`,{
+        method:'POST',headers:{'Content-Type':'application/json','apikey':SUPABASE_KEY},
+        body:JSON.stringify({})
+      });
+      const j=await res.json();
+      if(!j.ok)throw new Error(j.erro||'Falha na conferência');
+      setConferencia(j);
+      const problemas=(j.sobrando||0)+(j.faltando||0)+(j.divergentes||0);
+      addToast(problemas===0?'Tudo conferido — portal e Sankhya estão iguais.'
+        :`${problemas} diferença(s) encontrada(s).`,problemas===0?'success':'error');
+    }catch(e){addToast('Erro na conferência: '+e.message,'error');}
+    finally{setConferindo(false);}
+  };
+
+  // Só remove os órfãos. Item faltando ou divergente é resolvido pela
+  // sincronização, que sabe montar a linha inteira.
+  const corrigirOrfaos=async()=>{
+    if(!conferencia?.sobrando)return;
+    if(!window.confirm(`Remover ${conferencia.sobrando} item(ns) que não existem mais no Sankhya?\n\nValor envolvido: ${fmtMoeda(conferencia.valor_sobrando||0)}`))return;
+    setCorrigindoConf(true);
+    try{
+      const res=await fetch(`${SUPABASE_URL}/functions/v1/conferir-pedidos-sankhya`,{
+        method:'POST',headers:{'Content-Type':'application/json','apikey':SUPABASE_KEY},
+        body:JSON.stringify({aplicar:true})
+      });
+      const j=await res.json();
+      if(!j.ok)throw new Error(j.erro||'Falha ao corrigir');
+      addToast(`${j.removidos} item(ns) removido(s).`);
+      setConferencia(j);
+      fetchAll();
+    }catch(e){addToast('Erro ao corrigir: '+e.message,'error');}
+    finally{setCorrigindoConf(false);}
+  };
+
   const sincronizarERPAgora=async()=>{
     setSincronizandoERP(true);
     try{
@@ -11191,7 +11235,7 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
 
             {/* ── UPLOAD ESTOQUE ────────────────────────────────────────── */}
             {aba==='UPLOAD_ESTOQUE'&&(
-              <div className="max-w-xl mx-auto space-y-6">
+              <div className="max-w-2xl mx-auto space-y-6">
                 <SectionHeader title="Sincronização ERP" subtitle="Atualize produtos e saldos de estoque direto do Sankhya"/>
 
                 {/* Sincronização automática direta do Sankhya */}
@@ -11205,6 +11249,102 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
                     {sincronizandoERP?<><Loader2 className="w-5 h-5 animate-spin"/>Sincronizando com o Sankhya...</>:<><RefreshCw className="w-5 h-5"/>Sincronizar Agora</>}
                   </Btn>
                   {ultimaSync&&<p className="text-[10px] text-emerald-600 font-bold mt-3">✓ Última sincronização: {ultimaSync.toLocaleTimeString('pt-BR')}</p>}
+                </div>
+
+                {/* ── Conferência portal × Sankhya ──────────────────────────
+                    A sincronização só adiciona e atualiza; ela não sabe o que
+                    foi apagado no ERP. Esta conferência mostra as diferenças
+                    sem alterar nada. */}
+                <div className="bg-white rounded-2xl border border-slate-200 p-6">
+                  <div className="flex items-center gap-3 mb-2">
+                    <ListChecks className="w-4 h-4 text-slate-600"/>
+                    <p className="text-sm font-black text-slate-900">Conferir com o Sankhya</p>
+                  </div>
+                  <p className="text-xs text-slate-500 mb-4">
+                    Compara item a item o que o portal tem com o que o Sankhya tem agora. Não altera nada — só mostra.
+                  </p>
+                  <Btn variant="dark" onClick={rodarConferencia} disabled={conferindo}>
+                    {conferindo?<><Loader2 className="w-4 h-4 animate-spin"/>Conferindo...</>:<><ListChecks className="w-4 h-4"/>Conferir agora</>}
+                  </Btn>
+
+                  {conferencia&&(()=>{
+                    const C=conferencia;
+                    const problemas=(C.sobrando||0)+(C.faltando||0)+(C.divergentes||0);
+                    return(
+                    <div className="mt-5 space-y-3">
+                      <div className="flex items-center justify-between text-[11px] text-slate-400">
+                        <span>Portal: <strong className="text-slate-600">{C.itens_no_portal}</strong> itens</span>
+                        <span>Sankhya: <strong className="text-slate-600">{C.itens_no_sankhya}</strong> itens</span>
+                      </div>
+
+                      {problemas===0?(
+                        <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-4 text-center">
+                          <p className="text-sm font-black text-emerald-800">Tudo conferido</p>
+                          <p className="text-[11px] text-emerald-700 mt-0.5">Portal e Sankhya estão iguais.</p>
+                        </div>
+                      ):(
+                        <div className="grid grid-cols-3 gap-2">
+                          {[
+                            {l:'Sobrando',v:C.sobrando,d:'não existe mais no ERP',cor:'red'},
+                            {l:'Faltando',v:C.faltando,d:'não veio pro portal',cor:'amber'},
+                            {l:'Divergente',v:C.divergentes,d:'valor diferente',cor:'amber'},
+                          ].map(x=>(
+                            <div key={x.l} className={`rounded-xl p-3 border text-center ${x.v>0?(x.cor==='red'?'bg-red-50 border-red-200':'bg-amber-50 border-amber-200'):'bg-slate-50 border-slate-200'}`}>
+                              <p className={`text-2xl font-black ${x.v>0?(x.cor==='red'?'text-red-600':'text-amber-600'):'text-slate-300'}`}>{x.v}</p>
+                              <p className="text-[10px] font-bold text-slate-600">{x.l}</p>
+                              <p className="text-[9px] text-slate-400 leading-tight">{x.d}</p>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+
+                      {C.sobrando>0&&(
+                        <div className="bg-red-50 border border-red-200 rounded-xl p-4">
+                          <p className="text-xs font-black text-red-800 mb-1">
+                            {C.sobrando} item(ns) apagado(s) no Sankhya ainda estão aqui
+                          </p>
+                          <p className="text-[11px] text-red-700 mb-2">
+                            Estão somando {fmtMoeda(C.valor_sobrando||0)} que não existem mais.
+                          </p>
+                          <div className="space-y-1 mb-3 max-h-32 overflow-y-auto custom-scrollbar">
+                            {(C.detalhe_sobrando||[]).slice(0,8).map((o,i)=>(
+                              <p key={i} className="text-[10px] text-red-600 font-mono">
+                                {s(o.br)||'sem BR'} · pedido {o.nunota}/{o.sequencia} · {fmtMoeda(o.valor||0)}
+                              </p>
+                            ))}
+                            {(C.detalhe_sobrando||[]).length>8&&<p className="text-[10px] text-red-400">e mais {C.detalhe_sobrando.length-8}...</p>}
+                          </div>
+                          <Btn variant="danger" size="sm" onClick={corrigirOrfaos} disabled={corrigindoConf}>
+                            {corrigindoConf?<><Loader2 className="w-4 h-4 animate-spin"/>Removendo...</>:<>Remover os {C.sobrando}</>}
+                          </Btn>
+                        </div>
+                      )}
+
+                      {(C.faltando>0||C.divergentes>0)&&(
+                        <div className="bg-amber-50 border border-amber-200 rounded-xl p-4">
+                          <p className="text-xs font-black text-amber-800 mb-1">
+                            {C.faltando>0&&`${C.faltando} faltando`}{C.faltando>0&&C.divergentes>0&&' · '}{C.divergentes>0&&`${C.divergentes} divergente(s)`}
+                          </p>
+                          <p className="text-[11px] text-amber-700 mb-2">
+                            Resolve rodando a sincronização aqui de cima — ela traz o item novo e atualiza o valor.
+                          </p>
+                          <div className="space-y-1 max-h-32 overflow-y-auto custom-scrollbar">
+                            {(C.detalhe_faltando||[]).slice(0,5).map((o,i)=>(
+                              <p key={`f${i}`} className="text-[10px] text-amber-700 font-mono">
+                                faltando: {s(o.br)||'sem BR'} · pedido {o.nunota}/{o.sequencia} · {fmtMoeda(o.valor||0)}
+                              </p>
+                            ))}
+                            {(C.detalhe_divergentes||[]).slice(0,5).map((o,i)=>(
+                              <p key={`d${i}`} className="text-[10px] text-amber-700 font-mono">
+                                difere: {s(o.br)||'sem BR'} · {o.nunota}/{o.sequencia} · portal {fmtMoeda(o.portal?.valor||0)} × ERP {fmtMoeda(o.sankhya?.valor||0)}
+                              </p>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                    );
+                  })()}
                 </div>
 
                 {/* Busca pontual de um código específico */}
