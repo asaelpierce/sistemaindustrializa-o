@@ -94,3 +94,21 @@ Conta cada pessoa **uma vez** mesmo que esteja em duas extras no dia, e marca
 **`apontamento_sinalizacao`** — quem está apontando sinaliza o problema ali
 mesmo, já amarrado à OP e ao BR: falta de material, problema de máquina,
 dúvida de projeto, qualidade, segurança.
+
+## Conferência portal × Sankhya
+
+**`conferir-pedidos-sankhya`** compara item a item (por `nunota` + `sequencia`)
+o que o portal tem com o que o Sankhya tem **agora**. Existe porque a
+sincronização normal só adiciona e atualiza — ela não sabe o que foi **apagado**
+no ERP, então item removido lá continuava aqui inflando o valor do BR.
+
+Três tipos de diferença:
+
+| Tipo | O que é | Como corrigir |
+|---|---|---|
+| **Sobrando** | Está no portal, não existe mais no Sankhya | A própria conferência remove com `{"aplicar":true}` |
+| **Faltando** | Está no Sankhya, não chegou no portal | Rodar `pedidos-itens-sync` |
+| **Divergente** | Existe nos dois, com valor ou quantidade diferente | Rodar `pedidos-itens-sync` |
+
+Roda em **simulação por padrão** — mostra tudo e não altera nada. Tolerância de
+1 centavo no valor, para não acusar arredondamento como divergência.
