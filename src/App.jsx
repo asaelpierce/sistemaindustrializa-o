@@ -1873,6 +1873,20 @@ export default function App(){
   const [mestraDetalheTab,setMestraDetalheTab]=useState('ITENS'); // ITENS | NOTAS
   const [mestraComposicaoAberta,setMestraComposicaoAberta]=useState(null); // codProduto expandido no modal de itens
   const MESTRA_DATA_CORTE='2026-01'; // trabalhamos a partir de 01/01/2026 (por data de entrega)
+
+  // PROJETO ESTOQUE: pedido de venda emitido para a própria Kalenborn do Brasil.
+  // Não é venda a cliente, então não entra em planejamento de faturamento nem
+  // em carteira. Confirmado pelo usuário a partir do BR13719/25, que sozinho
+  // valia R$ 3,88 mi com CP em outubro — quase todo o mês.
+  //
+  // A regra vale SÓ para a matriz brasileira. Kalenborn Canadá, Abresist e
+  // Kalprotect são as outras empresas do grupo e representam exportação real
+  // (R$ 346 mil em 10 BRs), então continuam contando normalmente — por isso
+  // não dá para filtrar só por "kalenborn".
+  const ehProjetoEstoque=cliente=>{
+    const n=String(cliente??'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toUpperCase().replace(/\s+/g,' ').trim();
+    return n==='KALENBORN DO BRASIL'||n.startsWith('KALENBORN DO BRASIL ');
+  };
   const [mestraIncluirAnteriores,setMestraIncluirAnteriores]=useState(false);
 
   // Base do período: tudo com entrega prometida de 2026 em diante.
@@ -2064,6 +2078,12 @@ export default function App(){
       // A partir de 2026: decisão do PCP de não trabalhar mais com histórico de 2025.
       // Sem prazo definido continua entrando (ainda é compromisso em aberto).
       if(r.mesReferencia&&r.mesReferencia!=='sem-prazo'&&r.mesReferencia<MESTRA_DATA_CORTE)return;
+      // Pedido de venda para a própria Kalenborn do Brasil é PROJETO ESTOQUE:
+      // não é venda a cliente e não pode entrar no planejamento de faturamento.
+      // Distorce muito — o BR13719/25 sozinho vale R$ 3,88 mi com CP em outubro,
+      // a maior parte do mês inteiro. Só a matriz entra na regra; Kalenborn
+      // Canadá, Abresist e Kalprotect são exportação de verdade e continuam.
+      if(ehProjetoEstoque(r.cliente))return;
       const br=r.br;
       if(!porBR[br])porBR[br]={
         br,cliente:r.cliente,vendedor:r.vendedor,emissao:r.dataNeg,
@@ -3418,7 +3438,10 @@ export default function App(){
           dataMPPronta,dataAlertaEsteira,precisaEntrarNaEsteira,
           descricaoResumo:r.produtos.slice(0,1).join(', ')||'—',itens:itensPorBR[r.br]||[]};
       });
-      setOohProjetos(lista);
+      // Projeto estoque (venda para a própria Kalenborn do Brasil) também fica
+      // de fora do OOH — mesma regra da Mestra, senão a carteira do mês fica
+      // inflada em milhões por um pedido que não é venda a cliente.
+      setOohProjetos(lista.filter(p=>!ehProjetoEstoque(p.cliente)));
       setOohPlanejamento(planejamentoRes.data||[]);
       setOohServicos(servicosLista.sort((a,b)=>s(b.dataPrevista).localeCompare(s(a.dataPrevista))));
       setOohFaturamentoPorMes(Object.values(faturamentoPorBRMes));
