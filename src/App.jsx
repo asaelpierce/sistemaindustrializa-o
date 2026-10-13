@@ -6807,7 +6807,7 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
           <p className="text-slate-500 text-sm mb-8">Acesse sua conta para continuar</p>
           {erroLogin&&<div className="flex items-center gap-3 bg-red-50 border border-red-200 text-red-700 rounded-xl p-4 mb-6 text-sm font-medium"><AlertCircle className="w-4 h-4 flex-shrink-0"/>{erroLogin}</div>}
           <form onSubmit={handleLogin} className="space-y-4">
-            <div><label className="text-xs font-bold text-slate-600 mb-1.5 block uppercase tracking-wider">E-mail</label><Inp type="email" required placeholder="seu@email.com.br" value={emailLogin} onChange={e=>setEmailLogin(e.target.value)}/></div>
+            <div><label className="text-xs font-bold text-slate-600 mb-1.5 block uppercase tracking-wider">E-mail ou usuário</label><Inp type="text" autoCapitalize="none" autoCorrect="off" required placeholder="seu@email.com.br ou seu usuário" value={emailLogin} onChange={e=>setEmailLogin(e.target.value)}/></div>
             <div><label className="text-xs font-bold text-slate-600 mb-1.5 block uppercase tracking-wider">Senha</label><Inp type="password" required placeholder="••••••••" value={senhaLogin} onChange={e=>setSenhaLogin(e.target.value)}/></div>
             <Btn type="submit" variant="primary" size="lg" className="w-full mt-2" disabled={loginLoading}>{loginLoading?<><Loader2 className="w-4 h-4 animate-spin"/>Autenticando...</>:<><LogOut className="w-4 h-4"/>Acessar Plataforma</>}</Btn>
           </form>
@@ -11402,7 +11402,12 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
                     <h3 className="font-black text-slate-900 text-sm flex items-center gap-2 mb-5"><UserPlus className="w-4 h-4 text-indigo-600"/>{editUser?'Editar Usuário':'Novo Usuário'}</h3>
                     <form onSubmit={salvarUser} className="space-y-4">
                       <Field label="Nome completo" required><Inp required placeholder="Nome e sobrenome" value={novoUser.nome} onChange={e=>setNovoUser({...novoUser,nome:e.target.value})}/></Field>
-                      <Field label="E-mail" required><Inp required type="email" placeholder="usuario@empresa.com" value={novoUser.email} disabled={editUser} onChange={e=>setNovoUser({...novoUser,email:e.target.value.toLowerCase().trim()})} className={editUser?'opacity-50':''}/></Field>
+                      {/* Aceita usuário sem e-mail: tem gente na produção e na manutenção que
+    não possui caixa de e-mail, e o type="email" do navegador barrava o
+    cadastro. O login já comparava texto puro, era só o campo que exigia. */}
+                      <Field label="E-mail ou usuário" required><Inp required type="text" autoCapitalize="none" autoCorrect="off" placeholder="usuario@empresa.com ou apenas o nome" value={novoUser.email} disabled={editUser} onChange={e=>setNovoUser({...novoUser,email:e.target.value.toLowerCase().trim()})} className={editUser?'opacity-50':''}/>
+                        <p className="text-[10px] text-slate-400 mt-1">Quem não tem e-mail entra com um nome de usuário, como "welton".</p>
+                      </Field>
                       <Field label="Senha" required><Inp required placeholder="Senha de acesso" value={novoUser.senha} onChange={e=>setNovoUser({...novoUser,senha:e.target.value.trim()})}/></Field>
                       <Field label="Perfil"><Sel value={novoUser.perfil} onChange={e=>setNovoUser({...novoUser,perfil:e.target.value})}><option value="PCP">PCP — Planejamento e Controle</option><option value="EXPEDICAO">Logística — Expedição</option><option value="COMPRAS">Compras — Devolução, conserto e triangulação</option><option value="COORDENADOR">Coordenador — Compras + todas as remessas</option><option value="QUALIDADE">Qualidade</option><option value="MANUTENCAO">Manutenção</option><option value="ADMIN">Administrador — Acesso Total</option></Sel></Field>
                       <div className="flex gap-2 pt-2"><Btn type="submit" variant="primary" className="flex-1">Salvar</Btn>{editUser&&<Btn type="button" variant="secondary" onClick={()=>{setNovoUser({nome:'',email:'',senha:'',perfil:'PCP'});setEditUser(false);}}>Cancelar</Btn>}</div>
