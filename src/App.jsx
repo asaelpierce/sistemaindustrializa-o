@@ -1408,7 +1408,7 @@ export default function App(){
   const [relApres,setRelApres]=useState(null);
 
   // Usuarios
-  const [novoUser,setNovoUser]=useState({nome:'',email:'',senha:'',perfil:'PCP'});
+  const [novoUser,setNovoUser]=useState({nome:'',email:'',senha:'',perfil:'PCP',perfis:['PCP'],nivel_manutencao:null});
   const [editUser,setEditUser]=useState(false);
   const [expandida,setExpandida]=useState(null);
 
@@ -1551,20 +1551,37 @@ export default function App(){
   const [insEtapa,setInsEtapa]=useState(1); // 1=selecionar resultado, 2=detalhes
   const [insResultadoSel,setInsResultadoSel]=useState(''); // resultado selecionado antes de preencher detalhes
 
-  const isAdmin=usuarioLogado?.perfil==='ADMIN';
-  const isPCP=usuarioLogado?.perfil==='PCP'||isAdmin;
+  // A pessoa pode ter MAIS DE UM PERFIL (ex.: ver PCP e Manutenção ao mesmo
+  // tempo). A lista `perfis` é a que manda; `perfil` continua como principal,
+  // e entra na conta para não quebrar quem foi cadastrado antes da mudança.
+  const temPerfil=p0=>{
+    const lista=Array.isArray(usuarioLogado?.perfis)?usuarioLogado.perfis:[];
+    return lista.includes(p0)||usuarioLogado?.perfil===p0;
+  };
+  const isAdmin=temPerfil('ADMIN');
+  const isPCP=temPerfil('PCP')||isAdmin;
   // COORDENADOR (Danilo): enxerga todas as remessas como a Expedição já
   // enxergava, e soma a aba de Compras. Não é ADMIN porque não precisa mexer em
   // acessos nem em configuração do sistema.
-  const isCoordenador=usuarioLogado?.perfil==='COORDENADOR'||isAdmin;
-  const isExp=usuarioLogado?.perfil==='EXPEDICAO'||isCoordenador;
-  const isQual=usuarioLogado?.perfil==='QUALIDADE'||isAdmin;
-  // Aprovadores de Manutenção: perfil MANUTENCAO (Diogo, Daniel, Martins) — ADMIN
-  // também conta, como já é padrão nos outros perfis (acesso total de backup).
-  const isManutencao=usuarioLogado?.perfil==='MANUTENCAO'||isAdmin;
+  const isCoordenador=temPerfil('COORDENADOR')||isAdmin;
+  const isExp=temPerfil('EXPEDICAO')||isCoordenador;
+  const isQual=temPerfil('QUALIDADE')||isAdmin;
+  // Acesso ao módulo de Manutenção (ver, atender, comentar).
+  const isManutencao=temPerfil('MANUTENCAO')||isAdmin;
+  // Dentro da Manutenção há DUAS funções, e isso não é a mesma coisa:
+  //   APROVADOR  (Diogo, Daniel) libera ou recusa a demanda
+  //   EXECUTANTE (Welton) trabalha na demanda, mas não aprova
+  // Antes todo mundo com perfil MANUTENCAO aprovava, inclusive quem ia
+  // executar — ou seja, a pessoa aprovava o próprio serviço.
+  // Sem nível definido, mantém o comportamento antigo de aprovador, pra não
+  // travar quem já usava antes desta mudança.
+  // Sem usar s(): o helper é declarado mais abaixo e isto roda na renderização.
+  const nivelManut=String(usuarioLogado?.nivel_manutencao??'').trim().toUpperCase();
+  const isManutencaoExecutante=isManutencao&&nivelManut==='EXECUTANTE'&&!isAdmin;
+  const podeAprovarManutencao=isAdmin||(isManutencao&&nivelManut!=='EXECUTANTE');
   // Compras abre as remessas que não nascem de uma OP: devolução, conserto e
   // triangulação. PCP continua dono da industrialização.
-  const isCompras=usuarioLogado?.perfil==='COMPRAS'||isCoordenador;
+  const isCompras=temPerfil('COMPRAS')||isCoordenador;
 
   // Cada natureza gera o texto que a fiscal lê — vai no assunto do e-mail e na
   // observação do SGQ. É por ele que ela sabe se é devolução, conserto ou
@@ -4202,7 +4219,12 @@ export default function App(){
 
   const salvarUser=async e=>{
     e.preventDefault();setIsLoading(true);
-    try{const{error}=await supabase.from('perfis_usuarios').upsert([novoUser],{onConflict:'email'});if(error)throw error;addToast('Usuário salvo!');setNovoUser({nome:'',email:'',senha:'',perfil:'PCP'});setEditUser(false);fetchAll();}
+    // Se a pessoa marcou perfis mas o principal ficou vazio (ou vice-versa),
+    // normaliza aqui — a lista é o que define o acesso.
+    const lista=Array.isArray(novoUser.perfis)&&novoUser.perfis.length?novoUser.perfis:(novoUser.perfil?[novoUser.perfil]:[]);
+    const paraSalvar={...novoUser,perfis:lista,perfil:novoUser.perfil||lista[0]||'PCP',
+      nivel_manutencao:lista.includes('MANUTENCAO')?(novoUser.nivel_manutencao||'APROVADOR'):null};
+    try{const{error}=await supabase.from('perfis_usuarios').upsert([paraSalvar],{onConflict:'email'});if(error)throw error;addToast('Usuário salvo!');setNovoUser({nome:'',email:'',senha:'',perfil:'PCP',perfis:['PCP'],nivel_manutencao:null});setEditUser(false);fetchAll();}
     catch(e){addToast('Erro: '+e.message,'error');}finally{setIsLoading(false);}
   };
 
@@ -5860,7 +5882,7 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
   };
 
   const aprovarManutencao=async sol=>{
-    if(!isManutencao)return addToast('Só os aprovadores de Manutenção podem aprovar.','error');
+    if(!podeAprovarManutencao)return addToast('Só os aprovadores de Manutenção podem aprovar. Você está como executante.','error');
     if(!window.confirm(`Aprovar a solicitação "${s(sol.titulo)}"? Isso vai destravar o processo.`))return;
     try{
       const{error}=await supabase.from('manutencao_solicitacoes').update({
@@ -5875,7 +5897,7 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
 
   // Recusar/cancelar — só os aprovadores, com motivo obrigatório (fica no histórico).
   const recusarManutencao=async sol=>{
-    if(!isManutencao)return addToast('Só os aprovadores de Manutenção podem recusar.','error');
+    if(!podeAprovarManutencao)return addToast('Só os aprovadores de Manutenção podem recusar. Você está como executante.','error');
     const motivo=window.prompt('Motivo da recusa/cancelamento:');
     if(!motivo)return;
     try{
@@ -11409,8 +11431,49 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
                         <p className="text-[10px] text-slate-400 mt-1">Quem não tem e-mail entra com um nome de usuário, como "welton".</p>
                       </Field>
                       <Field label="Senha" required><Inp required placeholder="Senha de acesso" value={novoUser.senha} onChange={e=>setNovoUser({...novoUser,senha:e.target.value.trim()})}/></Field>
-                      <Field label="Perfil"><Sel value={novoUser.perfil} onChange={e=>setNovoUser({...novoUser,perfil:e.target.value})}><option value="PCP">PCP — Planejamento e Controle</option><option value="EXPEDICAO">Logística — Expedição</option><option value="COMPRAS">Compras — Devolução, conserto e triangulação</option><option value="COORDENADOR">Coordenador — Compras + todas as remessas</option><option value="QUALIDADE">Qualidade</option><option value="MANUTENCAO">Manutenção</option><option value="ADMIN">Administrador — Acesso Total</option></Sel></Field>
-                      <div className="flex gap-2 pt-2"><Btn type="submit" variant="primary" className="flex-1">Salvar</Btn>{editUser&&<Btn type="button" variant="secondary" onClick={()=>{setNovoUser({nome:'',email:'',senha:'',perfil:'PCP'});setEditUser(false);}}>Cancelar</Btn>}</div>
+                      {/* Vários perfis por pessoa: tem quem precise ver PCP e
+                          Manutenção ao mesmo tempo, e antes só dava pra
+                          escolher um ou liberar ADMIN, que abre acesso demais. */}
+                      <div className="sm:col-span-2">
+                        <p className="text-xs font-bold text-slate-600 mb-1.5 uppercase tracking-wider">Perfis <span className="text-slate-400 font-normal normal-case">— pode marcar mais de um</span></p>
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
+                          {[
+                            {v:'PCP',l:'PCP — Planejamento e Controle'},
+                            {v:'EXPEDICAO',l:'Logística — Expedição'},
+                            {v:'COMPRAS',l:'Compras — Devolução, conserto, triangulação'},
+                            {v:'COORDENADOR',l:'Coordenador — Compras + todas as remessas'},
+                            {v:'QUALIDADE',l:'Qualidade'},
+                            {v:'MANUTENCAO',l:'Manutenção'},
+                            {v:'ADMIN',l:'Administrador — acesso total'},
+                          ].map(o=>{
+                            const lista=Array.isArray(novoUser.perfis)?novoUser.perfis:(novoUser.perfil?[novoUser.perfil]:[]);
+                            const marcado=lista.includes(o.v);
+                            return(
+                              <button type="button" key={o.v} onClick={()=>{
+                                  const nova=marcado?lista.filter(x=>x!==o.v):[...lista,o.v];
+                                  // O primeiro marcado vira o principal, usado na exibição.
+                                  setNovoUser({...novoUser,perfis:nova,perfil:nova[0]||''});
+                                }}
+                                className={`text-left text-xs font-bold rounded-lg px-3 py-2 border-2 transition-colors ${marcado?'bg-indigo-50 border-indigo-400 text-indigo-700':'bg-white border-slate-200 text-slate-500 hover:border-slate-300'}`}>
+                                {marcado?'✓ ':''}{o.l}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+
+                      {/* Hierarquia dentro da Manutenção: quem aprova não é
+                          quem executa. Só aparece se o perfil estiver marcado. */}
+                      {(Array.isArray(novoUser.perfis)?novoUser.perfis:[novoUser.perfil]).includes('MANUTENCAO')&&(
+                        <Field label="Função na Manutenção" className="sm:col-span-2">
+                          <Sel value={novoUser.nivel_manutencao||'APROVADOR'} onChange={e=>setNovoUser({...novoUser,nivel_manutencao:e.target.value})}>
+                            <option value="APROVADOR">Aprovador — libera ou recusa as demandas</option>
+                            <option value="EXECUTANTE">Executante — atende as demandas, não aprova</option>
+                          </Sel>
+                          <p className="text-[10px] text-slate-400 mt-1">O executante vê e trabalha nas demandas, mas não pode liberar o próprio serviço.</p>
+                        </Field>
+                      )}
+                      <div className="flex gap-2 pt-2"><Btn type="submit" variant="primary" className="flex-1">Salvar</Btn>{editUser&&<Btn type="button" variant="secondary" onClick={()=>{setNovoUser({nome:'',email:'',senha:'',perfil:'PCP',perfis:['PCP'],nivel_manutencao:null});setEditUser(false);}}>Cancelar</Btn>}</div>
                     </form>
                   </div>
                   <div className="lg:col-span-2 bg-white rounded-2xl border border-slate-200 overflow-hidden">
@@ -11892,6 +11955,7 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
                     ))}
                   </div>
                   {!isManutencao&&<span className="ml-auto text-[11px] text-slate-400 flex items-center gap-1"><Lock className="w-3 h-3"/>Só a equipe de Manutenção pode aprovar/editar</span>}
+                  {isManutencaoExecutante&&<span className="ml-auto text-[11px] text-slate-400 flex items-center gap-1"><Lock className="w-3 h-3"/>Você atende as demandas; a aprovação é do Diogo ou do Daniel</span>}
                 </div>
 
                 {/* Seletor de visão: Kanban (por status) ou Calendário (por dia) */}
@@ -13501,12 +13565,16 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
                     <p className="text-sm font-black text-amber-800">Travada — aguardando aprovação</p>
                     <p className="text-[11px] text-amber-600">Qualquer um dos aprovadores (Diogo, Daniel ou Martins) pode destravar.</p>
                   </div>
-                  {isManutencao&&(
+                  {/* Só quem aprova vê os botões. O executante enxerga a
+                      demanda e trabalha nela, mas não libera o próprio serviço. */}
+                  {podeAprovarManutencao?(
                     <div className="flex gap-2">
                       <button onClick={()=>aprovarManutencao(sol)} className="text-xs font-black text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg px-3 py-2">✓ Aprovar</button>
                       <button onClick={()=>recusarManutencao(sol)} className="text-xs font-black text-red-600 bg-white border border-red-200 hover:bg-red-50 rounded-lg px-3 py-2">✕ Recusar</button>
                     </div>
-                  )}
+                  ):isManutencaoExecutante?(
+                    <span className="text-[11px] text-amber-600 flex items-center gap-1 flex-shrink-0"><Lock className="w-3 h-3"/>Aguarde a liberação de um aprovador</span>
+                  ):null}
                 </div>
               ):(
                 <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-3.5 flex items-center gap-3">
