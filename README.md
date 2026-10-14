@@ -158,3 +158,10 @@ laço com "Enviar um email".
 Quem entra por usuário em vez de e-mail (caso do Welton, login `welton`) tem o
 endereço em `perfis_usuarios.email_notificacao` — sem isso ficaria fora de
 qualquer aviso.
+
+**Quebra de linha no e-mail:** diferente do Teams, o corpo do e-mail é HTML
+puro e ignora `\n` — nem a quebra dupla funciona. Por isso `notificar` envia
+também `texto_html`, com cada linha em seu bloco e o link clicável, escapando
+`<`, `>` e `&` para que uma descrição com "peça <3mm>" não quebre a marcação.
+No fluxo, o corpo do e-mail deve usar `texto_html`; o Teams continua com
+`texto`.
