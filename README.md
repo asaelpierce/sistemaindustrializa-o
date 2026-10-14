@@ -146,3 +146,15 @@ sozinho vira espaço e a mensagem emenda tudo numa linha — aconteceu com uma
 lista de três itens, que chegou grudada. `notificar` dobra as quebras simples
 antes de enviar ao fluxo. No sino do portal vai o texto original, porque lá a
 quebra simples funciona e dobrar só espalharia a mensagem.
+
+**Destinatário fora da organização:** o Teams só entrega para contas do
+diretório da empresa — endereço externo falha com `GraphUserDetailNotFound`, e
+pior, só na execução (o fluxo já respondeu 202). Por isso `notificar` separa os
+destinatários em `destinatarios` (Teams, domínio interno) e
+`destinatarios_email` (o resto), conforme
+`configuracoes.notificacoes.dominio_interno`. O fluxo só precisa de um segundo
+laço com "Enviar um email".
+
+Quem entra por usuário em vez de e-mail (caso do Welton, login `welton`) tem o
+endereço em `perfis_usuarios.email_notificacao` — sem isso ficaria fora de
+qualquer aviso.
