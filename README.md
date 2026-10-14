@@ -140,3 +140,9 @@ gerado a partir do exemplo. Campo que no exemplo era objeto não pode chegar
 em silêncio. Por isso `notificar` sempre envia string vazia no lugar de null e
 objeto vazio no lugar de null. Quando o fluxo recusa, a resposta dele é
 devolvida em `resposta_do_fluxo`, senão depurar vira adivinhação.
+
+**Quebra de linha no Teams:** o corpo é renderizado como HTML, então `\n`
+sozinho vira espaço e a mensagem emenda tudo numa linha — aconteceu com uma
+lista de três itens, que chegou grudada. `notificar` dobra as quebras simples
+antes de enviar ao fluxo. No sino do portal vai o texto original, porque lá a
+quebra simples funciona e dobrar só espalharia a mensagem.
