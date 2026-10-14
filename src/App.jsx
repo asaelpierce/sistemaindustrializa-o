@@ -795,10 +795,17 @@ function FormularioPublicoManutencao({supabase}){
     if(!supabase)return setErro('Sistema ainda carregando, aguarde alguns segundos e tente de novo.');
     setEnviando(true);setErro('');
     try{
-      const{data,error}=await supabase.from('manutencao_solicitacoes').insert([{...form,status:'ABERTA',fotos}]).select('numero,token_acompanhamento').single();
+      const{data,error}=await supabase.from('manutencao_solicitacoes').insert([{...form,status:'ABERTA',fotos}]).select('id,numero,token_acompanhamento').single();
       if(error)throw error;
       setProtocolo(data);
       setEnviado(true);
+      // Avisa os aprovadores. Em segundo plano e sem travar o envio: a
+      // solicitação já está gravada, e falha de notificação não pode fazer o
+      // solicitante achar que perdeu o chamado.
+      fetch(`${SUPABASE_URL}/functions/v1/manutencao-notificar`,{
+        method:'POST',headers:{'Content-Type':'application/json','apikey':SUPABASE_KEY},
+        body:JSON.stringify({solicitacao_id:data.id,evento:'NOVA'})
+      }).catch(()=>{});
     }catch(err){setErro('Não foi possível enviar. Tente novamente em instantes. ('+err.message+')');}
     finally{setEnviando(false);}
   };
@@ -5890,7 +5897,12 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
       }).eq('id',sol.id);
       if(error)throw error;
       await supabase.from('manutencao_historico').insert([{solicitacao_id:sol.id,tipo:'APROVACAO',autor:s(usuarioLogado?.nome),mensagem:`Aprovou a solicitação.`}]);
-      addToast('Solicitação aprovada — cadeado removido.');
+      // Agora o executante precisa saber que pode tocar o serviço.
+      fetch(`${SUPABASE_URL}/functions/v1/manutencao-notificar`,{
+        method:'POST',headers:{'Content-Type':'application/json','apikey':SUPABASE_KEY},
+        body:JSON.stringify({solicitacao_id:sol.id,evento:'APROVADA'})
+      }).catch(()=>{});
+      addToast('Solicitação aprovada — cadeado removido. Executante avisado.');
       fetchManutencao();buscarHistoricoManutencao(sol.id);
     }catch(e){addToast('Erro ao aprovar: '+e.message,'error');}
   };
