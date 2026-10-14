@@ -112,3 +112,24 @@ Três tipos de diferença:
 
 Roda em **simulação por padrão** — mostra tudo e não altera nada. Tolerância de
 1 centavo no valor, para não acusar arredondamento como divergência.
+
+## Notificações — fluxo único do Teams
+
+Toda automação do portal avisa pela edge function **`notificar`**, que fala com
+**um único fluxo** no Power Automate (`configuracoes.notificacoes.flow_url`).
+
+O fluxo não conhece regra de negócio: recebe `destinatarios` e `texto` (já
+formatado) e posta. Quem decide o que escrever e para quem é o portal. Com
+isso, criar automação nova não exige mexer no Power Automate.
+
+```
+automação → notificar → sino do portal (sempre)
+                      → fluxo único → Teams (se houver flow_url)
+```
+
+Campos: `destinatarios[]`, `titulo`, `mensagem`, `texto`, `link`, `modulo`,
+`prioridade`, `dados`.
+
+Quem usa hoje: manutenção (demanda nova e aprovação), hora extra/lanche do RH e
+o lembrete diário. Os destinatários da manutenção saem do cadastro de usuários,
+pelo perfil e pelo `nivel_manutencao`.
