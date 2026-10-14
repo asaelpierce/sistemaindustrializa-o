@@ -133,3 +133,10 @@ Campos: `destinatarios[]`, `titulo`, `mensagem`, `texto`, `link`, `modulo`,
 Quem usa hoje: manutenção (demanda nova e aprovação), hora extra/lanche do RH e
 o lembrete diário. Os destinatários da manutenção saem do cadastro de usuários,
 pelo perfil e pelo `nivel_manutencao`.
+
+**Cuidado com o payload:** o gatilho do Power Automate valida contra o esquema
+gerado a partir do exemplo. Campo que no exemplo era objeto não pode chegar
+`null`, e o mesmo vale para texto — o fluxo devolve **400** e o aviso se perde
+em silêncio. Por isso `notificar` sempre envia string vazia no lugar de null e
+objeto vazio no lugar de null. Quando o fluxo recusa, a resposta dele é
+devolvida em `resposta_do_fluxo`, senão depurar vira adivinhação.
