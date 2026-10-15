@@ -12442,82 +12442,174 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
                   ))}
                 </div>
 
-                {/* ── CALENDÁRIO — demandas por dia ─────────────────────────
-                    Pedido do usuário: enxergar quantas demandas tem por dia.
-                    Cada dia mostra as atividades cujo PRAZO cai naquele dia
-                    (ou que começaram nele, quando não há prazo definido). */}
+                {/* ── CALENDÁRIO ────────────────────────────────────────────
+                    Reescrito: antes a demanda aparecia só no dia do prazo,
+                    então um serviço do dia 16 ao 30 piscava num quadradinho
+                    só. Agora vira uma BARRA CONTÍNUA ocupando todos os dias,
+                    como em agenda de verdade — e com texto legível, que a
+                    9px ninguém lia. */}
                 {manutencaoVisaoTela==='CALENDARIO'&&(()=>{
                   const {ano,mes}=manutencaoMesRef;
                   const primeiroDia=new Date(ano,mes,1);
-                  const ultimoDia=new Date(ano,mes+1,0);
-                  const diasNoMes=ultimoDia.getDate();
-                  const comecaEm=primeiroDia.getDay(); // 0=domingo
+                  const diasNoMes=new Date(ano,mes+1,0).getDate();
+                  const comecaEm=primeiroDia.getDay();
                   const nomeMes=primeiroDia.toLocaleDateString('pt-BR',{month:'long',year:'numeric'});
-                  const isoDoDia=d=>`${ano}-${String(mes+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
-                  // Uma demanda "cai" no dia do prazo previsto; sem prazo, cai no
-                  // dia de início — assim nada some do calendário.
-                  const diaDaDemanda=m=>m.data_fim_prevista||m.data_inicio||null;
-                  const porDia={};
-                  manutFiltrada.forEach(m=>{
-                    const d=diaDaDemanda(m);
-                    if(!d)return;
-                    if(!porDia[d])porDia[d]=[];
-                    porDia[d].push(m);
-                  });
-                  const celulas=[];
-                  for(let i=0;i<comecaEm;i++)celulas.push(null);
-                  for(let d=1;d<=diasNoMes;d++)celulas.push(d);
-                  const semDataCount=manutFiltrada.filter(m=>!diaDaDemanda(m)).length;
+                  const iso=d=>`${ano}-${String(mes+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
+
+                  // Período real da demanda: do início até o prazo. Vale a
+                  // reprogramação quando existe — é a data que vai acontecer.
+                  const periodo=m=>{
+                    const fim=s(m.prazo_reprogramado||m.prazo_oficial||m.data_fim_prevista).slice(0,10);
+                    const ini=s(m.data_inicio).slice(0,10)||fim;
+                    if(!ini&&!fim)return null;
+                    return{ini:ini||fim,fim:fim||ini};
+                  };
+                  const horaDe=m=>{
+                    const a2=s(m.hora_reprog_inicio||m.hora_oficial_inicio).slice(0,5);
+                    const b2=s(m.hora_reprog_fim||m.hora_oficial_fim).slice(0,5);
+                    return a2&&b2?`${a2}–${b2}`:(m.dia_todo===false?'':'dia todo');
+                  };
+
+                  const comPeriodo=manutFiltrada.map(m=>({m,p:periodo(m)})).filter(x=>x.p);
+                  const semDataCount=manutFiltrada.length-comPeriodo.length;
+
+                  // Monta as semanas (linhas do calendário)
+                  const semanas=[];
+                  let semana=[];
+                  for(let i=0;i<comecaEm;i++)semana.push(null);
+                  for(let d=1;d<=diasNoMes;d++){
+                    semana.push(d);
+                    if(semana.length===7){semanas.push(semana);semana=[];}
+                  }
+                  if(semana.length){while(semana.length<7)semana.push(null);semanas.push(semana);}
+
+                  const corDe=m=>
+                    estaAtrasada(m)?'bg-red-500 text-white':
+                    m.status==='CONCLUIDA'?'bg-emerald-500 text-white':
+                    m.urgencia==='URGENTE'?'bg-amber-500 text-white':
+                    m.status==='EM_ANDAMENTO'?'bg-indigo-500 text-white':
+                    m.status==='EM_APROVACAO'?'bg-slate-400 text-white':
+                    'bg-sky-500 text-white';
+
                   return(
-                    <div className="bg-white rounded-2xl border border-slate-200 p-4">
-                      <div className="flex items-center justify-between mb-4">
+                    <div className="bg-white rounded-2xl border border-slate-200 p-5">
+                      <div className="flex items-center justify-between mb-5">
                         <button onClick={()=>setManutencaoMesRef(p=>{const d=new Date(p.ano,p.mes-1,1);return{ano:d.getFullYear(),mes:d.getMonth()};})}
-                          className="w-8 h-8 rounded-lg border border-slate-200 hover:bg-slate-50 flex items-center justify-center"><ArrowRight className="w-4 h-4 rotate-180 text-slate-500"/></button>
-                        <p className="text-sm font-black text-slate-700 capitalize">{nomeMes}</p>
+                          className="w-10 h-10 rounded-xl border border-slate-200 hover:bg-slate-50 flex items-center justify-center"><ArrowRight className="w-5 h-5 rotate-180 text-slate-600"/></button>
+                        <p className="text-lg font-black text-slate-800 capitalize">{nomeMes}</p>
                         <button onClick={()=>setManutencaoMesRef(p=>{const d=new Date(p.ano,p.mes+1,1);return{ano:d.getFullYear(),mes:d.getMonth()};})}
-                          className="w-8 h-8 rounded-lg border border-slate-200 hover:bg-slate-50 flex items-center justify-center"><ArrowRight className="w-4 h-4 text-slate-500"/></button>
+                          className="w-10 h-10 rounded-xl border border-slate-200 hover:bg-slate-50 flex items-center justify-center"><ArrowRight className="w-5 h-5 text-slate-600"/></button>
                       </div>
-                      <div className="grid grid-cols-7 gap-1 mb-1">
-                        {['Dom','Seg','Ter','Qua','Qui','Sex','Sáb'].map(d=>(
-                          <div key={d} className="text-[10px] font-black text-slate-400 uppercase text-center py-1">{d}</div>
+
+                      <div className="grid grid-cols-7 gap-1.5 mb-1.5">
+                        {['Domingo','Segunda','Terça','Quarta','Quinta','Sexta','Sábado'].map(d=>(
+                          <div key={d} className="text-xs font-black text-slate-500 uppercase text-center py-1.5">
+                            <span className="hidden sm:inline">{d}</span><span className="sm:hidden">{d.slice(0,3)}</span>
+                          </div>
                         ))}
                       </div>
-                      <div className="grid grid-cols-7 gap-1">
-                        {celulas.map((d,i)=>{
-                          if(d===null)return <div key={`v${i}`} className="min-h-[90px]"/>;
-                          const iso=isoDoDia(d);
-                          const doDia=porDia[iso]||[];
-                          const ehHoje=iso===hojeStr;
-                          const temAtrasada=doDia.some(estaAtrasada);
-                          const temUrgente=doDia.some(m=>m.urgencia==='URGENTE'&&!['CONCLUIDA','CANCELADA'].includes(m.status));
+
+                      <div className="space-y-1.5">
+                        {semanas.map((sem,si)=>{
+                          // Barras desta semana: cada demanda vira um trecho
+                          // contínuo, cortado onde a semana começa e termina.
+                          const diasValidos=sem.filter(Boolean);
+                          const isoIni=diasValidos.length?iso(diasValidos[0]):null;
+                          const isoFim=diasValidos.length?iso(diasValidos[diasValidos.length-1]):null;
+                          const barras=[];
+                          if(isoIni&&isoFim){
+                            comPeriodo.forEach(({m,p})=>{
+                              if(p.fim<isoIni||p.ini>isoFim)return;
+                              const col=(d)=>sem.findIndex(x=>x&&iso(x)===d);
+                              let de=p.ini<isoIni?sem.findIndex(x=>x!==null):col(p.ini);
+                              let ate=p.fim>isoFim?sem.length-1:col(p.fim);
+                              if(de<0||ate<0)return;
+                              barras.push({m,de,ate,
+                                cortadoAntes:p.ini<isoIni,cortadoDepois:p.fim>isoFim});
+                            });
+                          }
+                          // Empilha sem sobrepor: cada barra procura a primeira
+                          // faixa livre no intervalo que ocupa.
+                          const faixas=[];
+                          barras.sort((a,b)=>a.de-b.de||(b.ate-b.de)-(a.ate-a.de));
+                          barras.forEach(b=>{
+                            let f=0;
+                            while(faixas[f]&&faixas[f].some(o=>!(b.ate<o.de||b.de>o.ate)))f++;
+                            if(!faixas[f])faixas[f]=[];
+                            faixas[f].push(b);
+                            b.faixa=f;
+                          });
+                          const alturaBarras=Math.min(faixas.length,4)*26;
+
                           return(
-                            <button key={iso} onClick={()=>setManutencaoDiaSel(manutencaoDiaSel===iso?null:iso)}
-                              className={`min-h-[90px] rounded-xl border-2 p-1.5 text-left transition-all hover:border-indigo-300 ${
-                                manutencaoDiaSel===iso?'border-indigo-500 bg-indigo-50':
-                                ehHoje?'border-indigo-300 bg-indigo-50/40':
-                                temAtrasada?'border-red-200 bg-red-50/50':'border-slate-100 bg-white'}`}>
-                              <div className="flex items-center justify-between">
-                                <span className={`text-xs font-black ${ehHoje?'text-indigo-700':'text-slate-500'}`}>{d}</span>
-                                {doDia.length>0&&(
-                                  <span className={`text-[9px] font-black px-1.5 py-0.5 rounded-full ${temAtrasada?'bg-red-500 text-white':temUrgente?'bg-amber-500 text-white':'bg-slate-700 text-white'}`}>{doDia.length}</span>
+                            <div key={si} className="relative">
+                              <div className="grid grid-cols-7 gap-1.5">
+                                {sem.map((d,di)=>{
+                                  if(d===null)return <div key={`v${di}`} className="min-h-[110px] rounded-xl bg-slate-50/50"/>;
+                                  const dIso=iso(d);
+                                  const ehHoje=dIso===hojeStr;
+                                  const qtd=comPeriodo.filter(({p})=>dIso>=p.ini&&dIso<=p.fim).length;
+                                  return(
+                                    <button key={dIso} onClick={()=>setManutencaoDiaSel(manutencaoDiaSel===dIso?null:dIso)}
+                                      style={{minHeight:`${110+alturaBarras}px`}}
+                                      className={`rounded-xl border-2 p-2 text-left transition-all hover:border-indigo-300 ${
+                                        manutencaoDiaSel===dIso?'border-indigo-500 bg-indigo-50':
+                                        ehHoje?'border-indigo-400 bg-indigo-50/50':'border-slate-100 bg-white'}`}>
+                                      <div className="flex items-center justify-between">
+                                        <span className={`text-base font-black ${ehHoje?'text-indigo-700':'text-slate-600'}`}>{d}</span>
+                                        {qtd>0&&<span className="text-[11px] font-black text-slate-400">{qtd}</span>}
+                                      </div>
+                                    </button>
+                                  );
+                                })}
+                              </div>
+
+                              {/* Barras contínuas sobre a semana */}
+                              <div className="absolute left-0 right-0 pointer-events-none" style={{top:'34px'}}>
+                                {barras.slice(0,40).map((b,bi)=>{
+                                  if(b.faixa>=4)return null;
+                                  const largura=b.ate-b.de+1;
+                                  const hora=horaDe(b.m);
+                                  return(
+                                    <div key={`${b.m.id}-${bi}`} className="grid grid-cols-7 gap-1.5 absolute left-0 right-0"
+                                      style={{top:`${b.faixa*26}px`}}>
+                                      <div style={{gridColumn:`${b.de+1} / span ${largura}`}} className="px-1">
+                                        <div onClick={e=>{e.stopPropagation();setManutencaoSel(b.m);buscarHistoricoManutencao(b.m.id);buscarItensCompra(b.m.id);setFotosManutencaoUpload([]);}}
+                                          title={`${s(b.m.titulo)}${hora?` · ${hora}`:''}${b.m.responsavel?` · ${s(b.m.responsavel)}`:''}`}
+                                          className={`pointer-events-auto cursor-pointer text-xs font-bold px-2 py-1 rounded-md truncate shadow-sm hover:brightness-110 ${corDe(b.m)} ${b.cortadoAntes?'rounded-l-none':''} ${b.cortadoDepois?'rounded-r-none':''}`}>
+                                          {b.cortadoAntes?'◀ ':''}{hora&&hora!=='dia todo'?`${hora} `:''}{s(b.m.titulo)}{b.cortadoDepois?' ▶':''}
+                                        </div>
+                                      </div>
+                                    </div>
+                                  );
+                                })}
+                                {faixas.length>4&&(
+                                  <div className="grid grid-cols-7 gap-1.5 absolute left-0 right-0" style={{top:`${4*26}px`}}>
+                                    <div style={{gridColumn:'1 / span 7'}} className="px-1">
+                                      <p className="text-[11px] font-bold text-slate-400 px-2">+{faixas.length-4} demanda(s) a mais nesta semana</p>
+                                    </div>
+                                  </div>
                                 )}
                               </div>
-                              <div className="mt-1 space-y-0.5">
-                                {doDia.slice(0,2).map(m=>(
-                                  <p key={m.id} className={`text-[9px] leading-tight truncate px-1 py-0.5 rounded ${
-                                    estaAtrasada(m)?'bg-red-100 text-red-700':
-                                    m.status==='CONCLUIDA'?'bg-emerald-100 text-emerald-700 line-through':
-                                    'bg-slate-100 text-slate-600'}`}>{s(m.titulo)}</p>
-                                ))}
-                                {doDia.length>2&&<p className="text-[9px] text-slate-400 px-1">+{doDia.length-2} mais</p>}
-                              </div>
-                            </button>
+                            </div>
                           );
                         })}
                       </div>
+
+                      {/* Legenda */}
+                      <div className="flex flex-wrap items-center gap-x-4 gap-y-2 mt-5 pt-4 border-t border-slate-100">
+                        {[{c:'bg-sky-500',l:'Aprovada'},{c:'bg-indigo-500',l:'Em andamento'},
+                          {c:'bg-amber-500',l:'Urgente'},{c:'bg-red-500',l:'Atrasada'},
+                          {c:'bg-emerald-500',l:'Concluída'},{c:'bg-slate-400',l:'Aguardando aprovação'}].map(x=>(
+                          <span key={x.l} className="flex items-center gap-1.5 text-xs text-slate-600">
+                            <span className={`w-3 h-3 rounded ${x.c} inline-block`}/>{x.l}
+                          </span>
+                        ))}
+                      </div>
+
                       {semDataCount>0&&(
-                        <p className="text-[11px] text-slate-400 mt-3 flex items-center gap-1.5">
-                          <Info className="w-3 h-3"/>{semDataCount} demanda(s) sem data definida não aparecem no calendário — veja no Quadro.
+                        <p className="text-xs text-slate-500 mt-3 flex items-center gap-1.5">
+                          <Info className="w-3.5 h-3.5"/>{semDataCount} demanda(s) sem data definida não aparecem aqui — veja no Quadro.
                         </p>
                       )}
 
@@ -12525,20 +12617,27 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
                       {manutencaoDiaSel&&(
                         <div className="mt-4 border-t border-slate-100 pt-4">
                           <p className="text-xs font-black text-slate-600 mb-2">
-                            {fmtDt(manutencaoDiaSel)} — {(porDia[manutencaoDiaSel]||[]).length} demanda(s)
+                            {fmtDt(manutencaoDiaSel)} — {comPeriodo.filter(({p})=>manutencaoDiaSel>=p.ini&&manutencaoDiaSel<=p.fim).length} demanda(s)
                           </p>
                           <div className="space-y-2">
-                            {(porDia[manutencaoDiaSel]||[]).map(m=>(
+                            {comPeriodo.filter(({p})=>manutencaoDiaSel>=p.ini&&manutencaoDiaSel<=p.fim).map(({m})=>(
                               <button key={m.id} onClick={()=>{setManutencaoSel(m);buscarHistoricoManutencao(m.id);buscarItensCompra(m.id);setFotosManutencaoUpload([]);}}
                                 className="w-full text-left bg-slate-50 hover:bg-slate-100 rounded-xl p-3 transition-colors">
                                 <div className="flex items-center justify-between gap-2">
-                                  <p className="text-sm font-bold text-slate-800">{s(m.titulo)}</p>
-                                  {estaAtrasada(m)&&<span className="text-[9px] font-black text-red-600 bg-red-100 px-1.5 py-0.5 rounded">ATRASADA</span>}
+                                  <p className="text-base font-bold text-slate-800">{s(m.titulo)}</p>
+                                  {estaAtrasada(m)&&<span className="text-[11px] font-black text-red-600 bg-red-100 px-2 py-0.5 rounded">ATRASADA</span>}
                                 </div>
-                                <p className="text-[11px] text-slate-500 mt-0.5">{s(m.local)||'—'} · {s(m.responsavel)||s(m.solicitante_nome)} · {s(m.status).replace('_',' ')}</p>
+                                <p className="text-xs text-slate-500 mt-1">
+                                  {(() => {
+                                    const h1=s(m.hora_reprog_inicio||m.hora_oficial_inicio).slice(0,5);
+                                    const h2=s(m.hora_reprog_fim||m.hora_oficial_fim).slice(0,5);
+                                    return h1&&h2?`${h1}–${h2} · `:'';
+                                  })()}
+                                  {s(m.local)||'—'} · {s(m.responsavel)||s(m.solicitante_nome)} · {s(m.status).replace('_',' ')}
+                                </p>
                               </button>
                             ))}
-                            {(porDia[manutencaoDiaSel]||[]).length===0&&<p className="text-xs text-slate-300 text-center py-3">Nenhuma demanda neste dia.</p>}
+                            {comPeriodo.filter(({p})=>manutencaoDiaSel>=p.ini&&manutencaoDiaSel<=p.fim).length===0&&<p className="text-sm text-slate-300 text-center py-4">Nenhuma demanda neste dia.</p>}
                           </div>
                         </div>
                       )}
