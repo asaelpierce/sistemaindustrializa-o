@@ -4169,7 +4169,10 @@ export default function App(){
         :['modelo_sgq','openai_api_key','planner_flow_url','qual_email_url','qual_teams_url'];
 
       const[uR,cR]=await Promise.all([
-        supabase.from('perfis_usuarios').select('id,nome,email,perfil'),
+        // Precisa trazer perfis, nivel_manutencao, senha e email_notificacao:
+        // o botão de editar joga ESTE registro no formulário, então o que não
+        // vier aqui chega vazio e é salvo por cima, apagando o que existia.
+        supabase.from('perfis_usuarios').select('id,nome,email,senha,perfil,perfis,nivel_manutencao,email_notificacao,setor_codigo,setor_nome'),
         supabase.from('configuracoes').select('*').in('chave',chaves),
       ]);
       if(uR.data)setUsuariosDb(uR.data);
@@ -4234,8 +4237,15 @@ export default function App(){
     // Se a pessoa marcou perfis mas o principal ficou vazio (ou vice-versa),
     // normaliza aqui — a lista é o que define o acesso.
     const lista=Array.isArray(novoUser.perfis)&&novoUser.perfis.length?novoUser.perfis:(novoUser.perfil?[novoUser.perfil]:[]);
+    if(lista.length===0){setIsLoading(false);return addToast('Marque ao menos um perfil.','error');}
     const paraSalvar={...novoUser,perfis:lista,perfil:novoUser.perfil||lista[0]||'PCP',
       nivel_manutencao:lista.includes('MANUTENCAO')?(novoUser.nivel_manutencao||'APROVADOR'):null};
+    // Não manda campo vazio: no upsert ele sobrescreveria o valor atual. Já
+    // aconteceu de a senha ser apagada porque não vinha na listagem.
+    ['senha','email_notificacao','setor_codigo','setor_nome'].forEach(k=>{
+      const v=paraSalvar[k];
+      if(v===''||v===undefined||v===null)delete paraSalvar[k];
+    });
     try{const{error}=await supabase.from('perfis_usuarios').upsert([paraSalvar],{onConflict:'email'});if(error)throw error;addToast('Usuário salvo!');setNovoUser({nome:'',email:'',senha:'',perfil:'PCP',perfis:['PCP'],nivel_manutencao:null});setEditUser(false);fetchAll();}
     catch(e){addToast('Erro: '+e.message,'error');}finally{setIsLoading(false);}
   };
