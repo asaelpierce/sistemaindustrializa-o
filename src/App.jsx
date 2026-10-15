@@ -776,7 +776,7 @@ function FormularioPublicoManutencao({supabase}){
         const hoje=new Date();
         const ate=new Date(hoje.getTime()+21*864e5).toISOString().slice(0,10);
         const{data}=await supabase.from('manutencao_solicitacoes')
-          .select('titulo,data_inicio,data_fim_prevista,dia_todo,hora_inicio,hora_fim,urgencia,status,responsavel')
+          .select('titulo,data_inicio,data_fim_prevista,prazo_oficial,prazo_reprogramado,dia_todo,hora_inicio,hora_fim,urgencia,status,responsavel')
           .not('status','in','(CONCLUIDA,CANCELADA)')
           .not('data_inicio','is',null)
           .lte('data_inicio',ate);
@@ -795,8 +795,10 @@ function FormularioPublicoManutencao({supabase}){
       const iso=d.toISOString().slice(0,10);
       const doDia=agenda.filter(a=>{
         const ini=String(a.data_inicio||'').slice(0,10);
-        const fim=String(a.data_fim_prevista||a.data_inicio||'').slice(0,10);
-        return ini&&iso>=ini&&iso<=fim;
+        // Vale a reprogramação quando existe: é a data real de execução.
+        const fim=String(a.prazo_reprogramado||a.prazo_oficial||a.data_fim_prevista||a.data_inicio||'').slice(0,10);
+        if(!ini)return false;
+        return fim>=ini ? (iso>=ini&&iso<=fim) : iso===ini;
       });
       // Peso: dia todo = 1; horário específico = fração do expediente (8h).
       const carga=doDia.reduce((acc,a)=>{
@@ -6034,15 +6036,84 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
     }catch(e){addToast('Erro ao registrar: '+e.message,'error');}
   };
 
-  const aprovarManutencao=async sol=>{
-    if(!podeAprovarManutencao)return addToast('Só os aprovadores de Manutenção podem aprovar. Você está como executante.','error');
-    if(!window.confirm(`Aprovar a solicitação "${s(sol.titulo)}"? Isso vai destravar o processo.`))return;
+  // Aprovar exige definir o PRAZO OFICIAL. É o compromisso com quem pediu, e
+  // depois de gravado ninguém altera (o banco bloqueia). Quem não conseguir
+  // cumprir registra uma reprogramação, que convive com o oficial.
+  // Reprogramação: o executante informa um prazo novo SEM apagar o oficial.
+  // Os dois ficam registrados, então dá pra medir depois a diferença entre o
+  // que foi prometido e o que realmente foi feito.
+  const reprogramarManutencao=async sol=>{
+    if(!sol.prazo_oficial)return addToast('Esta demanda ainda não tem prazo oficial.','error');
+    const hoje=new Date().toISOString().slice(0,10);
+    const atual=s(sol.prazo_reprogramado||sol.prazo_oficial).slice(0,10);
+    const nova=window.prompt(
+      `Reprogramar "${s(sol.titulo)}"\n\n`+
+      `Prazo oficial: ${s(sol.prazo_oficial).slice(0,10).split('-').reverse().join('/')} (não muda)\n`+
+      `Nova previsão — formato AAAA-MM-DD:`,
+      atual);
+    if(nova===null)return;
+    const p=s(nova).trim();
+    if(!/^\d{4}-\d{2}-\d{2}$/.test(p))return addToast('Data inválida. Use AAAA-MM-DD.','error');
+    if(p<hoje)return addToast('A nova previsão não pode ser no passado.','error');
+
+    const motivo=window.prompt('Por que não vai dar para cumprir o prazo oficial?');
+    if(motivo===null)return;
+    if(!s(motivo).trim())return addToast('Explique o motivo da reprogramação.','error');
+
+    const noDia=manutencaoDb.filter(m=>m.id!==sol.id&&!['CONCLUIDA','CANCELADA'].includes(s(m.status))
+      &&(s(m.prazo_reprogramado||m.prazo_oficial||m.data_fim_prevista).slice(0,10)===p));
+    if(noDia.length>=2&&!window.confirm(
+      `Já existem ${noDia.length} demandas para ${p.split('-').reverse().join('/')}. Confirmar mesmo assim?`))return;
+
     try{
       const{error}=await supabase.from('manutencao_solicitacoes').update({
-        aprovado_por:s(usuarioLogado?.nome),aprovado_em:new Date().toISOString(),status:'APROVADA',atualizado_em:new Date().toISOString(),
+        prazo_reprogramado:p,motivo_reprogramacao:s(motivo).trim(),
+        reprogramado_por:s(usuarioLogado?.nome),reprogramado_em:new Date().toISOString(),
+        atualizado_em:new Date().toISOString(),
       }).eq('id',sol.id);
       if(error)throw error;
-      await supabase.from('manutencao_historico').insert([{solicitacao_id:sol.id,tipo:'APROVACAO',autor:s(usuarioLogado?.nome),mensagem:`Aprovou a solicitação.`}]);
+      const oficialBR=s(sol.prazo_oficial).slice(0,10).split('-').reverse().join('/');
+      await supabase.from('manutencao_historico').insert([{solicitacao_id:sol.id,tipo:'REPROGRAMACAO',
+        autor:s(usuarioLogado?.nome),
+        mensagem:`Reprogramou de ${oficialBR} para ${p.split('-').reverse().join('/')}. Motivo: ${s(motivo).trim()}`}]);
+      addToast('Reprogramação registrada. O prazo oficial continua valendo como compromisso.');
+      fetchManutencao();buscarHistoricoManutencao(sol.id);
+    }catch(e){addToast('Erro ao reprogramar: '+e.message,'error');}
+  };
+
+  const aprovarManutencao=async sol=>{
+    if(!podeAprovarManutencao)return addToast('Só os aprovadores de Manutenção podem aprovar. Você está como executante.','error');
+
+    const hoje=new Date().toISOString().slice(0,10);
+    const prazo=window.prompt(
+      `Aprovar "${s(sol.titulo)}"\n\n`+
+      `Até quando a manutenção se compromete a entregar?\n`+
+      `Formato: AAAA-MM-DD (ex: ${hoje})\n\n`+
+      `Atenção: esta data NÃO poderá ser alterada depois.`,
+      hoje);
+    if(prazo===null)return;                       // cancelou
+    const p=s(prazo).trim();
+    if(!/^\d{4}-\d{2}-\d{2}$/.test(p))return addToast('Data inválida. Use AAAA-MM-DD.','error');
+    if(p<hoje)return addToast('O prazo não pode ser no passado.','error');
+
+    // Avisa se o dia já está carregado — não bloqueia, porque urgência existe.
+    const noDia=manutencaoDb.filter(m=>m.id!==sol.id&&!['CONCLUIDA','CANCELADA'].includes(s(m.status))
+      &&(s(m.prazo_reprogramado||m.prazo_oficial||m.data_fim_prevista).slice(0,10)===p));
+    if(noDia.length>=2&&!window.confirm(
+      `Já existem ${noDia.length} demandas para ${p.split('-').reverse().join('/')}:\n\n`+
+      noDia.slice(0,4).map(m=>`• ${s(m.titulo)}`).join('\n')+
+      `\n\nConfirmar mesmo assim?`))return;
+
+    try{
+      const{error}=await supabase.from('manutencao_solicitacoes').update({
+        aprovado_por:s(usuarioLogado?.nome),aprovado_em:new Date().toISOString(),status:'APROVADA',
+        prazo_oficial:p,prazo_oficial_por:s(usuarioLogado?.nome),prazo_oficial_em:new Date().toISOString(),
+        // Mantém data_fim_prevista alinhada, que é o que o calendário já lê.
+        data_fim_prevista:p,
+        atualizado_em:new Date().toISOString(),
+      }).eq('id',sol.id);
+      if(error)throw error;
+      await supabase.from('manutencao_historico').insert([{solicitacao_id:sol.id,tipo:'APROVACAO',autor:s(usuarioLogado?.nome),mensagem:`Aprovou a solicitação com prazo oficial de ${p.split('-').reverse().join('/')}.`}]);
       // Agora o executante precisa saber que pode tocar o serviço.
       fetch(`${SUPABASE_URL}/functions/v1/manutencao-notificar`,{
         method:'POST',headers:{'Content-Type':'application/json','apikey':SUPABASE_KEY},
@@ -13779,6 +13850,52 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
                 <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-3.5 flex items-center gap-3">
                   <CheckCircle className="w-5 h-5 text-emerald-600 flex-shrink-0"/>
                   <p className="text-sm text-emerald-700"><span className="font-black">Destravada</span>{sol.aprovado_por?` — aprovada por ${s(sol.aprovado_por)} em ${fmtDt(sol.aprovado_em)}`:''}</p>
+                </div>
+              )}
+
+              {/* Os dois prazos lado a lado. O oficial é o compromisso com
+                  quem pediu e não muda; a reprogramação é a realidade da
+                  execução. Mostrar só um dos dois esconderia metade da
+                  história. */}
+              {sol.prazo_oficial&&(
+                <div className="bg-white border-2 border-slate-200 rounded-xl p-4">
+                  <div className="flex items-start justify-between gap-3 flex-wrap">
+                    <div className="flex gap-6">
+                      <div>
+                        <p className="text-[10px] font-black text-slate-400 uppercase tracking-wider">Prazo oficial</p>
+                        <p className="text-lg font-black text-slate-800">{s(sol.prazo_oficial).slice(0,10).split('-').reverse().join('/')}</p>
+                        <p className="text-[10px] text-slate-400">
+                          {s(sol.prazo_oficial_por)||'—'}{sol.prazo_oficial_em?` · ${fmtDt(sol.prazo_oficial_em)}`:''}
+                        </p>
+                        <p className="text-[10px] text-slate-400 flex items-center gap-1 mt-0.5"><Lock className="w-2.5 h-2.5"/>não pode ser alterado</p>
+                      </div>
+                      {sol.prazo_reprogramado&&(
+                        <div className="border-l border-slate-200 pl-6">
+                          <p className="text-[10px] font-black text-amber-500 uppercase tracking-wider">Reprogramado para</p>
+                          <p className="text-lg font-black text-amber-600">{s(sol.prazo_reprogramado).slice(0,10).split('-').reverse().join('/')}</p>
+                          <p className="text-[10px] text-slate-400">
+                            {s(sol.reprogramado_por)||'—'}{sol.reprogramado_em?` · ${fmtDt(sol.reprogramado_em)}`:''}
+                          </p>
+                          {(()=>{
+                            const d1=new Date(s(sol.prazo_oficial).slice(0,10));
+                            const d2=new Date(s(sol.prazo_reprogramado).slice(0,10));
+                            const dias=Math.round((d2-d1)/864e5);
+                            return dias>0?<p className="text-[10px] font-bold text-amber-600 mt-0.5">{dias} dia(s) além do combinado</p>:null;
+                          })()}
+                        </div>
+                      )}
+                    </div>
+                    {isManutencao&&!['CONCLUIDA','CANCELADA'].includes(s(sol.status))&&(
+                      <Btn variant="secondary" size="sm" onClick={()=>reprogramarManutencao(sol)}>
+                        {sol.prazo_reprogramado?'Alterar previsão':'Reprogramar'}
+                      </Btn>
+                    )}
+                  </div>
+                  {sol.motivo_reprogramacao&&(
+                    <p className="text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 mt-3">
+                      <strong>Motivo da reprogramação:</strong> {s(sol.motivo_reprogramacao)}
+                    </p>
+                  )}
                 </div>
               )}
 
