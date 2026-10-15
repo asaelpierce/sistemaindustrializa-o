@@ -762,7 +762,7 @@ function FormularioPublicoManutencao({supabase}){
   const [erro,setErro]=useState('');
   const [fotos,setFotos]=useState([]);
   const [protocolo,setProtocolo]=useState(null); // {numero, token_acompanhamento} devolvidos ao enviar
-  const [form,setForm]=useState({tipo:'MAQUINA',categoria:'REPARO',titulo:'',descricao:'',local:'',urgencia:'NORMAL',solicitante_nome:'',solicitante_setor:'',solicitante_contato:''});
+  const [form,setForm]=useState({tipo:'MAQUINA',categoria:'REPARO',titulo:'',descricao:'',local:'',urgencia:'NORMAL',solicitante_nome:'',solicitante_setor:'',solicitante_contato:'',data_desejada:'',hora_desejada_inicio:'',hora_desejada_fim:''});
   // Agenda da manutenção, para quem vai pedir enxergar os dias cheios ANTES
   // de abrir o chamado. Sem isso a pessoa pede sem noção da carga e depois
   // estranha a demora.
@@ -784,6 +784,21 @@ function FormularioPublicoManutencao({supabase}){
       }catch(_){}
     })();
   },[supabase]);
+
+  // Mesma regra de conflito do lado interno: sobreposição de horário.
+  const EXP_PUB={inicio:'07:00',fim:'17:00'};
+  const minPub=h=>{const[x,y]=String(h||'').slice(0,5).split(':');return Number(x)*60+Number(y||0);};
+  const ocupadoNoHorario=useMemo(()=>{
+    const d=form.data_desejada, i=form.hora_desejada_inicio, f2=form.hora_desejada_fim;
+    if(!d||!i||!f2||minPub(f2)<=minPub(i))return [];
+    return agenda.filter(a=>{
+      const dia=String(a.prazo_reprogramado||a.prazo_oficial||a.data_inicio||'').slice(0,10);
+      if(dia!==d)return false;
+      const ai=String(a.hora_reprog_inicio||a.hora_oficial_inicio||'').slice(0,5)||EXP_PUB.inicio;
+      const af=String(a.hora_reprog_fim||a.hora_oficial_fim||'').slice(0,5)||EXP_PUB.fim;
+      return minPub(ai)<minPub(f2)&&minPub(af)>minPub(i);
+    });
+  },[agenda,form.data_desejada,form.hora_desejada_inicio,form.hora_desejada_fim]);
 
   // Ocupação dos próximos 14 dias. Conta por dia o que está agendado, levando
   // em conta que atividade de dia todo pesa mais que uma de duas horas.
@@ -842,10 +857,16 @@ function FormularioPublicoManutencao({supabase}){
     e.preventDefault();
     if(!form.titulo.trim())return setErro('Descreva rapidamente o que você precisa.');
     if(!form.solicitante_nome.trim())return setErro('Informe seu nome.');
+    if(ocupadoNoHorario.length>0)
+      return setErro(`O horário pedido já está ocupado por "${ocupadoNoHorario[0].titulo}". Escolha outro horário ou deixe em branco para a manutenção agendar.`);
     if(!supabase)return setErro('Sistema ainda carregando, aguarde alguns segundos e tente de novo.');
     setEnviando(true);setErro('');
     try{
-      const{data,error}=await supabase.from('manutencao_solicitacoes').insert([{...form,status:'ABERTA',fotos}]).select('id,numero,token_acompanhamento').single();
+      const{data,error}=await supabase.from('manutencao_solicitacoes').insert([{...form,
+        data_desejada:form.data_desejada||null,
+        hora_desejada_inicio:form.hora_desejada_inicio||null,
+        hora_desejada_fim:form.hora_desejada_fim||null,
+        status:'ABERTA',fotos}]).select('id,numero,token_acompanhamento').single();
       if(error)throw error;
       setProtocolo(data);
       setEnviado(true);
@@ -1004,6 +1025,44 @@ function FormularioPublicoManutencao({supabase}){
                 className="w-full mt-1.5 border-2 border-slate-200 rounded-xl px-4 py-3 text-sm focus:border-indigo-500 outline-none"/>
             </div>
           </div>
+        </div>
+
+        {/* Quando a pessoa precisa. Opcional de propósito: na maioria dos
+            casos ela não tem preferência e é a manutenção que agenda. Quando
+            tem, o horário é conferido na hora contra o que já está marcado. */}
+        <div className="bg-white rounded-2xl border border-slate-200 p-5">
+          <p className="text-sm font-black text-slate-800 mb-1">Precisa em algum dia específico?</p>
+          <p className="text-[11px] text-slate-500 mb-3">Deixe em branco se puder ser quando a manutenção tiver disponibilidade.</p>
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <Field label="Dia">
+              <Inp type="date" min={new Date().toISOString().slice(0,10)}
+                value={form.data_desejada} onChange={e=>setForm({...form,data_desejada:e.target.value})}/>
+            </Field>
+            <Field label="Das">
+              <Inp type="time" value={form.hora_desejada_inicio} onChange={e=>setForm({...form,hora_desejada_inicio:e.target.value})}/>
+            </Field>
+            <Field label="Até">
+              <Inp type="time" value={form.hora_desejada_fim} onChange={e=>setForm({...form,hora_desejada_fim:e.target.value})}/>
+            </Field>
+          </div>
+
+          {ocupadoNoHorario.length>0&&(
+            <div className="mt-3 bg-red-50 border-2 border-red-300 rounded-xl p-3.5">
+              <p className="text-sm font-black text-red-800">Esse horário não está disponível</p>
+              {ocupadoNoHorario.map((a,i)=>(
+                <p key={i} className="text-[11px] text-red-700 mt-1">
+                  <span className="font-mono">
+                    {String(a.hora_reprog_inicio||a.hora_oficial_inicio||'07:00').slice(0,5)}–
+                    {String(a.hora_reprog_fim||a.hora_oficial_fim||'17:00').slice(0,5)}
+                  </span> · {a.titulo}
+                </p>
+              ))}
+              <p className="text-[11px] text-red-700 mt-1.5">Escolha outro horário, ou deixe em branco para a manutenção encaixar.</p>
+            </div>
+          )}
+          {form.data_desejada&&form.hora_desejada_inicio&&form.hora_desejada_fim&&ocupadoNoHorario.length===0&&(
+            <p className="mt-3 text-[11px] text-emerald-700 font-semibold">✓ Horário livre na agenda da manutenção.</p>
+          )}
         </div>
 
         {/* Agenda da manutenção — para a pessoa ver a carga dos próximos dias
@@ -1628,6 +1687,11 @@ export default function App(){
   const [modalPreventiva,setModalPreventiva]=useState(null);
   const [formPreventiva,setFormPreventiva]=useState({titulo:'',descricao:'',equipamento_id:'',tipo:'MAQUINA',periodicidade_dias:30,proxima_execucao:new Date().toISOString().split('T')[0],responsavel:'',urgencia:'NORMAL'});
   const [equipamentoHist,setEquipamentoHist]=useState(null); // equipamento com histórico aberto
+  // Modal de aprovação: mostra a agenda do dia ANTES de confirmar. Era prompt
+  // simples, e o aprovador aprovava sem ver o que já tinha no dia.
+  const [modalAprovar,setModalAprovar]=useState(null);
+  const [formAprov,setFormAprov]=useState({data:'',inicio:'08:00',fim:'10:00',dia_todo:false});
+
   const [formRotina,setFormRotina]=useState({tipo:'MAQUINA',categoria:'PREVENTIVA',titulo:'',descricao:'',local:'',urgencia:'NORMAL',responsavel:'',data_inicio:new Date().toISOString().split('T')[0],data_fim_prevista:'',dia_todo:true,hora_inicio:'',hora_fim:''});
 
   // Quem pode ser responsável: só o pessoal da Manutenção, do cadastro. Evita
@@ -6036,6 +6100,34 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
     }catch(e){addToast('Erro ao registrar: '+e.message,'error');}
   };
 
+  // ── Agenda da manutenção: horários ocupados e conflito ──────────────────
+  // Uma única regra, usada na aprovação e na reprogramação, pra não existirem
+  // duas noções diferentes de "está ocupado".
+  const EXPEDIENTE={inicio:'07:00',fim:'17:00'};
+  const minutos=h=>{const[a2,b2]=s(h).slice(0,5).split(':');return Number(a2)*60+Number(b2||0);};
+  const janelaDe=m=>({
+    inicio:s(m.hora_reprog_inicio||m.hora_oficial_inicio).slice(0,5)||EXPEDIENTE.inicio,
+    fim:s(m.hora_reprog_fim||m.hora_oficial_fim).slice(0,5)||EXPEDIENTE.fim,
+  });
+  // O que já está agendado num dia, em ordem de horário.
+  const agendaDoDia=useCallback((data,ignorarId)=>{
+    return manutencaoDb
+      .filter(m=>m.id!==ignorarId
+        &&!['CONCLUIDA','CANCELADA'].includes(s(m.status))
+        &&s(m.prazo_reprogramado||m.prazo_oficial).slice(0,10)===s(data))
+      .map(m=>({...m,janela:janelaDe(m)}))
+      .sort((x,y)=>minutos(x.janela.inicio)-minutos(y.janela.inicio));
+  },[manutencaoDb]);
+  // Conflita quando os intervalos se SOBREPÕEM. Encostar não conflita: uma
+  // atividade que termina 10:00 libera a sala para outra que começa 10:00.
+  const conflitosEm=useCallback((data,ini,fim,ignorarId)=>{
+    const a1=minutos(ini),b1=minutos(fim);
+    return agendaDoDia(data,ignorarId).filter(m=>{
+      const a2=minutos(m.janela.inicio),b2=minutos(m.janela.fim);
+      return a2<b1&&b2>a1;
+    });
+  },[agendaDoDia]);
+
   // Aprovar exige definir o PRAZO OFICIAL. É o compromisso com quem pediu, e
   // depois de gravado ninguém altera (o banco bloqueia). Quem não conseguir
   // cumprir registra uma reprogramação, que convive com o oficial.
@@ -6081,50 +6173,63 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
     }catch(e){addToast('Erro ao reprogramar: '+e.message,'error');}
   };
 
-  const aprovarManutencao=async sol=>{
+  // Abre o modal com a agenda do dia; a confirmação acontece lá.
+  const aprovarManutencao=sol=>{
     if(!podeAprovarManutencao)return addToast('Só os aprovadores de Manutenção podem aprovar. Você está como executante.','error');
-
     const hoje=new Date().toISOString().slice(0,10);
-    const prazo=window.prompt(
-      `Aprovar "${s(sol.titulo)}"\n\n`+
-      `Até quando a manutenção se compromete a entregar?\n`+
-      `Formato: AAAA-MM-DD (ex: ${hoje})\n\n`+
-      `Atenção: esta data NÃO poderá ser alterada depois.`,
-      hoje);
-    if(prazo===null)return;                       // cancelou
-    const p=s(prazo).trim();
-    if(!/^\d{4}-\d{2}-\d{2}$/.test(p))return addToast('Data inválida. Use AAAA-MM-DD.','error');
-    if(p<hoje)return addToast('O prazo não pode ser no passado.','error');
+    // Já abre no dia e hora que o solicitante pediu, quando ele informou.
+    setFormAprov({
+      data:s(sol.data_desejada).slice(0,10)||hoje,
+      inicio:s(sol.hora_desejada_inicio).slice(0,5)||'08:00',
+      fim:s(sol.hora_desejada_fim).slice(0,5)||'10:00',
+      dia_todo:false,
+    });
+    setModalAprovar(sol);
+  };
 
-    // Avisa se o dia já está carregado — não bloqueia, porque urgência existe.
-    const noDia=manutencaoDb.filter(m=>m.id!==sol.id&&!['CONCLUIDA','CANCELADA'].includes(s(m.status))
-      &&(s(m.prazo_reprogramado||m.prazo_oficial||m.data_fim_prevista).slice(0,10)===p));
-    if(noDia.length>=2&&!window.confirm(
-      `Já existem ${noDia.length} demandas para ${p.split('-').reverse().join('/')}:\n\n`+
-      noDia.slice(0,4).map(m=>`• ${s(m.titulo)}`).join('\n')+
-      `\n\nConfirmar mesmo assim?`))return;
+  const confirmarAprovacao=async()=>{
+    const sol=modalAprovar;if(!sol)return;
+    const f=formAprov;
+    const hoje=new Date().toISOString().slice(0,10);
+    if(!f.data)return addToast('Escolha a data.','error');
+    if(f.data<hoje)return addToast('A data não pode ser no passado.','error');
+    const ini=f.dia_todo?EXPEDIENTE.inicio:s(f.inicio);
+    const fim=f.dia_todo?EXPEDIENTE.fim:s(f.fim);
+    if(!ini||!fim)return addToast('Informe o horário.','error');
+    if(minutos(fim)<=minutos(ini))return addToast('O fim precisa ser depois do início.','error');
+
+    // BLOQUEIA de verdade: horário ocupado não é aviso, é impedimento.
+    const conf=conflitosEm(f.data,ini,fim,sol.id);
+    if(conf.length>0){
+      return addToast(`Não dá: ${conf[0].janela.inicio}–${conf[0].janela.fim} já tem "${s(conf[0].titulo)}". Escolha outro horário.`,'error');
+    }
 
     try{
       const{error}=await supabase.from('manutencao_solicitacoes').update({
         aprovado_por:s(usuarioLogado?.nome),aprovado_em:new Date().toISOString(),status:'APROVADA',
-        prazo_oficial:p,prazo_oficial_por:s(usuarioLogado?.nome),prazo_oficial_em:new Date().toISOString(),
-        // Mantém data_fim_prevista alinhada, que é o que o calendário já lê.
-        data_fim_prevista:p,
+        prazo_oficial:f.data,prazo_oficial_por:s(usuarioLogado?.nome),prazo_oficial_em:new Date().toISOString(),
+        hora_oficial_inicio:ini,hora_oficial_fim:fim,
+        data_inicio:f.data,data_fim_prevista:f.data,
+        dia_todo:f.dia_todo,
         atualizado_em:new Date().toISOString(),
       }).eq('id',sol.id);
       if(error)throw error;
-      await supabase.from('manutencao_historico').insert([{solicitacao_id:sol.id,tipo:'APROVACAO',autor:s(usuarioLogado?.nome),mensagem:`Aprovou a solicitação com prazo oficial de ${p.split('-').reverse().join('/')}.`}]);
-      // Agora o executante precisa saber que pode tocar o serviço.
+      const dBR=f.data.split('-').reverse().join('/');
+      await supabase.from('manutencao_historico').insert([{solicitacao_id:sol.id,tipo:'APROVACAO',
+        autor:s(usuarioLogado?.nome),
+        mensagem:`Aprovou e agendou para ${dBR}, das ${ini} às ${fim}.`}]);
+      // Avisa o executante e também o próprio aprovador, com a agenda do dia
+      // — serve de freio pra não ir aprovando sem olhar a carga.
       fetch(`${SUPABASE_URL}/functions/v1/manutencao-notificar`,{
         method:'POST',headers:{'Content-Type':'application/json','apikey':SUPABASE_KEY},
-        body:JSON.stringify({solicitacao_id:sol.id,evento:'APROVADA'})
+        body:JSON.stringify({solicitacao_id:sol.id,evento:'APROVADA',avisar_aprovador:true})
       }).catch(()=>{});
-      addToast('Solicitação aprovada — cadeado removido. Executante avisado.');
+      addToast(`Agendada para ${dBR}, ${ini}–${fim}.`);
+      setModalAprovar(null);
       fetchManutencao();buscarHistoricoManutencao(sol.id);
     }catch(e){addToast('Erro ao aprovar: '+e.message,'error');}
   };
 
-  // Recusar/cancelar — só os aprovadores, com motivo obrigatório (fica no histórico).
   const recusarManutencao=async sol=>{
     if(!podeAprovarManutencao)return addToast('Só os aprovadores de Manutenção podem recusar. Você está como executante.','error');
     const motivo=window.prompt('Motivo da recusa/cancelamento:');
@@ -7084,6 +7189,133 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
   return(
     <div className="flex h-screen bg-slate-50 font-sans overflow-hidden text-slate-900">
       <style>{`@keyframes modalIn{from{opacity:0;transform:scale(.95)}to{opacity:1;transform:scale(1)}}@keyframes slideInRight{from{opacity:0;transform:translateX(20px)}to{opacity:1;transform:translateX(0)}}@keyframes fadeIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}@keyframes slideUp{from{opacity:0;transform:translateY(16px)}to{opacity:1;transform:translateY(0)}}.custom-scrollbar::-webkit-scrollbar{width:4px;height:4px}.custom-scrollbar::-webkit-scrollbar-thumb{background:#cbd5e1;border-radius:4px}.custom-scrollbar::-webkit-scrollbar-track{background:transparent}.prose strong{color:#1e293b;font-weight:700}`}</style>
+
+      {/* ── MODAL DE APROVAÇÃO ─────────────────────────────────────────────
+          Mostra a agenda do dia escolhido na frente do aprovador. Antes era
+          um prompt simples: dava pra aprovar sem olhar a carga do dia, e era
+          exatamente o que acontecia. */}
+      {modalAprovar&&(()=>{
+        const f=formAprov;
+        const ini=f.dia_todo?EXPEDIENTE.inicio:s(f.inicio);
+        const fim=f.dia_todo?EXPEDIENTE.fim:s(f.fim);
+        const doDia=agendaDoDia(f.data,modalAprovar.id);
+        const conf=(ini&&fim&&minutos(fim)>minutos(ini))?conflitosEm(f.data,ini,fim,modalAprovar.id):[];
+        const temConflito=conf.length>0;
+        const horas=[];for(let h=7;h<=17;h++)horas.push(h);
+        const pos=hhmm=>((minutos(hhmm)-minutos(EXPEDIENTE.inicio))/(minutos(EXPEDIENTE.fim)-minutos(EXPEDIENTE.inicio)))*100;
+        return(
+        <div className="fixed inset-0 bg-slate-900/60 z-50 flex items-center justify-center p-4" onClick={()=>setModalAprovar(null)}>
+          <div className="bg-white rounded-2xl max-w-2xl w-full max-h-[92vh] overflow-y-auto custom-scrollbar" onClick={e=>e.stopPropagation()}>
+            <div className="px-6 py-4 border-b border-slate-100 flex items-start justify-between gap-3">
+              <div>
+                <p className="text-sm font-black text-slate-900">Aprovar e agendar</p>
+                <p className="text-xs text-slate-500">#{modalAprovar.numero} · {s(modalAprovar.titulo)}</p>
+              </div>
+              <button onClick={()=>setModalAprovar(null)} className="text-slate-400 hover:text-slate-600"><X className="w-5 h-5"/></button>
+            </div>
+
+            <div className="p-6 space-y-4">
+              {/* O que o solicitante pediu */}
+              {modalAprovar.data_desejada&&(
+                <div className="bg-sky-50 border border-sky-200 rounded-xl px-4 py-2.5">
+                  <p className="text-[11px] text-sky-800">
+                    <strong>Pedido do solicitante:</strong> {s(modalAprovar.data_desejada).slice(0,10).split('-').reverse().join('/')}
+                    {modalAprovar.hora_desejada_inicio?` das ${s(modalAprovar.hora_desejada_inicio).slice(0,5)} às ${s(modalAprovar.hora_desejada_fim).slice(0,5)}`:''}
+                  </p>
+                </div>
+              )}
+
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <Field label="Data" required>
+                  <Inp type="date" min={new Date().toISOString().slice(0,10)}
+                    value={f.data} onChange={e=>setFormAprov({...f,data:e.target.value})}/>
+                </Field>
+                <Field label="Das">
+                  <Inp type="time" disabled={f.dia_todo} value={f.inicio} onChange={e=>setFormAprov({...f,inicio:e.target.value})}/>
+                </Field>
+                <Field label="Até">
+                  <Inp type="time" disabled={f.dia_todo} value={f.fim} onChange={e=>setFormAprov({...f,fim:e.target.value})}/>
+                </Field>
+              </div>
+
+              <button type="button" onClick={()=>setFormAprov({...f,dia_todo:!f.dia_todo})}
+                className={`text-xs font-bold rounded-lg px-3 py-2 border-2 ${f.dia_todo?'bg-indigo-50 border-indigo-400 text-indigo-700':'bg-white border-slate-200 text-slate-500'}`}>
+                {f.dia_todo?'✓ ':''}Ocupa o dia todo ({EXPEDIENTE.inicio}–{EXPEDIENTE.fim})
+              </button>
+
+              {/* Linha do tempo do dia */}
+              <div>
+                <p className="text-[10px] font-black text-slate-400 uppercase tracking-wider mb-2">
+                  Como está {f.data?f.data.split('-').reverse().join('/'):'o dia'}
+                </p>
+                <div className="relative h-16 bg-slate-50 rounded-xl border border-slate-200 overflow-hidden">
+                  {/* marcas de hora */}
+                  {horas.map(h=>(
+                    <div key={h} className="absolute top-0 bottom-0 border-l border-slate-200/70"
+                      style={{left:`${pos(`${String(h).padStart(2,'0')}:00`)}%`}}>
+                      <span className="absolute top-0.5 left-0.5 text-[8px] text-slate-400">{h}h</span>
+                    </div>
+                  ))}
+                  {/* o que já está marcado */}
+                  {doDia.map(m=>{
+                    const e=pos(m.janela.inicio),w=pos(m.janela.fim)-pos(m.janela.inicio);
+                    return(
+                      <div key={m.id} title={`${m.janela.inicio}–${m.janela.fim} · ${s(m.titulo)}`}
+                        className="absolute top-6 h-4 bg-slate-400 rounded text-[8px] text-white px-1 overflow-hidden whitespace-nowrap"
+                        style={{left:`${e}%`,width:`${Math.max(w,2)}%`}}>
+                        {s(m.titulo)}
+                      </div>
+                    );
+                  })}
+                  {/* o horário que está sendo escolhido */}
+                  {ini&&fim&&minutos(fim)>minutos(ini)&&(
+                    <div className={`absolute bottom-1 h-4 rounded text-[8px] text-white px-1 overflow-hidden whitespace-nowrap ${temConflito?'bg-red-500':'bg-emerald-500'}`}
+                      style={{left:`${pos(ini)}%`,width:`${Math.max(pos(fim)-pos(ini),2)}%`}}>
+                      {temConflito?'conflito':'esta demanda'}
+                    </div>
+                  )}
+                  {doDia.length===0&&<p className="absolute inset-0 flex items-center justify-center text-[11px] text-slate-300">dia livre</p>}
+                </div>
+
+                {doDia.length>0&&(
+                  <div className="mt-2 space-y-0.5">
+                    {doDia.map(m=>(
+                      <p key={`l-${m.id}`} className="text-[11px] text-slate-500">
+                        <span className="font-mono text-slate-600">{m.janela.inicio}–{m.janela.fim}</span> · {s(m.titulo)}
+                        {m.responsavel?<span className="text-slate-400"> · {s(m.responsavel)}</span>:null}
+                      </p>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {temConflito&&(
+                <div className="bg-red-50 border-2 border-red-300 rounded-xl p-4">
+                  <p className="text-sm font-black text-red-800">Não é possível agendar neste horário</p>
+                  <p className="text-[11px] text-red-700 mt-1">
+                    Já existe {conf.length>1?`${conf.length} atividades`:'atividade'} nesse intervalo:
+                  </p>
+                  {conf.map(m=>(
+                    <p key={`c-${m.id}`} className="text-[11px] text-red-700 font-mono mt-0.5">
+                      {m.janela.inicio}–{m.janela.fim} · {s(m.titulo)}
+                    </p>
+                  ))}
+                  <p className="text-[11px] text-red-700 mt-1.5">Escolha outro horário ou outro dia.</p>
+                </div>
+              )}
+
+              <div className="flex justify-end gap-2 pt-2">
+                <Btn variant="secondary" onClick={()=>setModalAprovar(null)}>Cancelar</Btn>
+                <Btn variant="primary" onClick={confirmarAprovacao} disabled={temConflito}>
+                  <CheckCircle className="w-4 h-4"/>Aprovar e agendar
+                </Btn>
+              </div>
+              <p className="text-[10px] text-slate-400 text-center">A data e o horário definidos aqui não poderão ser alterados depois.</p>
+            </div>
+          </div>
+        </div>
+        );
+      })()}
 
       <div className="fixed top-5 right-5 z-[999] space-y-3" style={{minWidth:'280px'}}>{toasts.map(t=><Toast key={t.id} message={t.message} type={t.type} onClose={()=>removeToast(t.id)}/>)}</div>
       {sidebarOpen&&<div className="fixed inset-0 bg-slate-900/60 z-40 lg:hidden backdrop-blur-sm" onClick={()=>setSidebarOpen(false)}/>}
