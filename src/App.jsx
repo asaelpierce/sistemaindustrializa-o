@@ -763,6 +763,54 @@ function FormularioPublicoManutencao({supabase}){
   const [fotos,setFotos]=useState([]);
   const [protocolo,setProtocolo]=useState(null); // {numero, token_acompanhamento} devolvidos ao enviar
   const [form,setForm]=useState({tipo:'MAQUINA',categoria:'REPARO',titulo:'',descricao:'',local:'',urgencia:'NORMAL',solicitante_nome:'',solicitante_setor:'',solicitante_contato:''});
+  // Agenda da manutenção, para quem vai pedir enxergar os dias cheios ANTES
+  // de abrir o chamado. Sem isso a pessoa pede sem noção da carga e depois
+  // estranha a demora.
+  const [agenda,setAgenda]=useState([]);
+  const [mostrarAgenda,setMostrarAgenda]=useState(false);
+
+  useEffect(()=>{
+    if(!supabase)return;
+    (async()=>{
+      try{
+        const hoje=new Date();
+        const ate=new Date(hoje.getTime()+21*864e5).toISOString().slice(0,10);
+        const{data}=await supabase.from('manutencao_solicitacoes')
+          .select('titulo,data_inicio,data_fim_prevista,dia_todo,hora_inicio,hora_fim,urgencia,status,responsavel')
+          .not('status','in','(CONCLUIDA,CANCELADA)')
+          .not('data_inicio','is',null)
+          .lte('data_inicio',ate);
+        setAgenda(data||[]);
+      }catch(_){}
+    })();
+  },[supabase]);
+
+  // Ocupação dos próximos 14 dias. Conta por dia o que está agendado, levando
+  // em conta que atividade de dia todo pesa mais que uma de duas horas.
+  const diasAgenda=useMemo(()=>{
+    const hoje=new Date();hoje.setHours(0,0,0,0);
+    const dias=[];
+    for(let i=0;i<14;i++){
+      const d=new Date(hoje.getTime()+i*864e5);
+      const iso=d.toISOString().slice(0,10);
+      const doDia=agenda.filter(a=>{
+        const ini=String(a.data_inicio||'').slice(0,10);
+        const fim=String(a.data_fim_prevista||a.data_inicio||'').slice(0,10);
+        return ini&&iso>=ini&&iso<=fim;
+      });
+      // Peso: dia todo = 1; horário específico = fração do expediente (8h).
+      const carga=doDia.reduce((acc,a)=>{
+        if(a.dia_todo!==false)return acc+1;
+        const hi=String(a.hora_inicio||'').slice(0,5), hf=String(a.hora_fim||'').slice(0,5);
+        if(!hi||!hf)return acc+0.5;
+        const m=(x)=>Number(x.split(':')[0])*60+Number(x.split(':')[1]||0);
+        return acc+Math.max(0.25,Math.min(1,(m(hf)-m(hi))/480));
+      },0);
+      const fds=d.getDay()===0||d.getDay()===6;
+      dias.push({iso,data:d,itens:doDia,carga,fds});
+    }
+    return dias;
+  },[agenda]);
 
   // Comprime a foto antes de enviar — no chão de fábrica a pessoa tira do
   // celular, e a imagem original é grande demais pra guardar direto.
@@ -955,6 +1003,75 @@ function FormularioPublicoManutencao({supabase}){
             </div>
           </div>
         </div>
+
+        {/* Agenda da manutenção — para a pessoa ver a carga dos próximos dias
+            ANTES de pedir. Fica recolhida por padrão: é informação útil, mas
+            não pode competir com o formulário em si. */}
+        {diasAgenda.some(d=>d.itens.length>0)&&(
+          <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
+            <button type="button" onClick={()=>setMostrarAgenda(!mostrarAgenda)}
+              className="w-full flex items-center justify-between px-5 py-3.5 hover:bg-slate-50">
+              <div className="text-left">
+                <p className="text-sm font-black text-slate-800">📅 Como está a agenda da manutenção</p>
+                <p className="text-[11px] text-slate-500">Veja os dias mais cheios antes de pedir</p>
+              </div>
+              <span className="text-xs font-black text-indigo-600">{mostrarAgenda?'ocultar':'ver'}</span>
+            </button>
+
+            {mostrarAgenda&&(
+              <div className="px-5 pb-5 border-t border-slate-100 pt-4">
+                <div className="grid grid-cols-7 gap-1.5">
+                  {diasAgenda.map(d=>{
+                    const nivel=d.carga>=3?'cheio':d.carga>=1.5?'medio':d.carga>0?'leve':'livre';
+                    const cor=d.fds?'bg-slate-50 text-slate-300 border-slate-100'
+                      :nivel==='cheio'?'bg-red-50 text-red-700 border-red-200'
+                      :nivel==='medio'?'bg-amber-50 text-amber-700 border-amber-200'
+                      :nivel==='leve'?'bg-sky-50 text-sky-700 border-sky-200'
+                      :'bg-emerald-50 text-emerald-700 border-emerald-200';
+                    return(
+                      <div key={d.iso} className={`rounded-lg border p-1.5 text-center ${cor}`} title={d.itens.map(i=>i.titulo).join(' · ')}>
+                        <p className="text-[9px] font-bold opacity-70">{['dom','seg','ter','qua','qui','sex','sáb'][d.data.getDay()]}</p>
+                        <p className="text-sm font-black leading-tight">{d.data.getDate()}</p>
+                        <p className="text-[9px] font-bold">{d.fds?'—':d.itens.length?`${d.itens.length}`:'livre'}</p>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                <div className="flex flex-wrap items-center gap-3 mt-3 text-[10px] text-slate-500">
+                  <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded bg-emerald-200 inline-block"/>livre</span>
+                  <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded bg-sky-200 inline-block"/>tranquilo</span>
+                  <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded bg-amber-200 inline-block"/>movimentado</span>
+                  <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded bg-red-200 inline-block"/>cheio</span>
+                </div>
+
+                {/* Detalhe dos dias cheios: saber QUE está cheio ajuda pouco;
+                    saber COM O QUÊ ajuda a decidir se dá pra esperar. */}
+                {diasAgenda.filter(d=>d.itens.length>0&&!d.fds).slice(0,5).map(d=>(
+                  <div key={`det-${d.iso}`} className="mt-3 pt-3 border-t border-slate-50">
+                    <p className="text-[11px] font-black text-slate-600">
+                      {d.data.toLocaleDateString('pt-BR',{weekday:'long',day:'2-digit',month:'2-digit'})}
+                    </p>
+                    {d.itens.slice(0,4).map((i,idx)=>(
+                      <p key={idx} className="text-[11px] text-slate-500 mt-0.5">
+                        • {i.titulo}
+                        {i.dia_todo===false&&i.hora_inicio
+                          ? <span className="text-slate-400"> — {String(i.hora_inicio).slice(0,5)} às {String(i.hora_fim||'').slice(0,5)}</span>
+                          : <span className="text-slate-400"> — dia todo</span>}
+                        {i.responsavel?<span className="text-slate-400"> · {i.responsavel}</span>:null}
+                      </p>
+                    ))}
+                    {d.itens.length>4&&<p className="text-[10px] text-slate-400 mt-0.5">e mais {d.itens.length-4}...</p>}
+                  </div>
+                ))}
+
+                <p className="text-[10px] text-slate-400 mt-3">
+                  Dia cheio não impede o pedido — se for urgente, peça mesmo assim. Isso serve só para você ter ideia do prazo.
+                </p>
+              </div>
+            )}
+          </div>
+        )}
 
         {erro&&<p className="text-sm text-red-600 font-bold bg-red-50 border border-red-200 rounded-xl px-4 py-3">{erro}</p>}
 
@@ -1509,7 +1626,17 @@ export default function App(){
   const [modalPreventiva,setModalPreventiva]=useState(null);
   const [formPreventiva,setFormPreventiva]=useState({titulo:'',descricao:'',equipamento_id:'',tipo:'MAQUINA',periodicidade_dias:30,proxima_execucao:new Date().toISOString().split('T')[0],responsavel:'',urgencia:'NORMAL'});
   const [equipamentoHist,setEquipamentoHist]=useState(null); // equipamento com histórico aberto
-  const [formRotina,setFormRotina]=useState({tipo:'MAQUINA',categoria:'PREVENTIVA',titulo:'',descricao:'',local:'',urgencia:'NORMAL',responsavel:'',data_inicio:new Date().toISOString().split('T')[0],data_fim_prevista:''});
+  const [formRotina,setFormRotina]=useState({tipo:'MAQUINA',categoria:'PREVENTIVA',titulo:'',descricao:'',local:'',urgencia:'NORMAL',responsavel:'',data_inicio:new Date().toISOString().split('T')[0],data_fim_prevista:'',dia_todo:true,hora_inicio:'',hora_fim:''});
+
+  // Quem pode ser responsável: só o pessoal da Manutenção, do cadastro. Evita
+  // digitar o nome toda vez e, de quebra, evita grafia diferente da mesma
+  // pessoa, que atrapalharia qualquer contagem por responsável.
+  const equipeManutencao=useMemo(()=>{
+    return (usuariosDb||[])
+      .filter(u=>(Array.isArray(u.perfis)&&u.perfis.includes('MANUTENCAO'))||u.perfil==='MANUTENCAO')
+      .map(u=>String(u.nome||'').trim()).filter(Boolean)
+      .sort((a,b)=>a.localeCompare(b));
+  },[usuariosDb]);
   const linkPublicoManutencao=typeof window!=='undefined'?`${window.location.origin}${window.location.pathname}?manutencao=solicitar`:'';
   const [modalNovaInspecao,setModalNovaInspecao]=useState(false);
   const [modalInspecaoDetalhe,setModalInspecaoDetalhe]=useState(false);
@@ -5894,11 +6021,15 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
         aprovado_por:s(usuarioLogado?.nome),
         aprovado_em:new Date().toISOString(),
         data_fim_prevista:formRotina.data_fim_prevista||null,
+        // Hora só faz sentido quando NÃO é dia todo; gravar as duas coisas
+        // deixaria o calendário sem saber qual vale.
+        hora_inicio:formRotina.dia_todo?null:(formRotina.hora_inicio||null),
+        hora_fim:formRotina.dia_todo?null:(formRotina.hora_fim||null),
       }]);
       if(error)throw error;
       addToast('Atividade registrada!');
       setModalNovaRotina(false);
-      setFormRotina({tipo:'MAQUINA',categoria:'PREVENTIVA',titulo:'',descricao:'',local:'',urgencia:'NORMAL',responsavel:'',data_inicio:new Date().toISOString().split('T')[0],data_fim_prevista:''});
+      setFormRotina({tipo:'MAQUINA',categoria:'PREVENTIVA',titulo:'',descricao:'',local:'',urgencia:'NORMAL',responsavel:formRotina.responsavel,data_inicio:new Date().toISOString().split('T')[0],data_fim_prevista:'',dia_todo:true,hora_inicio:'',hora_fim:''});
       fetchManutencao();
     }catch(e){addToast('Erro ao registrar: '+e.message,'error');}
   };
@@ -13557,7 +13688,14 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
               <Inp placeholder="Ex: Prensa 2, Galpão 3" value={formRotina.local} onChange={e=>setFormRotina({...formRotina,local:e.target.value})}/>
             </Field>
             <Field label="Responsável">
-              <Inp placeholder="Quem está executando" value={formRotina.responsavel} onChange={e=>setFormRotina({...formRotina,responsavel:e.target.value})}/>
+              <Sel value={formRotina.responsavel} onChange={e=>setFormRotina({...formRotina,responsavel:e.target.value})}>
+                <option value="">— quem está executando —</option>
+                {equipeManutencao.map(n=><option key={n} value={n}>{n}</option>)}
+                {/* Mantém o que já estava gravado, mesmo que a pessoa tenha
+                    saído do cadastro — senão o campo apareceria vazio. */}
+                {formRotina.responsavel&&!equipeManutencao.includes(formRotina.responsavel)&&
+                  <option value={formRotina.responsavel}>{formRotina.responsavel}</option>}
+              </Sel>
             </Field>
           </div>
 
@@ -13568,6 +13706,31 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
             <Field label="Previsão de término">
               <Inp type="date" value={formRotina.data_fim_prevista} onChange={e=>setFormRotina({...formRotina,data_fim_prevista:e.target.value})}/>
             </Field>
+          </div>
+
+          {/* Horário: sem isso, uma atividade de 1h e uma que toma o dia
+              inteiro ocupam igual no calendário, e quem vai pedir demanda não
+              consegue saber se o dia ainda comporta outra. */}
+          <div>
+            <label className="text-xs font-black text-slate-500 uppercase tracking-wider">Ocupa quanto do dia?</label>
+            <div className="grid grid-cols-2 gap-1.5 mt-1.5 mb-2">
+              {[{v:true,l:'O dia todo'},{v:false,l:'Horário específico'}].map(o=>(
+                <button type="button" key={String(o.v)} onClick={()=>setFormRotina({...formRotina,dia_todo:o.v})}
+                  className={`text-xs font-bold rounded-lg px-3 py-2 border-2 ${formRotina.dia_todo===o.v?'bg-indigo-50 border-indigo-400 text-indigo-700':'bg-white border-slate-200 text-slate-500 hover:border-slate-300'}`}>
+                  {o.l}
+                </button>
+              ))}
+            </div>
+            {!formRotina.dia_todo&&(
+              <div className="grid grid-cols-2 gap-3">
+                <Field label="Das">
+                  <Inp type="time" value={formRotina.hora_inicio} onChange={e=>setFormRotina({...formRotina,hora_inicio:e.target.value})}/>
+                </Field>
+                <Field label="Até">
+                  <Inp type="time" value={formRotina.hora_fim} onChange={e=>setFormRotina({...formRotina,hora_fim:e.target.value})}/>
+                </Field>
+              </div>
+            )}
           </div>
 
           <div>
