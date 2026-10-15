@@ -1694,6 +1694,9 @@ export default function App(){
   // Modal de aprovação: mostra a agenda do dia ANTES de confirmar. Era prompt
   // simples, e o aprovador aprovava sem ver o que já tinha no dia.
   const [modalAprovar,setModalAprovar]=useState(null);
+  // Horário informado no detalhe, para demanda que já existia antes de o
+  // agendamento por hora existir.
+  const [horaDetalhe,setHoraDetalhe]=useState({inicio:'08:00',fim:'10:00'});
   const [formAprov,setFormAprov]=useState({data:'',inicio:'08:00',fim:'10:00',dia_todo:false});
 
   const [formRotina,setFormRotina]=useState({tipo:'MAQUINA',categoria:'PREVENTIVA',titulo:'',descricao:'',local:'',urgencia:'NORMAL',responsavel:'',data_inicio:new Date().toISOString().split('T')[0],data_fim_prevista:'',dia_todo:true,hora_inicio:'',hora_fim:''});
@@ -6135,6 +6138,36 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
   // Aprovar exige definir o PRAZO OFICIAL. É o compromisso com quem pediu, e
   // depois de gravado ninguém altera (o banco bloqueia). Quem não conseguir
   // cumprir registra uma reprogramação, que convive com o oficial.
+  // Define o horário de uma demanda que ficou sem — aprovada antes de o
+  // agendamento por hora existir. Passa pela MESMA checagem de conflito da
+  // aprovação, senão abriria uma porta pra dupla marcação.
+  const definirHorarioManutencao=async sol=>{
+    const dia=s(sol.prazo_reprogramado||sol.prazo_oficial||sol.data_fim_prevista).slice(0,10);
+    if(!dia)return addToast('Defina antes o prazo previsto desta demanda.','error');
+    const{inicio,fim}=horaDetalhe;
+    if(!inicio||!fim)return addToast('Informe o horário de início e de fim.','error');
+    if(minutos(fim)<=minutos(inicio))return addToast('O fim precisa ser depois do início.','error');
+
+    const conf=conflitosEm(dia,inicio,fim,sol.id);
+    if(conf.length>0)
+      return addToast(`Não dá: ${conf[0].janela.inicio}–${conf[0].janela.fim} já tem "${s(conf[0].titulo)}".`,'error');
+
+    try{
+      const{error}=await supabase.from('manutencao_solicitacoes').update({
+        hora_oficial_inicio:inicio,hora_oficial_fim:fim,
+        // Sem prazo oficial (demanda antiga), assume o prazo previsto como tal.
+        ...(sol.prazo_oficial?{}:{prazo_oficial:dia,prazo_oficial_por:s(usuarioLogado?.nome),prazo_oficial_em:new Date().toISOString()}),
+        atualizado_em:new Date().toISOString(),
+      }).eq('id',sol.id);
+      if(error)throw error;
+      await supabase.from('manutencao_historico').insert([{solicitacao_id:sol.id,tipo:'AGENDAMENTO',
+        autor:s(usuarioLogado?.nome),
+        mensagem:`Definiu o horário: ${dia.split('-').reverse().join('/')} das ${inicio} às ${fim}.`}]);
+      addToast(`Horário definido: ${inicio}–${fim}.`);
+      fetchManutencao();buscarHistoricoManutencao(sol.id);
+    }catch(e){addToast('Erro ao definir horário: '+e.message,'error');}
+  };
+
   // Reprogramação: o executante informa um prazo novo SEM apagar o oficial.
   // Os dois ficam registrados, então dá pra medir depois a diferença entre o
   // que foi prometido e o que realmente foi feito.
@@ -14292,6 +14325,50 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
                 <Field label="Data Conclusão">
                   <Inp type="date" disabled={!isManutencao} defaultValue={sol.data_conclusao||''} onBlur={e=>e.target.value!==(sol.data_conclusao||'')&&salvarDatasManutencao(sol,{data_conclusao:e.target.value||null})}/>
                 </Field>
+              </div>
+
+              {/* HORÁRIO — o que ocupa a agenda. Demanda aprovada antes desta
+                  funcionalidade ficou sem, então aqui dá pra informar. Depois
+                  de gravado vira somente leitura: o banco bloqueia a troca, e
+                  o caminho passa a ser a reprogramação. */}
+              <div className="border-t border-slate-100 pt-4">
+                <div className="flex items-center justify-between mb-2 flex-wrap gap-2">
+                  <p className="text-[10px] font-black text-slate-400 uppercase tracking-wider">Horário na agenda</p>
+                  {sol.hora_oficial_inicio&&(
+                    <span className="text-[10px] text-slate-400 flex items-center gap-1"><Lock className="w-2.5 h-2.5"/>definido — use Reprogramar para mudar</span>
+                  )}
+                </div>
+
+                {sol.hora_oficial_inicio?(
+                  <div className="flex items-center gap-4 flex-wrap">
+                    <div className="bg-slate-50 rounded-xl px-4 py-2.5">
+                      <p className="text-[10px] font-black text-slate-400 uppercase">Agendado</p>
+                      <p className="text-base font-black text-slate-800">
+                        {s(sol.hora_oficial_inicio).slice(0,5)} às {s(sol.hora_oficial_fim).slice(0,5)}
+                      </p>
+                    </div>
+                    {sol.hora_reprog_inicio&&(
+                      <div className="bg-amber-50 border border-amber-200 rounded-xl px-4 py-2.5">
+                        <p className="text-[10px] font-black text-amber-500 uppercase">Reprogramado</p>
+                        <p className="text-base font-black text-amber-700">
+                          {s(sol.hora_reprog_inicio).slice(0,5)} às {s(sol.hora_reprog_fim).slice(0,5)}
+                        </p>
+                      </div>
+                    )}
+                  </div>
+                ):isManutencao?(
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 items-end">
+                    <Field label="Das">
+                      <Inp type="time" value={horaDetalhe.inicio} onChange={e=>setHoraDetalhe({...horaDetalhe,inicio:e.target.value})}/>
+                    </Field>
+                    <Field label="Até">
+                      <Inp type="time" value={horaDetalhe.fim} onChange={e=>setHoraDetalhe({...horaDetalhe,fim:e.target.value})}/>
+                    </Field>
+                    <Btn variant="dark" onClick={()=>definirHorarioManutencao(sol)}>Definir horário</Btn>
+                  </div>
+                ):(
+                  <p className="text-xs text-slate-400">Sem horário definido.</p>
+                )}
               </div>
 
               {isManutencao&&(
