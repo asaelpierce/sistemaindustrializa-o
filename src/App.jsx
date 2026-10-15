@@ -4292,7 +4292,10 @@ export default function App(){
       if(!isQualidadeOnly){
         const[pR,eR,rR,rlR,nrR,neR]=await Promise.all([
           supabase.from('produtos').select('codigo_pa,descricao,materiais'),
-          supabase.from('estoque_mp').select('codigo_mp,descricao,saldo_disponivel,unidade'),
+          // Precisa trazer o saldo de CADA depósito: sem isso saldoNoDeposito
+          // lia undefined e mostrava 0 em qualquer depósito que não fosse o
+          // 1090 — o item 12893 tem 2 PC no 1002 e a tela dizia "0 PC".
+          supabase.from('estoque_mp').select('codigo_mp,descricao,unidade,saldo_disponivel,saldo_almoxarifado,saldo_1001,saldo_1002,saldo_1050,saldo_1090,reservado_1050'),
           supabase.from('remessas').select('*').order('data_criacao',{ascending:false}).limit(200),
           supabase.from('relatorios_ia').select('*').order('data_criacao',{ascending:false}).limit(50),
           supabase.from('notas_remessa_industrializacao').select('*'),
@@ -9887,7 +9890,29 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
                                 {ITENS_RATEIO.includes(s(it.codigoMP))&&<button onClick={()=>{setIdxRateio(i);setModalRateio(true);}} className={`p-1.5 rounded-lg transition-all ${it.rateiosExtras?.length>0?'bg-indigo-100 text-indigo-600':'bg-slate-100 text-slate-500 hover:bg-slate-200'}`}><PieChartIcon className="w-3.5 h-3.5"/></button>}
                               </div>
                             </td>
-                            <td className={`px-5 py-3.5 text-center text-xs font-black ${semSaldo?'text-red-600':'text-emerald-600'}`}>{semSaldo&&<AlertTriangle className="w-3 h-3 inline mr-1"/>}{fmtD(saldoAtual)} {it.um}</td>
+                            <td className={`px-5 py-3.5 text-center text-xs font-black ${semSaldo?'text-red-600':'text-emerald-600'}`}>
+                              {semSaldo&&<AlertTriangle className="w-3 h-3 inline mr-1"/>}{fmtD(saldoAtual)} {it.um}
+                              {/* Saldo zerado aqui não quer dizer que o item não
+                                  existe — quase sempre ele está em OUTRO depósito.
+                                  Mostrar onde evita a pessoa concluir que falta
+                                  material quando o problema é o depósito escolhido. */}
+                              {semSaldo&&(()=>{
+                                const outros=depositosComSaldo(it.codigoMP).filter(d=>d.cod!==depositoSaida);
+                                if(outros.length===0)return <p className="text-[9px] font-normal text-slate-400 mt-1">sem saldo em nenhum depósito</p>;
+                                return(
+                                  <div className="mt-1 flex flex-col items-center gap-0.5">
+                                    <p className="text-[9px] font-normal text-slate-400">tem em:</p>
+                                    {outros.slice(0,3).map(d=>(
+                                      <button key={d.cod} type="button" onClick={()=>setDepositoSaida(d.cod)}
+                                        title={`Trocar o depósito de saída para ${d.cod} - ${d.nome}`}
+                                        className="text-[9px] font-black text-indigo-600 hover:underline">
+                                        {d.cod}: {fmtD(d.saldo)} {it.um}
+                                      </button>
+                                    ))}
+                                  </div>
+                                );
+                              })()}
+                            </td>
                           </tr>
                         );
                       })}
