@@ -763,11 +763,10 @@ function FormularioPublicoManutencao({supabase}){
   const [fotos,setFotos]=useState([]);
   const [protocolo,setProtocolo]=useState(null); // {numero, token_acompanhamento} devolvidos ao enviar
   const [form,setForm]=useState({tipo:'MAQUINA',categoria:'REPARO',titulo:'',descricao:'',local:'',urgencia:'NORMAL',solicitante_nome:'',solicitante_setor:'',solicitante_contato:'',data_desejada:'',hora_desejada_inicio:'',hora_desejada_fim:''});
-  // Agenda da manutenção, para quem vai pedir enxergar os dias cheios ANTES
-  // de abrir o chamado. Sem isso a pessoa pede sem noção da carga e depois
-  // estranha a demora.
+  // Agenda da manutenção. O calendário visual saiu do formulário a pedido do
+  // usuário, mas a agenda continua sendo carregada: é ela que diz se o
+  // horário pedido está livre, e esse bloqueio permanece.
   const [agenda,setAgenda]=useState([]);
-  const [mostrarAgenda,setMostrarAgenda]=useState(false);
 
   useEffect(()=>{
     if(!supabase)return;
@@ -799,35 +798,6 @@ function FormularioPublicoManutencao({supabase}){
       return minPub(ai)<minPub(f2)&&minPub(af)>minPub(i);
     });
   },[agenda,form.data_desejada,form.hora_desejada_inicio,form.hora_desejada_fim]);
-
-  // Ocupação dos próximos 14 dias. Conta por dia o que está agendado, levando
-  // em conta que atividade de dia todo pesa mais que uma de duas horas.
-  const diasAgenda=useMemo(()=>{
-    const hoje=new Date();hoje.setHours(0,0,0,0);
-    const dias=[];
-    for(let i=0;i<14;i++){
-      const d=new Date(hoje.getTime()+i*864e5);
-      const iso=d.toISOString().slice(0,10);
-      const doDia=agenda.filter(a=>{
-        const ini=String(a.data_inicio||'').slice(0,10);
-        // Vale a reprogramação quando existe: é a data real de execução.
-        const fim=String(a.prazo_reprogramado||a.prazo_oficial||a.data_fim_prevista||a.data_inicio||'').slice(0,10);
-        if(!ini)return false;
-        return fim>=ini ? (iso>=ini&&iso<=fim) : iso===ini;
-      });
-      // Peso: dia todo = 1; horário específico = fração do expediente (8h).
-      const carga=doDia.reduce((acc,a)=>{
-        if(a.dia_todo!==false)return acc+1;
-        const hi=String(a.hora_inicio||'').slice(0,5), hf=String(a.hora_fim||'').slice(0,5);
-        if(!hi||!hf)return acc+0.5;
-        const m=(x)=>Number(x.split(':')[0])*60+Number(x.split(':')[1]||0);
-        return acc+Math.max(0.25,Math.min(1,(m(hf)-m(hi))/480));
-      },0);
-      const fds=d.getDay()===0||d.getDay()===6;
-      dias.push({iso,data:d,itens:doDia,carga,fds});
-    }
-    return dias;
-  },[agenda]);
 
   // Comprime a foto antes de enviar — no chão de fábrica a pessoa tira do
   // celular, e a imagem original é grande demais pra guardar direto.
@@ -1069,74 +1039,6 @@ function FormularioPublicoManutencao({supabase}){
           )}
         </div>
 
-        {/* Agenda da manutenção — para a pessoa ver a carga dos próximos dias
-            ANTES de pedir. Fica recolhida por padrão: é informação útil, mas
-            não pode competir com o formulário em si. */}
-        {diasAgenda.some(d=>d.itens.length>0)&&(
-          <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
-            <button type="button" onClick={()=>setMostrarAgenda(!mostrarAgenda)}
-              className="w-full flex items-center justify-between px-5 py-3.5 hover:bg-slate-50">
-              <div className="text-left">
-                <p className="text-sm font-black text-slate-800">📅 Como está a agenda da manutenção</p>
-                <p className="text-[11px] text-slate-500">Veja os dias mais cheios antes de pedir</p>
-              </div>
-              <span className="text-xs font-black text-indigo-600">{mostrarAgenda?'ocultar':'ver'}</span>
-            </button>
-
-            {mostrarAgenda&&(
-              <div className="px-5 pb-5 border-t border-slate-100 pt-4">
-                <div className="grid grid-cols-7 gap-1.5">
-                  {diasAgenda.map(d=>{
-                    const nivel=d.carga>=3?'cheio':d.carga>=1.5?'medio':d.carga>0?'leve':'livre';
-                    const cor=d.fds?'bg-slate-50 text-slate-300 border-slate-100'
-                      :nivel==='cheio'?'bg-red-50 text-red-700 border-red-200'
-                      :nivel==='medio'?'bg-amber-50 text-amber-700 border-amber-200'
-                      :nivel==='leve'?'bg-sky-50 text-sky-700 border-sky-200'
-                      :'bg-emerald-50 text-emerald-700 border-emerald-200';
-                    return(
-                      <div key={d.iso} className={`rounded-lg border p-1.5 text-center ${cor}`} title={d.itens.map(i=>i.titulo).join(' · ')}>
-                        <p className="text-[9px] font-bold opacity-70">{['dom','seg','ter','qua','qui','sex','sáb'][d.data.getDay()]}</p>
-                        <p className="text-sm font-black leading-tight">{d.data.getDate()}</p>
-                        <p className="text-[9px] font-bold">{d.fds?'—':d.itens.length?`${d.itens.length}`:'livre'}</p>
-                      </div>
-                    );
-                  })}
-                </div>
-
-                <div className="flex flex-wrap items-center gap-3 mt-3 text-[10px] text-slate-500">
-                  <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded bg-emerald-200 inline-block"/>livre</span>
-                  <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded bg-sky-200 inline-block"/>tranquilo</span>
-                  <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded bg-amber-200 inline-block"/>movimentado</span>
-                  <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded bg-red-200 inline-block"/>cheio</span>
-                </div>
-
-                {/* Detalhe dos dias cheios: saber QUE está cheio ajuda pouco;
-                    saber COM O QUÊ ajuda a decidir se dá pra esperar. */}
-                {diasAgenda.filter(d=>d.itens.length>0&&!d.fds).slice(0,5).map(d=>(
-                  <div key={`det-${d.iso}`} className="mt-3 pt-3 border-t border-slate-50">
-                    <p className="text-[11px] font-black text-slate-600">
-                      {d.data.toLocaleDateString('pt-BR',{weekday:'long',day:'2-digit',month:'2-digit'})}
-                    </p>
-                    {d.itens.slice(0,4).map((i,idx)=>(
-                      <p key={idx} className="text-[11px] text-slate-500 mt-0.5">
-                        • {i.titulo}
-                        {i.dia_todo===false&&i.hora_inicio
-                          ? <span className="text-slate-400"> — {String(i.hora_inicio).slice(0,5)} às {String(i.hora_fim||'').slice(0,5)}</span>
-                          : <span className="text-slate-400"> — dia todo</span>}
-                        {i.responsavel?<span className="text-slate-400"> · {i.responsavel}</span>:null}
-                      </p>
-                    ))}
-                    {d.itens.length>4&&<p className="text-[10px] text-slate-400 mt-0.5">e mais {d.itens.length-4}...</p>}
-                  </div>
-                ))}
-
-                <p className="text-[10px] text-slate-400 mt-3">
-                  Dia cheio não impede o pedido — se for urgente, peça mesmo assim. Isso serve só para você ter ideia do prazo.
-                </p>
-              </div>
-            )}
-          </div>
-        )}
 
         {erro&&<p className="text-sm text-red-600 font-bold bg-red-50 border border-red-200 rounded-xl px-4 py-3">{erro}</p>}
 
