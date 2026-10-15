@@ -1589,6 +1589,11 @@ export default function App(){
   // Compras abre as remessas que não nascem de uma OP: devolução, conserto e
   // triangulação. PCP continua dono da industrialização.
   const isCompras=temPerfil('COMPRAS')||isCoordenador;
+  // Quem SÓ tem Manutenção (caso do Welton) não precisa ver apontamento de
+  // produção nem chat da equipe — só a própria Manutenção. Checa os outros
+  // acessos em vez de olhar o perfil direto, assim quem tiver Manutenção
+  // somada a outro perfil continua vendo tudo o que o outro perfil dá.
+  const soManutencao=isManutencao&&!isAdmin&&!isPCP&&!isExp&&!isQual&&!isCompras&&!isCoordenador;
 
   // Cada natureza gera o texto que a fiscal lê — vai no assunto do e-mail e na
   // observação do SGQ. É por ele que ela sabe se é devolução, conserto ou
@@ -6781,13 +6786,22 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
     ...(isPCP?[{id:'NOVA_OP',label:'Nova Remessa',icon:PackageOpen,group:'PCP'},{id:'HISTORICO_PCP',label:'Histórico de Envios',icon:History,group:'PCP'},{id:'UPLOAD_ESTOQUE',label:'Sincronizar ERP',icon:UploadCloud,group:'PCP'}]:[]),
     ...(isCompras?[{id:'REMESSA_COMPRAS',label:'Nova Remessa',icon:Repeat,group:'Compras'}]:[]),
     ...(isPCP?[{id:'APONTAMENTO_HORAS',label:'Horas por OP',icon:Clock,group:'PCP'}]:[]),
-    {id:'APONTAR_PRODUCAO',label:'Apontar Produção',icon:Factory,group:'Produção'},
+    ...(soManutencao?[]:[{id:'APONTAR_PRODUCAO',label:'Apontar Produção',icon:Factory,group:'Produção'}]),
     ...(isExp?[{id:'EXPEDICAO',label:'Fila de Expedição',icon:Truck,group:'Logística',badge:remPend.length||null},{id:'FORNECEDORES',label:'Retorno de Peças',icon:RotateCcw,group:'Logística',badge:notasRemessaPendentesCount||null},{id:'CONTROLE_GERAL',label:'Controle Geral',icon:ListChecks,group:'Logística'},{id:'RELATORIO_REMESSAS',label:'Relatório de Remessas',icon:FileSearch,group:'Logística'}]:[]),
     ...(isAdmin?[{id:'IA_ANALISTA',label:'Analista IA',icon:Bot,group:'Inteligência'},{id:'AUDITORIA',label:'Auditoria BOM',icon:FileSearch,group:'Inteligência'},{id:'GESTAO_USUARIOS',label:'Gestão de Acessos',icon:Users,group:'Sistema'}]:[]),
-    {id:'CHAT_INTERNO',label:'Chat da Equipe',icon:MessageSquare,group:'Comunicação',badge:chatNaoLidos||null},
+    ...(soManutencao?[]:[{id:'CHAT_INTERNO',label:'Chat da Equipe',icon:MessageSquare,group:'Comunicação',badge:chatNaoLidos||null}]),
     ...(isQual?[{id:'QUALIDADE',label:'Qualidade',icon:ShieldAlert,group:'Qualidade'},{id:'RNCS',label:'Registro de RNCs',icon:AlertOctagon,group:'Qualidade'}]:[]),
     {id:'MANUTENCAO',label:'Manutenção',icon:Wrench,group:'Manutenção',badge:manutencaoPendentesCount||null},
   ];
+
+  // A aba inicial é o Painel Executivo, que só o ADMIN enxerga. Quem não tem
+  // acesso a ela caía numa tela em branco ao entrar — foi o que aconteceu com
+  // o Welton. Leva para a primeira aba que a pessoa realmente tem.
+  useEffect(()=>{
+    if(!usuarioLogado||navItems.length===0)return;
+    if(!navItems.some(i=>i.id===aba))setAba(navItems[0].id);
+  },[usuarioLogado,navItems,aba]);
+
   const groups=[...new Set(navItems.map(i=>i.group))];
 
   // ─── FORMULÁRIO PÚBLICO DE MANUTENÇÃO (sem login) ──────────────────────────
