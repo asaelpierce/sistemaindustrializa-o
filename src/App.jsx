@@ -944,8 +944,12 @@ function FormularioPublicoManutencao({supabase}){
 
         <div>
           <label className="text-xs font-black text-slate-500 uppercase tracking-wider">Tipo de pedido</label>
-          <div className="grid grid-cols-3 gap-2 mt-1.5">
-            {[{v:'REPARO',l:'🔧 Reparo'},{v:'COMPRA_PECA',l:'📦 Comprar peça'},{v:'PREVENTIVA',l:'🗓️ Preventiva'}].map(o=>(
+          <div className="grid grid-cols-2 gap-2 mt-1.5">
+            {/* "Comprar peça" saiu: a compra nasce de uma demanda, não é um
+                tipo de pedido em si — quem precisa de peça abre o reparo, e a
+                manutenção lança os itens de compra dentro dele. Nenhuma
+                solicitação tinha sido aberta com essa opção. */}
+            {[{v:'REPARO',l:'🔧 Reparo'},{v:'PREVENTIVA',l:'🗓️ Preventiva'}].map(o=>(
               <button key={o.v} type="button" onClick={()=>setForm({...form,categoria:o.v})}
                 className={`text-xs font-bold rounded-xl p-2.5 border-2 ${form.categoria===o.v?'bg-indigo-50 border-indigo-500 text-indigo-700':'bg-slate-50 border-slate-200 text-slate-500'}`}>
                 {o.l}
