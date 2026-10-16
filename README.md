@@ -165,3 +165,13 @@ também `texto_html`, com cada linha em seu bloco e o link clicável, escapando
 `<`, `>` e `&` para que uma descrição com "peça <3mm>" não quebre a marcação.
 No fluxo, o corpo do e-mail deve usar `texto_html`; o Teams continua com
 `texto`.
+
+### Saldo por depósito — como conferir
+
+`saldo_disponivel` é, por definição, `saldo_1090 + saldo_1002`. Quando não
+bate, o item ficou sem atualizar na sincronização e a tela mostra 0 num
+depósito onde há saldo — aconteceu com o 13230, que exibia "0 PC" tendo 2 no
+1002.
+
+A view **`estoque_incoerente`** lista esses casos. Deve estar sempre vazia;
+havendo linhas, rodar `sankhya-stock-sync`.
