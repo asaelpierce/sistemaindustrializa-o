@@ -229,3 +229,35 @@ tabela separada porque a lista é carregada inteira ao abrir a tela e imagem
 junto deixaria tudo lento. O upload pela tela reduz para 320px no navegador
 antes de enviar — foto de câmera tem vários MB e não faz diferença numa
 miniatura.
+
+## Ligação com o Portal de Propostas (Elabora/Catalogo Rev)
+
+Projeto Supabase `iwpsxftmwbsvjdktlidk`. A ponte usa **dois caminhos, de
+propósito**:
+
+**Envio (catálogo)** — `enviar-estoque-propostas`, a cada 15 min, alimenta
+`projeto_estoque` lá, via a função `receber-projeto-estoque` que já existia. A
+`referencia` é `lote-{id}`, então reenviar **atualiza** em vez de duplicar. O
+vendedor abre a tela e vê as peças na hora, sem depender de chamada externa.
+
+**Consulta e reserva (venda)** — `api-estoque-vendas`, chamada no momento de
+fechar. Sempre contra a base viva, porque é aqui que o saldo não pode estar
+desatualizado nem um minuto.
+
+Os dois convivem: a lista é o cartaz, a consulta é a conferência. O que não
+existe é **cópia de saldo** — se cada portal tivesse o seu, dois vendedores
+venderiam a mesma peça.
+
+## Alertas do estoque
+
+`estoque-alertas`, 7h30 em dias úteis, pelo notificador único:
+
+| Aviso | Para quem |
+|---|---|
+| Reservas vencendo em até 2 dias | Comercial |
+| Lotes prontos nos próximos 7 dias | Comercial e PCP |
+| Previsão vencida sem conclusão | PCP |
+| Sem atualização há mais de 7 dias | PCP |
+
+Cada aviso só sai quando há o que avisar. Aviso diário dizendo "está tudo bem"
+é aviso que ninguém lê — e no dia que importa, passa batido.
