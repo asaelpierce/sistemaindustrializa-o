@@ -1512,6 +1512,33 @@ export default function App(){
   // isManutencao mais abaixo. Qualquer um dos 3 aprovando já destrava a
   // solicitação (não precisa dos 3 juntos) — confirmado pelo usuário.
   const [manutencaoDb,setManutencaoDb]=useState([]);
+
+  // ── Estoque p/ Vendas ───────────────────────────────────────────────────
+  const [estVendasDb,setEstVendasDb]=useState([]);
+  const [reservasDb,setReservasDb]=useState([]);
+  const [evAba,setEvAba]=useState('PAINEL');           // PAINEL | ESTOQUE | RESERVAS | HISTORICO
+  const [evBusca,setEvBusca]=useState('');
+  const [evFamilia,setEvFamilia]=useState('');
+  const [evStatusRes,setEvStatusRes]=useState('');
+  const [evPagina,setEvPagina]=useState(1);
+  const [evHistorico,setEvHistorico]=useState([]);
+  const [modalReserva,setModalReserva]=useState(null);  // produto escolhido
+  const [formReserva,setFormReserva]=useState({quantidade:'',cliente:'',vendedor:'',dias:3,observacao:''});
+  const [bloqueioAtivo,setBloqueioAtivo]=useState(null);// {id,expiraEm}
+  const [modalAtualizar,setModalAtualizar]=useState(null);
+  const [formAtualizar,setFormAtualizar]=useState({qtd_estoque:'',qtd_produzida:'',estoque_minimo:'',observacao:''});
+
+  const fetchEstoqueVendas=useCallback(async()=>{
+    if(!supabase)return;
+    try{
+      const[ev,res]=await Promise.all([
+        supabase.from('estoque_vendas').select('*').eq('ativo',true).order('descricao'),
+        supabase.from('estoque_reservas').select('*').order('criado_em',{ascending:false}).limit(500),
+      ]);
+      if(ev.data)setEstVendasDb(ev.data);
+      if(res.data)setReservasDb(res.data);
+    }catch(e){console.warn('Erro ao buscar estoque de vendas:',e);}
+  },[supabase]);
   // Apontamento de mão de obra na OP (Sankhya AD_TPRFUNC) — substitui a
   // planilha mensal "Lançamento de Funcionários na OP".
   const [apontamentoDb,setApontamentoDb]=useState([]);
@@ -1691,6 +1718,11 @@ export default function App(){
   // Compras abre as remessas que não nascem de uma OP: devolução, conserto e
   // triangulação. PCP continua dono da industrialização.
   const isCompras=temPerfil('COMPRAS')||isCoordenador;
+  // Estoque p/ Vendas: a Produção informa o saldo, o Comercial reserva.
+  // Separado de propósito — quem vende não mexe no estoque e vice-versa.
+  const isComercial=temPerfil('COMERCIAL')||isAdmin;
+  const podeAtualizarEstoqueVendas=isPCP||isAdmin;
+  const veEstoqueVendas=isComercial||podeAtualizarEstoqueVendas||isCoordenador;
   // Quem SÓ tem Manutenção (caso do Welton) não precisa ver apontamento de
   // produção nem chat da equipe — só a própria Manutenção. Checa os outros
   // acessos em vez de olhar o perfil direto, assim quem tiver Manutenção
@@ -4313,7 +4345,7 @@ export default function App(){
   },[supabase,usuarioLogado?.perfil]);
 
   // fetchAll na inicialização + a cada 60s (dados pesados)
-  useEffect(()=>{if(supabase){fetchAll();fetchQual();fetchManutencao();fetchEquipamentosPreventivas();fetchApontamento();fetchApontPortal();fetchColaboradores();const iv=setInterval(fetchAll,90000);return()=>clearInterval(iv);}},[supabase]);
+  useEffect(()=>{if(supabase){fetchAll();fetchQual();fetchManutencao();fetchEquipamentosPreventivas();fetchApontamento();fetchApontPortal();fetchColaboradores();fetchEstoqueVendas();const iv=setInterval(fetchAll,90000);return()=>clearInterval(iv);}},[supabase]);
 
   // Bug real encontrado: como o logout não recarrega a página (só limpa
   // usuarioLogado), filtros deixados marcados numa sessão (ex: "Predial")
@@ -6465,6 +6497,264 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
     });
   };
 
+  // ── Estoque p/ Vendas: cálculos ─────────────────────────────────────────
+  const DIAS_SEM_ATUALIZAR=7;
+  const evResumo=useMemo(()=>{
+    const hoje=Date.now();
+    const desatualizado=p=>(hoje-new Date(p.atualizado_em).getTime())/864e5>DIAS_SEM_ATUALIZAR;
+    const ativos=reservasDb.filter(r=>['RESERVADO','BLOQUEIO'].includes(s(r.status))&&new Date(r.validade)>new Date());
+    const porFamilia={};
+    estVendasDb.forEach(p=>{
+      const f=s(p.familia)||'(sem família)';
+      if(!porFamilia[f])porFamilia[f]={familia:f,disponivel:0,estoque:0,reservado:0,itens:0};
+      porFamilia[f].disponivel+=Number(p.qtd_disponivel||0);
+      porFamilia[f].estoque+=Number(p.qtd_estoque||0);
+      porFamilia[f].reservado+=Number(p.qtd_reservada||0);
+      porFamilia[f].itens++;
+    });
+    const agrupar=(lista,chave)=>{
+      const m={};
+      lista.forEach(r=>{const k=s(r[chave])||'—';if(!m[k])m[k]={nome:k,qtd:0,reservas:0};
+        m[k].qtd+=Number(r.quantidade||0);m[k].reservas++;});
+      return Object.values(m).sort((a2,b2)=>b2.qtd-a2.qtd);
+    };
+    const porProduto={};
+    reservasDb.forEach(r=>{const k=s(r.codigo_produto);if(!porProduto[k])porProduto[k]={cod:k,qtd:0,vezes:0};
+      porProduto[k].qtd+=Number(r.quantidade||0);porProduto[k].vezes++;});
+    return{
+      produtos:estVendasDb.length,
+      estoqueTotal:estVendasDb.reduce((a2,p)=>a2+Number(p.qtd_estoque||0),0),
+      disponivel:estVendasDb.reduce((a2,p)=>a2+Number(p.qtd_disponivel||0),0),
+      reservado:estVendasDb.reduce((a2,p)=>a2+Number(p.qtd_reservada||0),0),
+      reservasAtivas:ativos.length,
+      semAtualizacao:estVendasDb.filter(desatualizado).length,
+      abaixoMinimo:estVendasDb.filter(p=>Number(p.estoque_minimo||0)>0&&Number(p.qtd_disponivel||0)<Number(p.estoque_minimo)).length,
+      vencendo:ativos.filter(r=>(new Date(r.validade)-hoje)/864e5<=2).length,
+      porFamilia:Object.values(porFamilia).sort((a2,b2)=>b2.disponivel-a2.disponivel),
+      porVendedor:agrupar(ativos,'vendedor'),
+      porCliente:agrupar(ativos,'cliente'),
+      maisReservados:Object.values(porProduto).sort((a2,b2)=>b2.vezes-a2.vezes).slice(0,8),
+      desatualizado,
+    };
+  },[estVendasDb,reservasDb]);
+
+  const evFiltrados=useMemo(()=>{
+    const t=s(evBusca).toLowerCase();
+    return estVendasDb.filter(p=>{
+      if(evFamilia&&s(p.familia)!==evFamilia)return false;
+      if(!t)return true;
+      return s(p.codigo_produto).toLowerCase().includes(t)||s(p.descricao).toLowerCase().includes(t);
+    });
+  },[estVendasDb,evBusca,evFamilia]);
+
+  const reservasFiltradas=useMemo(()=>{
+    const t=s(evBusca).toLowerCase();
+    return reservasDb.filter(r=>{
+      if(evStatusRes&&s(r.status)!==evStatusRes)return false;
+      if(!t)return true;
+      return [r.numero,r.codigo_produto,r.cliente,r.vendedor].some(x=>s(x).toLowerCase().includes(t));
+    });
+  },[reservasDb,evBusca,evStatusRes]);
+
+  // ── Estoque p/ Vendas: ações ────────────────────────────────────────────
+  // Abrir a reserva cria um BLOQUEIO de 5 minutos. O saldo sai do disponível
+  // na hora — é isso que impede outro vendedor de usar o mesmo número
+  // enquanto este ainda está preenchendo o formulário.
+  const abrirReserva=async produto=>{
+    if(Number(produto.qtd_disponivel||0)<=0)return addToast('Sem saldo disponível para este produto.','error');
+    setFormReserva({quantidade:'',cliente:'',vendedor:s(usuarioLogado?.nome),dias:3,observacao:''});
+    setBloqueioAtivo(null);
+    setModalReserva(produto);
+  };
+
+  const criarBloqueio=async(produto,qtd)=>{
+    try{
+      const validade=new Date(Date.now()+5*60000).toISOString();
+      const{data,error}=await supabase.from('estoque_reservas').insert([{
+        codigo_produto:produto.codigo_produto,quantidade:qtd,
+        cliente:'(bloqueio)',vendedor:s(usuarioLogado?.nome)||'—',
+        status:'BLOQUEIO',validade,criado_por:s(usuarioLogado?.nome),
+      }]).select('id,validade').single();
+      if(error)throw error;
+      setBloqueioAtivo({id:data.id,expiraEm:data.validade});
+      fetchEstoqueVendas();
+      return data.id;
+    }catch(e){
+      addToast(s(e.message).includes('insuficiente')
+        ?'Outro vendedor acabou de reservar. Confira o saldo.'
+        :'Erro ao bloquear: '+e.message,'error');
+      fetchEstoqueVendas();
+      return null;
+    }
+  };
+
+  const confirmarReserva=async()=>{
+    const p0=modalReserva;if(!p0)return;
+    const f=formReserva;
+    const qtd=Number(f.quantidade);
+    if(!qtd||qtd<=0)return addToast('Informe a quantidade.','error');
+    if(!s(f.cliente).trim())return addToast('Informe o cliente.','error');
+    if(!s(f.vendedor).trim())return addToast('Informe o vendedor.','error');
+    const dias=Number(f.dias)||3;
+    try{
+      const validade=new Date(Date.now()+dias*864e5).toISOString();
+      if(bloqueioAtivo){
+        // Converte o bloqueio em reserva: a quantidade já está fora do
+        // disponível, então não há janela para outro vendedor entrar.
+        const{error}=await supabase.from('estoque_reservas').update({
+          quantidade:qtd,cliente:s(f.cliente).trim(),vendedor:s(f.vendedor).trim(),
+          observacao:s(f.observacao)||null,status:'RESERVADO',validade,
+        }).eq('id',bloqueioAtivo.id);
+        if(error)throw error;
+      }else{
+        const{error}=await supabase.from('estoque_reservas').insert([{
+          codigo_produto:p0.codigo_produto,quantidade:qtd,
+          cliente:s(f.cliente).trim(),vendedor:s(f.vendedor).trim(),
+          observacao:s(f.observacao)||null,status:'RESERVADO',validade,
+          criado_por:s(usuarioLogado?.nome),
+        }]);
+        if(error)throw error;
+      }
+      addToast(`Reserva criada: ${fmtD(qtd)} ${s(p0.unidade)} de ${s(p0.codigo_produto)}.`);
+      setModalReserva(null);setBloqueioAtivo(null);
+      fetchEstoqueVendas();
+    }catch(e){
+      addToast(s(e.message).includes('insuficiente')
+        ?'Não há saldo suficiente — outro vendedor reservou antes.'
+        :'Erro ao reservar: '+e.message,'error');
+      fetchEstoqueVendas();
+    }
+  };
+
+  const cancelarBloqueio=async()=>{
+    if(bloqueioAtivo){
+      await supabase.from('estoque_reservas').delete().eq('id',bloqueioAtivo.id).catch(()=>{});
+      fetchEstoqueVendas();
+    }
+    setBloqueioAtivo(null);setModalReserva(null);
+  };
+
+  const mudarStatusReserva=async(r,novo,motivo)=>{
+    // Quem cancela: o próprio vendedor ou um gestor. Vendedor não mexe na
+    // reserva de outro, que foi a regra pedida.
+    if(novo==='CANCELADO'&&!isAdmin&&!isCoordenador
+       &&s(r.vendedor).toLowerCase()!==s(usuarioLogado?.nome).toLowerCase())
+      return addToast('Você só pode cancelar as suas próprias reservas.','error');
+    try{
+      const campos={status:novo};
+      if(novo==='CONFIRMADO'){campos.confirmado_em=new Date().toISOString();campos.confirmado_por=s(usuarioLogado?.nome);}
+      if(novo==='CANCELADO'){campos.cancelado_em=new Date().toISOString();campos.cancelado_por=s(usuarioLogado?.nome);campos.motivo_cancelamento=motivo||null;}
+      const{error}=await supabase.from('estoque_reservas').update(campos).eq('id',r.id);
+      if(error)throw error;
+      addToast(novo==='CONFIRMADO'?'Reserva confirmada — pedido faturado.':'Reserva cancelada. O saldo voltou ao disponível.');
+      fetchEstoqueVendas();
+    }catch(e){addToast('Erro: '+e.message,'error');}
+  };
+
+  const abrirAtualizacao=produto=>{
+    setFormAtualizar({
+      qtd_estoque:String(produto.qtd_estoque??''),
+      qtd_produzida:String(produto.qtd_produzida??''),
+      estoque_minimo:String(produto.estoque_minimo??''),
+      observacao:'',
+    });
+    setModalAtualizar(produto);
+  };
+
+  const salvarAtualizacao=async()=>{
+    const p0=modalAtualizar;if(!p0)return;
+    const f=formAtualizar;
+    const novo=Number(f.qtd_estoque);
+    if(!Number.isFinite(novo)||novo<0)return addToast('Informe a quantidade em estoque.','error');
+    // Não deixa reduzir abaixo do que já está reservado: o saldo já foi
+    // prometido a um cliente.
+    if(novo<Number(p0.qtd_reservada||0))
+      return addToast(`Já existem ${fmtD(p0.qtd_reservada)} reservados. O estoque não pode ficar abaixo disso.`,'error');
+    try{
+      const{error}=await supabase.from('estoque_vendas').update({
+        qtd_estoque:novo,
+        qtd_produzida:Number(f.qtd_produzida)||0,
+        estoque_minimo:Number(f.estoque_minimo)||0,
+        observacao:s(f.observacao)||null,
+        atualizado_em:new Date().toISOString(),
+        atualizado_por:s(usuarioLogado?.nome),
+      }).eq('codigo_produto',p0.codigo_produto);
+      if(error)throw error;
+      await supabase.from('estoque_vendas_historico').insert([{
+        codigo_produto:p0.codigo_produto,
+        qtd_estoque_anterior:Number(p0.qtd_estoque||0),qtd_estoque_nova:novo,
+        qtd_produzida:Number(f.qtd_produzida)||0,
+        observacao:s(f.observacao)||null,atualizado_por:s(usuarioLogado?.nome)||'—',
+      }]);
+      addToast('Estoque atualizado.');
+      setModalAtualizar(null);
+      fetchEstoqueVendas();
+    }catch(e){addToast('Erro ao atualizar: '+e.message,'error');}
+  };
+
+  const carregarHistoricoEstoque=useCallback(async()=>{
+    if(!supabase)return;
+    const{data}=await supabase.from('estoque_vendas_historico').select('*')
+      .order('criado_em',{ascending:false}).limit(300);
+    setEvHistorico(data||[]);
+  },[supabase]);
+
+  const exportarEstoqueVendas=async()=>{
+    if(!window.ExcelJS)return addToast('ExcelJS não carregado. Recarregue a página.','error');
+    try{
+      const wb=new window.ExcelJS.Workbook();
+      const cab=(ws,cols)=>{
+        const row=ws.getRow(1);
+        cols.forEach((cl,i)=>{
+          const cel=row.getCell(i+1);cel.value=cl.t;
+          cel.font={name:'Arial',bold:true,color:{argb:'FFFFFFFF'},size:10};
+          cel.fill={type:'pattern',pattern:'solid',fgColor:{argb:'FF1F3864'}};
+          cel.alignment={horizontal:'center',vertical:'middle',wrapText:true};
+          ws.getColumn(i+1).width=cl.w;
+        });
+        row.height=26;ws.views=[{state:'frozen',ySplit:1}];
+      };
+
+      const w1=wb.addWorksheet('Estoque');
+      cab(w1,[{t:'Código',w:14},{t:'Descrição',w:46},{t:'Linha',w:16},{t:'UM',w:8},
+              {t:'Produzido',w:12},{t:'Estoque',w:12},{t:'Reservado',w:12},
+              {t:'Disponível',w:12},{t:'Mínimo',w:10},{t:'Atualizado em',w:18},{t:'Por',w:18}]);
+      estVendasDb.forEach((p,i)=>{
+        const r=w1.getRow(2+i);
+        [s(p.codigo_produto),s(p.descricao),s(p.familia),s(p.unidade),
+         Number(p.qtd_produzida||0),Number(p.qtd_estoque||0),Number(p.qtd_reservada||0),
+         Number(p.qtd_disponivel||0),Number(p.estoque_minimo||0),
+         fmtDataHoraLocal(p.atualizado_em),s(p.atualizado_por)
+        ].forEach((v,j)=>{r.getCell(j+1).value=v;});
+      });
+      [5,6,7,8,9].forEach(n=>{w1.getColumn(n).numFmt='#,##0.00';});
+      w1.autoFilter={from:{row:1,column:1},to:{row:1,column:11}};
+
+      const w2=wb.addWorksheet('Reservas');
+      cab(w2,[{t:'Reserva',w:14},{t:'Produto',w:14},{t:'Descrição',w:40},{t:'Qtd',w:10},
+              {t:'Cliente',w:26},{t:'Vendedor',w:20},{t:'Status',w:14},
+              {t:'Criada em',w:18},{t:'Validade',w:18},{t:'Observação',w:30}]);
+      reservasDb.forEach((r0,i)=>{
+        const prod=estVendasDb.find(p=>p.codigo_produto===r0.codigo_produto);
+        const r=w2.getRow(2+i);
+        [s(r0.numero),s(r0.codigo_produto),s(prod?.descricao),Number(r0.quantidade||0),
+         s(r0.cliente),s(r0.vendedor),s(r0.status),
+         fmtDataHoraLocal(r0.criado_em),fmtDataHoraLocal(r0.validade),s(r0.observacao)
+        ].forEach((v,j)=>{r.getCell(j+1).value=v;});
+      });
+      w2.getColumn(4).numFmt='#,##0.00';
+      w2.autoFilter={from:{row:1,column:1},to:{row:1,column:10}};
+
+      const buf=await wb.xlsx.writeBuffer();
+      const blob=new Blob([buf],{type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'});
+      const a2=document.createElement('a');
+      a2.href=URL.createObjectURL(blob);
+      a2.download=`Estoque_Vendas_${new Date().toISOString().slice(0,10)}.xlsx`;
+      a2.click();
+      addToast('Exportado!');
+    }catch(e){addToast('Erro ao exportar: '+e.message,'error');}
+  };
+
   // ── Relatório de Remessas ────────────────────────────────────────────────
   // Recalcula tudo ao vivo a partir de remessasDb. Filtro de período opcional.
   const [relPeriodo,setRelPeriodo]=useState({de:'',ate:''});
@@ -7044,6 +7334,7 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
     ...((isPCP||isExp)?[{id:'PRODUCAO',label:'Produção por Setor',icon:Factory,group:'PCP'}]:[]),
     ...(isPCP?[{id:'NOVA_OP',label:'Nova Remessa',icon:PackageOpen,group:'PCP'},{id:'HISTORICO_PCP',label:'Histórico de Envios',icon:History,group:'PCP'},{id:'UPLOAD_ESTOQUE',label:'Sincronizar ERP',icon:UploadCloud,group:'PCP'}]:[]),
     ...(isCompras?[{id:'REMESSA_COMPRAS',label:'Nova Remessa',icon:Repeat,group:'Compras'}]:[]),
+    ...(veEstoqueVendas?[{id:'ESTOQUE_VENDAS',label:'Estoque p/ Vendas',icon:PackageOpen,group:'Comercial',badge:evResumo.semAtualizacao||null}]:[]),
     ...(isPCP?[{id:'APONTAMENTO_HORAS',label:'Horas por OP',icon:Clock,group:'PCP'}]:[]),
     ...(soManutencao?[]:[{id:'APONTAR_PRODUCAO',label:'Apontar Produção',icon:Factory,group:'Produção'}]),
     ...(isExp?[{id:'EXPEDICAO',label:'Fila de Expedição',icon:Truck,group:'Logística',badge:remPend.length||null},{id:'FORNECEDORES',label:'Retorno de Peças',icon:RotateCcw,group:'Logística',badge:notasRemessaPendentesCount||null},{id:'CONTROLE_GERAL',label:'Controle Geral',icon:ListChecks,group:'Logística'},{id:'RELATORIO_REMESSAS',label:'Relatório de Remessas',icon:FileSearch,group:'Logística'}]:[]),
@@ -7253,6 +7544,146 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
                 </Btn>
               </div>
               <p className="text-[10px] text-slate-400 text-center">A data e o horário definidos aqui não poderão ser alterados depois.</p>
+            </div>
+          </div>
+        </div>
+        );
+      })()}
+
+      {/* ── MODAL DE RESERVA ───────────────────────────────────────────────
+          Ao informar a quantidade, o saldo é BLOQUEADO por 5 minutos. É isso
+          que impede outro vendedor de usar o mesmo número enquanto este
+          ainda está preenchendo cliente e prazo. */}
+      {modalReserva&&(()=>{
+        const p0=modalReserva;
+        const f=formReserva;
+        const atual=estVendasDb.find(x=>x.codigo_produto===p0.codigo_produto)||p0;
+        const livre=Number(atual.qtd_disponivel||0)+(bloqueioAtivo?Number(f.quantidade||0):0);
+        return(
+        <div className="fixed inset-0 bg-slate-900/60 z-50 flex items-center justify-center p-4" onClick={cancelarBloqueio}>
+          <div className="bg-white rounded-2xl max-w-lg w-full" onClick={e=>e.stopPropagation()}>
+            <div className="px-6 py-4 border-b border-slate-100 flex items-start justify-between gap-3">
+              <div>
+                <p className="text-sm font-black text-slate-900">Reservar estoque</p>
+                <p className="text-xs text-slate-500">{s(p0.codigo_produto)} · {s(p0.descricao)}</p>
+              </div>
+              <button onClick={cancelarBloqueio} className="text-slate-400 hover:text-slate-600"><X className="w-5 h-5"/></button>
+            </div>
+
+            <div className="p-6 space-y-4">
+              <div className="bg-slate-50 rounded-xl px-4 py-3 flex items-center justify-between">
+                <div>
+                  <p className="text-[10px] font-black text-slate-400 uppercase">Disponível agora</p>
+                  <p className="text-2xl font-black text-emerald-600">{fmtD(atual.qtd_disponivel)} <span className="text-sm text-slate-400">{s(p0.unidade)}</span></p>
+                </div>
+                {bloqueioAtivo&&(
+                  <div className="text-right">
+                    <p className="text-[10px] font-black text-sky-600 uppercase">Bloqueado para você</p>
+                    <p className="text-xs text-sky-700">até {new Date(bloqueioAtivo.expiraEm).toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'})}</p>
+                  </div>
+                )}
+              </div>
+
+              <Field label="Quantidade" required>
+                <div className="flex gap-2">
+                  <Inp type="number" step="any" min="0" placeholder="0" value={f.quantidade}
+                    disabled={!!bloqueioAtivo}
+                    onChange={e=>setFormReserva({...f,quantidade:e.target.value})}/>
+                  {!bloqueioAtivo&&(
+                    <Btn variant="dark" onClick={async()=>{
+                        const q=Number(f.quantidade);
+                        if(!q||q<=0)return addToast('Informe a quantidade.','error');
+                        if(q>Number(atual.qtd_disponivel||0))return addToast(`Só há ${fmtD(atual.qtd_disponivel)} disponível.`,'error');
+                        await criarBloqueio(p0,q);
+                      }}>Bloquear</Btn>
+                  )}
+                </div>
+                <p className="text-[10px] text-slate-400 mt-1">
+                  {bloqueioAtivo
+                    ?'Quantidade bloqueada. Complete os dados abaixo para confirmar a reserva.'
+                    :'Bloqueie a quantidade primeiro — ela sai do disponível enquanto você preenche o resto.'}
+                </p>
+              </Field>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <Field label="Cliente" required>
+                  <Inp placeholder="Nome do cliente" value={f.cliente} onChange={e=>setFormReserva({...f,cliente:e.target.value})}/>
+                </Field>
+                <Field label="Vendedor" required>
+                  <Inp value={f.vendedor} onChange={e=>setFormReserva({...f,vendedor:e.target.value})}/>
+                </Field>
+              </div>
+
+              <Field label="Validade da reserva">
+                <Sel value={f.dias} onChange={e=>setFormReserva({...f,dias:e.target.value})}>
+                  {[1,2,3,5,7,15,30].map(d=><option key={d} value={d}>{d} dia(s)</option>)}
+                </Sel>
+                <p className="text-[10px] text-slate-400 mt-1">Passado o prazo, o saldo volta ao disponível automaticamente.</p>
+              </Field>
+
+              <Field label="Observação">
+                <Inp placeholder="Opcional" value={f.observacao} onChange={e=>setFormReserva({...f,observacao:e.target.value})}/>
+              </Field>
+
+              <div className="flex justify-end gap-2 pt-2">
+                <Btn variant="secondary" onClick={cancelarBloqueio}>Cancelar</Btn>
+                <Btn variant="primary" onClick={confirmarReserva} disabled={!bloqueioAtivo}>
+                  <CheckCircle className="w-4 h-4"/>Confirmar reserva
+                </Btn>
+              </div>
+            </div>
+          </div>
+        </div>
+        );
+      })()}
+
+      {/* ── MODAL DE ATUALIZAÇÃO DO ESTOQUE (Produção/PCP) ───────────────── */}
+      {modalAtualizar&&(()=>{
+        const p0=modalAtualizar;const f=formAtualizar;
+        const novo=Number(f.qtd_estoque);
+        const abaixoReservado=Number.isFinite(novo)&&novo<Number(p0.qtd_reservada||0);
+        return(
+        <div className="fixed inset-0 bg-slate-900/60 z-50 flex items-center justify-center p-4" onClick={()=>setModalAtualizar(null)}>
+          <div className="bg-white rounded-2xl max-w-lg w-full" onClick={e=>e.stopPropagation()}>
+            <div className="px-6 py-4 border-b border-slate-100 flex items-start justify-between gap-3">
+              <div>
+                <p className="text-sm font-black text-slate-900">Atualizar estoque</p>
+                <p className="text-xs text-slate-500">{s(p0.codigo_produto)} · {s(p0.descricao)}</p>
+              </div>
+              <button onClick={()=>setModalAtualizar(null)} className="text-slate-400 hover:text-slate-600"><X className="w-5 h-5"/></button>
+            </div>
+            <div className="p-6 space-y-4">
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <Field label="Em estoque" required>
+                  <Inp type="number" step="any" min="0" value={f.qtd_estoque} onChange={e=>setFormAtualizar({...f,qtd_estoque:e.target.value})}/>
+                </Field>
+                <Field label="Produzido na semana">
+                  <Inp type="number" step="any" min="0" value={f.qtd_produzida} onChange={e=>setFormAtualizar({...f,qtd_produzida:e.target.value})}/>
+                </Field>
+                <Field label="Estoque mínimo">
+                  <Inp type="number" step="any" min="0" value={f.estoque_minimo} onChange={e=>setFormAtualizar({...f,estoque_minimo:e.target.value})}/>
+                </Field>
+              </div>
+
+              {Number(p0.qtd_reservada||0)>0&&(
+                <div className={`rounded-xl px-4 py-3 border ${abaixoReservado?'bg-red-50 border-red-300':'bg-slate-50 border-slate-200'}`}>
+                  <p className={`text-xs ${abaixoReservado?'text-red-800 font-bold':'text-slate-600'}`}>
+                    {fmtD(p0.qtd_reservada)} {s(p0.unidade)} já estão reservados para clientes.
+                    {abaixoReservado&&' O estoque não pode ficar abaixo disso.'}
+                  </p>
+                </div>
+              )}
+
+              <Field label="Observação">
+                <textarea rows={2} value={f.observacao} onChange={e=>setFormAtualizar({...f,observacao:e.target.value})}
+                  className="w-full border border-slate-200 rounded-xl px-3 py-2 text-sm outline-none focus:border-indigo-400 resize-none"
+                  placeholder="O que mudou nesta semana"/>
+              </Field>
+
+              <div className="flex justify-end gap-2">
+                <Btn variant="secondary" onClick={()=>setModalAtualizar(null)}>Cancelar</Btn>
+                <Btn variant="primary" onClick={salvarAtualizacao} disabled={abaixoReservado}>Salvar</Btn>
+              </div>
             </div>
           </div>
         </div>
@@ -10515,6 +10946,347 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
               );
             })()}
 
+            {/* ── ESTOQUE P/ VENDAS ─────────────────────────────────────────
+                A Produção informa o saldo, o Comercial reserva. O disponível
+                cai no instante da reserva, então dois vendedores não usam o
+                mesmo número. */}
+            {aba==='ESTOQUE_VENDAS'&&(()=>{
+              const R=evResumo;
+              const familias=[...new Set(estVendasDb.map(p=>s(p.familia)).filter(Boolean))].sort();
+              const porPagina=15;
+              const totalPag=Math.max(1,Math.ceil(evFiltrados.length/porPagina));
+              const pagina=Math.min(evPagina,totalPag);
+              const naTela=evFiltrados.slice((pagina-1)*porPagina,pagina*porPagina);
+              const maxFam=Math.max(1,...R.porFamilia.map(f=>f.disponivel));
+              const corStatus=st=>st==='RESERVADO'?'bg-amber-100 text-amber-700'
+                :st==='CONFIRMADO'?'bg-emerald-100 text-emerald-700'
+                :st==='BLOQUEIO'?'bg-sky-100 text-sky-700'
+                :st==='EXPIRADO'?'bg-slate-100 text-slate-500'
+                :'bg-red-100 text-red-600';
+              const diasAte=v=>Math.ceil((new Date(v)-Date.now())/864e5);
+
+              return(
+              <div className="space-y-5 pb-10" style={{animation:'fadeIn 0.2s ease'}}>
+                <div className="flex flex-wrap items-end justify-between gap-3">
+                  <SectionHeader title="📦 Estoque p/ Vendas" subtitle="Saldo disponível para o comercial negociar — reserva baixa o disponível na hora"/>
+                  <div className="flex items-end gap-2">
+                    <Btn variant="secondary" onClick={()=>{fetchEstoqueVendas();addToast('Atualizado.');}}><RefreshCw className="w-4 h-4"/>Recarregar</Btn>
+                    <Btn variant="dark" onClick={exportarEstoqueVendas}><FileSpreadsheet className="w-4 h-4"/>Exportar Excel</Btn>
+                  </div>
+                </div>
+
+                {/* Avisos que exigem ação */}
+                {(R.semAtualizacao>0||R.abaixoMinimo>0||R.vencendo>0)&&(
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                    {R.semAtualizacao>0&&(
+                      <div className="bg-amber-50 border border-amber-200 rounded-xl px-4 py-3">
+                        <p className="text-sm font-black text-amber-800">{R.semAtualizacao} produto(s) desatualizado(s)</p>
+                        <p className="text-[11px] text-amber-700">Sem informação há mais de {DIAS_SEM_ATUALIZAR} dias</p>
+                      </div>
+                    )}
+                    {R.abaixoMinimo>0&&(
+                      <div className="bg-red-50 border border-red-200 rounded-xl px-4 py-3">
+                        <p className="text-sm font-black text-red-800">{R.abaixoMinimo} abaixo do mínimo</p>
+                        <p className="text-[11px] text-red-700">Disponível menor que o estoque mínimo</p>
+                      </div>
+                    )}
+                    {R.vencendo>0&&(
+                      <div className="bg-sky-50 border border-sky-200 rounded-xl px-4 py-3">
+                        <p className="text-sm font-black text-sky-800">{R.vencendo} reserva(s) vencendo</p>
+                        <p className="text-[11px] text-sky-700">Vencem em até 2 dias</p>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* Abas */}
+                <div className="flex items-center gap-1 bg-slate-100 rounded-xl p-1 w-fit">
+                  {[{id:'PAINEL',l:'Painel'},{id:'ESTOQUE',l:'Estoque'},
+                    {id:'RESERVAS',l:`Reservas${R.reservasAtivas?` (${R.reservasAtivas})`:''}`},
+                    {id:'HISTORICO',l:'Histórico'}].map(v=>(
+                    <button key={v.id} onClick={()=>{setEvAba(v.id);if(v.id==='HISTORICO')carregarHistoricoEstoque();}}
+                      className={`text-xs font-bold px-4 py-2 rounded-lg transition-all ${evAba===v.id?'bg-white text-slate-900 shadow-sm':'text-slate-500 hover:text-slate-700'}`}>
+                      {v.l}
+                    </button>
+                  ))}
+                </div>
+
+                {/* ── PAINEL ── */}
+                {evAba==='PAINEL'&&(
+                  <div className="space-y-4">
+                    <div className="grid grid-cols-2 lg:grid-cols-6 gap-3">
+                      {[
+                        {l:'Produtos',v:R.produtos},
+                        {l:'Estoque total',v:fmtD(R.estoqueTotal)},
+                        {l:'Disponível',v:fmtD(R.disponivel),destaque:true},
+                        {l:'Reservado',v:fmtD(R.reservado)},
+                        {l:'Reservas ativas',v:R.reservasAtivas},
+                        {l:'Sem atualização',v:R.semAtualizacao,alerta:R.semAtualizacao>0},
+                      ].map(c2=>(
+                        <div key={c2.l} className={`rounded-2xl border-2 p-4 ${c2.destaque?'bg-emerald-50 border-emerald-300':c2.alerta?'bg-amber-50 border-amber-300':'bg-white border-slate-200'}`}>
+                          <p className="text-[10px] font-black text-slate-400 uppercase tracking-wider">{c2.l}</p>
+                          <p className={`text-2xl font-black mt-1 ${c2.destaque?'text-emerald-700':c2.alerta?'text-amber-700':'text-slate-800'}`}>{c2.v}</p>
+                        </div>
+                      ))}
+                    </div>
+
+                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                      <div className="bg-white rounded-2xl border border-slate-200 p-5">
+                        <p className="text-xs font-black text-slate-600 uppercase tracking-wider mb-3">Disponível por linha</p>
+                        <div className="space-y-2">
+                          {R.porFamilia.map(f=>(
+                            <div key={f.familia}>
+                              <div className="flex items-center justify-between text-xs mb-0.5">
+                                <span className="font-bold text-slate-700">{f.familia} <span className="text-slate-400 font-normal">· {f.itens} item(ns)</span></span>
+                                <span className="text-slate-600 font-bold">{fmtD(f.disponivel)}</span>
+                              </div>
+                              <div className="h-2.5 bg-slate-100 rounded-full overflow-hidden flex">
+                                <div className="h-full bg-emerald-400" style={{width:`${(f.disponivel/maxFam)*100}%`}}/>
+                                <div className="h-full bg-amber-300" style={{width:`${(f.reservado/maxFam)*100}%`}}/>
+                              </div>
+                            </div>
+                          ))}
+                          {R.porFamilia.length===0&&<p className="text-xs text-slate-300 py-6 text-center">Sem produtos cadastrados.</p>}
+                        </div>
+                        <p className="text-[10px] text-slate-400 mt-3">
+                          <span className="inline-block w-2 h-2 rounded bg-emerald-400 mr-1"/>disponível
+                          <span className="inline-block w-2 h-2 rounded bg-amber-300 ml-3 mr-1"/>reservado
+                        </p>
+                      </div>
+
+                      <div className="bg-white rounded-2xl border border-slate-200 p-5">
+                        <p className="text-xs font-black text-slate-600 uppercase tracking-wider mb-3">Reservas ativas por vendedor</p>
+                        <div className="space-y-2">
+                          {R.porVendedor.slice(0,8).map(v=>{
+                            const max=Math.max(1,...R.porVendedor.map(x=>x.qtd));
+                            return(
+                              <div key={v.nome}>
+                                <div className="flex items-center justify-between text-xs mb-0.5">
+                                  <span className="font-bold text-slate-700">{v.nome}</span>
+                                  <span className="text-slate-500">{fmtD(v.qtd)} <span className="text-slate-300">({v.reservas})</span></span>
+                                </div>
+                                <div className="h-2 bg-slate-100 rounded-full overflow-hidden"><div className="h-full bg-indigo-400 rounded-full" style={{width:`${(v.qtd/max)*100}%`}}/></div>
+                              </div>
+                            );
+                          })}
+                          {R.porVendedor.length===0&&<p className="text-xs text-slate-300 py-6 text-center">Nenhuma reserva ativa.</p>}
+                        </div>
+                      </div>
+
+                      <div className="bg-white rounded-2xl border border-slate-200 p-5">
+                        <p className="text-xs font-black text-slate-600 uppercase tracking-wider mb-3">Reservas ativas por cliente</p>
+                        <div className="space-y-1.5">
+                          {R.porCliente.slice(0,8).map(cl=>(
+                            <div key={cl.nome} className="flex items-center justify-between text-xs">
+                              <span className="font-bold text-slate-700 truncate">{cl.nome}</span>
+                              <span className="text-slate-500 flex-shrink-0">{fmtD(cl.qtd)} <span className="text-slate-300">({cl.reservas})</span></span>
+                            </div>
+                          ))}
+                          {R.porCliente.length===0&&<p className="text-xs text-slate-300 py-6 text-center">Nenhuma reserva ativa.</p>}
+                        </div>
+                      </div>
+
+                      <div className="bg-white rounded-2xl border border-slate-200 p-5">
+                        <p className="text-xs font-black text-slate-600 uppercase tracking-wider mb-3">Itens mais reservados</p>
+                        <div className="space-y-1.5">
+                          {R.maisReservados.map(i=>{
+                            const prod=estVendasDb.find(p=>p.codigo_produto===i.cod);
+                            return(
+                              <div key={i.cod} className="flex items-center justify-between text-xs">
+                                <span className="truncate"><span className="font-bold text-slate-700">{i.cod}</span> <span className="text-slate-400">{s(prod?.descricao).slice(0,32)}</span></span>
+                                <span className="text-slate-500 flex-shrink-0">{i.vezes}x · {fmtD(i.qtd)}</span>
+                              </div>
+                            );
+                          })}
+                          {R.maisReservados.length===0&&<p className="text-xs text-slate-300 py-6 text-center">Nenhuma reserva registrada.</p>}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* ── ESTOQUE ── */}
+                {evAba==='ESTOQUE'&&(
+                  <div className="space-y-3">
+                    <div className="flex flex-wrap gap-2">
+                      <Inp placeholder="Buscar por código ou descrição..." value={evBusca}
+                        onChange={e=>{setEvBusca(e.target.value);setEvPagina(1);}} className="flex-1 min-w-[220px]"/>
+                      <Sel value={evFamilia} onChange={e=>{setEvFamilia(e.target.value);setEvPagina(1);}} className="w-52">
+                        <option value="">Todas as linhas</option>
+                        {familias.map(f=><option key={f} value={f}>{f}</option>)}
+                      </Sel>
+                    </div>
+
+                    <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-left text-sm">
+                          <thead className="bg-slate-50 border-b border-slate-100">
+                            <tr className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">
+                              <th className="px-5 py-3">Código</th><th className="px-5 py-3">Descrição</th>
+                              <th className="px-5 py-3">Linha</th>
+                              <th className="px-5 py-3 text-right">Produzido</th>
+                              <th className="px-5 py-3 text-right">Estoque</th>
+                              <th className="px-5 py-3 text-right">Reservado</th>
+                              <th className="px-5 py-3 text-right">Disponível</th>
+                              <th className="px-5 py-3">Atualizado</th>
+                              <th className="px-5 py-3"/>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-slate-50">
+                            {naTela.map(p=>{
+                              const velho=R.desatualizado(p);
+                              const baixo=Number(p.estoque_minimo||0)>0&&Number(p.qtd_disponivel||0)<Number(p.estoque_minimo);
+                              return(
+                                <tr key={p.codigo_produto} className="hover:bg-slate-50/60">
+                                  <td className="px-5 py-2.5 font-bold text-slate-700">{s(p.codigo_produto)}</td>
+                                  <td className="px-5 py-2.5 text-xs text-slate-600 truncate max-w-[260px]" title={s(p.descricao)}>{s(p.descricao)}</td>
+                                  <td className="px-5 py-2.5 text-xs text-slate-500">{s(p.familia)||'—'}</td>
+                                  <td className="px-5 py-2.5 text-right text-slate-500">{fmtD(p.qtd_produzida)}</td>
+                                  <td className="px-5 py-2.5 text-right text-slate-600">{fmtD(p.qtd_estoque)} <span className="text-[10px] text-slate-400">{s(p.unidade)}</span></td>
+                                  <td className="px-5 py-2.5 text-right text-amber-600 font-bold">{fmtD(p.qtd_reservada)}</td>
+                                  <td className={`px-5 py-2.5 text-right font-black ${baixo?'text-red-600':Number(p.qtd_disponivel)>0?'text-emerald-600':'text-slate-300'}`}>
+                                    {fmtD(p.qtd_disponivel)}
+                                    {baixo&&<span className="block text-[9px] font-bold">abaixo do mínimo</span>}
+                                  </td>
+                                  <td className="px-5 py-2.5 text-xs">
+                                    <span className={velho?'text-amber-600 font-bold':'text-slate-400'}>{fmtDt(p.atualizado_em)}</span>
+                                    {velho&&<span className="block text-[9px] text-amber-600">desatualizado</span>}
+                                  </td>
+                                  <td className="px-5 py-2.5">
+                                    <div className="flex gap-1.5 justify-end">
+                                      {podeAtualizarEstoqueVendas&&(
+                                        <button onClick={()=>abrirAtualizacao(p)} className="text-[10px] font-black text-slate-600 bg-slate-100 hover:bg-slate-200 rounded px-2 py-1">Atualizar</button>
+                                      )}
+                                      {isComercial&&Number(p.qtd_disponivel)>0&&(
+                                        <button onClick={()=>abrirReserva(p)} className="text-[10px] font-black text-white bg-indigo-600 hover:bg-indigo-700 rounded px-2 py-1">Reservar</button>
+                                      )}
+                                    </div>
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                            {naTela.length===0&&<tr><td colSpan={9} className="py-12 text-center text-slate-300 text-sm">Nenhum produto encontrado.</td></tr>}
+                          </tbody>
+                        </table>
+                      </div>
+                      {totalPag>1&&(
+                        <div className="flex items-center justify-between px-5 py-3 bg-slate-50 border-t border-slate-100">
+                          <p className="text-xs text-slate-500">{evFiltrados.length} produto(s) · página {pagina} de {totalPag}</p>
+                          <div className="flex gap-1.5">
+                            <Btn variant="secondary" size="sm" onClick={()=>setEvPagina(p=>Math.max(1,p-1))} disabled={pagina<=1}>Anterior</Btn>
+                            <Btn variant="secondary" size="sm" onClick={()=>setEvPagina(p=>Math.min(totalPag,p+1))} disabled={pagina>=totalPag}>Próxima</Btn>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                {/* ── RESERVAS ── */}
+                {evAba==='RESERVAS'&&(
+                  <div className="space-y-3">
+                    <div className="flex flex-wrap gap-2">
+                      <Inp placeholder="Buscar por reserva, produto, cliente ou vendedor..." value={evBusca}
+                        onChange={e=>setEvBusca(e.target.value)} className="flex-1 min-w-[240px]"/>
+                      <Sel value={evStatusRes} onChange={e=>setEvStatusRes(e.target.value)} className="w-48">
+                        <option value="">Todos os status</option>
+                        {['BLOQUEIO','RESERVADO','CONFIRMADO','EXPIRADO','CANCELADO'].map(x=><option key={x} value={x}>{x}</option>)}
+                      </Sel>
+                    </div>
+
+                    <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-left text-sm">
+                          <thead className="bg-slate-50 border-b border-slate-100">
+                            <tr className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">
+                              <th className="px-5 py-3">Reserva</th><th className="px-5 py-3">Produto</th>
+                              <th className="px-5 py-3 text-right">Qtd</th><th className="px-5 py-3">Cliente</th>
+                              <th className="px-5 py-3">Vendedor</th><th className="px-5 py-3">Validade</th>
+                              <th className="px-5 py-3">Status</th><th className="px-5 py-3"/>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-slate-50">
+                            {reservasFiltradas.slice(0,100).map(r=>{
+                              const dias=diasAte(r.validade);
+                              const ativa=['RESERVADO','BLOQUEIO'].includes(s(r.status));
+                              return(
+                                <tr key={r.id} className="hover:bg-slate-50/60">
+                                  <td className="px-5 py-2.5 font-bold text-slate-700">{s(r.numero)}</td>
+                                  <td className="px-5 py-2.5 text-xs text-slate-600">{s(r.codigo_produto)}</td>
+                                  <td className="px-5 py-2.5 text-right font-bold text-slate-700">{fmtD(r.quantidade)}</td>
+                                  <td className="px-5 py-2.5 text-xs text-slate-600 truncate max-w-[160px]">{s(r.cliente)}</td>
+                                  <td className="px-5 py-2.5 text-xs text-slate-500">{s(r.vendedor)}</td>
+                                  <td className="px-5 py-2.5 text-xs">
+                                    <span className={ativa&&dias<=2?'text-amber-600 font-bold':'text-slate-500'}>{fmtDt(r.validade)}</span>
+                                    {ativa&&dias<=2&&dias>=0&&<span className="block text-[9px] text-amber-600">vence em {dias}d</span>}
+                                  </td>
+                                  <td className="px-5 py-2.5">
+                                    <span className={`text-[10px] font-black px-2 py-0.5 rounded-full ${corStatus(s(r.status))}`}>{s(r.status)}</span>
+                                  </td>
+                                  <td className="px-5 py-2.5">
+                                    {ativa&&(
+                                      <div className="flex gap-1.5 justify-end">
+                                        {(isComercial||isAdmin)&&(
+                                          <button onClick={()=>mudarStatusReserva(r,'CONFIRMADO')} className="text-[10px] font-black text-emerald-700 bg-emerald-100 hover:bg-emerald-200 rounded px-2 py-1">Faturado</button>
+                                        )}
+                                        <button onClick={()=>{const m=window.prompt('Motivo do cancelamento:');if(m===null)return;mudarStatusReserva(r,'CANCELADO',m);}}
+                                          className="text-[10px] font-black text-red-600 bg-red-50 hover:bg-red-100 rounded px-2 py-1">Cancelar</button>
+                                      </div>
+                                    )}
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                            {reservasFiltradas.length===0&&<tr><td colSpan={8} className="py-12 text-center text-slate-300 text-sm">Nenhuma reserva encontrada.</td></tr>}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* ── HISTÓRICO ── */}
+                {evAba==='HISTORICO'&&(
+                  <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
+                    <div className="px-5 py-3 bg-slate-50 border-b border-slate-100">
+                      <p className="text-xs font-black text-slate-600 uppercase tracking-wider">Histórico de atualizações do estoque</p>
+                    </div>
+                    <div className="overflow-x-auto max-h-[520px] overflow-y-auto custom-scrollbar">
+                      <table className="w-full text-left text-sm">
+                        <thead className="bg-slate-50 border-b border-slate-100 sticky top-0">
+                          <tr className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">
+                            <th className="px-5 py-3">Quando</th><th className="px-5 py-3">Produto</th>
+                            <th className="px-5 py-3 text-right">De</th><th className="px-5 py-3 text-right">Para</th>
+                            <th className="px-5 py-3">Quem</th><th className="px-5 py-3">Observação</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-50">
+                          {evHistorico.map(h=>{
+                            const dif=Number(h.qtd_estoque_nova||0)-Number(h.qtd_estoque_anterior||0);
+                            return(
+                              <tr key={h.id}>
+                                <td className="px-5 py-2.5 text-xs text-slate-500">{fmtDt(h.criado_em)}</td>
+                                <td className="px-5 py-2.5 font-bold text-slate-700">{s(h.codigo_produto)}</td>
+                                <td className="px-5 py-2.5 text-right text-slate-400">{fmtD(h.qtd_estoque_anterior)}</td>
+                                <td className="px-5 py-2.5 text-right font-bold text-slate-700">
+                                  {fmtD(h.qtd_estoque_nova)}
+                                  {dif!==0&&<span className={`ml-1 text-[10px] ${dif>0?'text-emerald-600':'text-red-600'}`}>{dif>0?'▲':'▼'}{fmtD(Math.abs(dif))}</span>}
+                                </td>
+                                <td className="px-5 py-2.5 text-xs text-slate-500">{s(h.atualizado_por)}</td>
+                                <td className="px-5 py-2.5 text-xs text-slate-500 truncate max-w-[220px]">{s(h.observacao)||'—'}</td>
+                              </tr>
+                            );
+                          })}
+                          {evHistorico.length===0&&<tr><td colSpan={6} className="py-12 text-center text-slate-300 text-sm">Nenhuma atualização registrada.</td></tr>}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
+              </div>
+              );
+            })()}
+
             {/* ── RELATÓRIO DE REMESSAS ──────────────────────────────────
                 Mesmo conteúdo do relatório gerado em Excel, só que vivo:
                 recalcula direto de remessasDb a cada carregamento. */}
@@ -11876,6 +12648,7 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
                             {v:'EXPEDICAO',l:'Logística — Expedição'},
                             {v:'COMPRAS',l:'Compras — Devolução, conserto, triangulação'},
                             {v:'COORDENADOR',l:'Coordenador — Compras + todas as remessas'},
+                            {v:'COMERCIAL',l:'Comercial — consulta e reserva estoque'},
                             {v:'QUALIDADE',l:'Qualidade'},
                             {v:'MANUTENCAO',l:'Manutenção'},
                             {v:'ADMIN',l:'Administrador — acesso total'},
