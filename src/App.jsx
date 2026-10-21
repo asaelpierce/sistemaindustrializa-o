@@ -4346,7 +4346,7 @@ export default function App(){
   },[supabase,usuarioLogado?.perfil]);
 
   // fetchAll na inicialização + a cada 60s (dados pesados)
-  useEffect(()=>{if(supabase){fetchAll();fetchQual();fetchManutencao();fetchEquipamentosPreventivas();fetchApontamento();fetchApontPortal();fetchColaboradores();fetchEstoqueVendas();const iv=setInterval(fetchAll,90000);return()=>clearInterval(iv);}},[supabase]);
+  useEffect(()=>{if(supabase){fetchAll();fetchQual();fetchManutencao();fetchEquipamentosPreventivas();fetchApontamento();fetchApontPortal();fetchColaboradores();fetchEstoqueVendas();carregarFotos();const iv=setInterval(fetchAll,90000);return()=>clearInterval(iv);}},[supabase]);
 
   // Bug real encontrado: como o logout não recarrega a página (só limpa
   // usuarioLogado), filtros deixados marcados numa sessão (ex: "Predial")
@@ -6704,6 +6704,55 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
     }catch(e){addToast('Erro ao atualizar: '+e.message,'error');}
   };
 
+  // Foto da peça: o vendedor precisa VER qual bandeja é. Guardada em tabela
+  // separada e reduzida antes de subir — a lista é carregada inteira toda vez
+  // que a tela abre, e imagem grande deixaria tudo lento.
+  const [fotosLotes,setFotosLotes]=useState({});
+  const [fotoAmpliada,setFotoAmpliada]=useState(null);
+  const carregarFotos=useCallback(async()=>{
+    if(!supabase)return;
+    try{
+      const{data}=await supabase.from('estoque_fotos').select('id,imagem');
+      const m={};(data||[]).forEach(f=>{m[f.id]=f.imagem;});
+      setFotosLotes(m);
+    }catch(_){}
+  },[supabase]);
+
+  const enviarFotoLote=async(lote,arquivo)=>{
+    if(!arquivo)return;
+    if(!arquivo.type.startsWith('image/'))return addToast('Selecione uma imagem.','error');
+    try{
+      // Reduz para 320px no navegador: a foto da câmera tem vários MB e não
+      // faz diferença nenhuma numa miniatura de catálogo.
+      const dataUrl=await new Promise((ok,erro)=>{
+        const fr=new FileReader();
+        fr.onload=()=>{
+          const img=new Image();
+          img.onload=()=>{
+            const esc=Math.min(1,320/Math.max(img.width,img.height));
+            const cv=document.createElement('canvas');
+            cv.width=Math.round(img.width*esc);cv.height=Math.round(img.height*esc);
+            cv.getContext('2d').drawImage(img,0,0,cv.width,cv.height);
+            ok(cv.toDataURL('image/jpeg',0.72));
+          };
+          img.onerror=()=>erro(new Error('Imagem inválida'));
+          img.src=fr.result;
+        };
+        fr.onerror=()=>erro(new Error('Falha ao ler o arquivo'));
+        fr.readAsDataURL(arquivo);
+      });
+      const fotoId=`lote-${lote.id}`;
+      const{error:e1}=await supabase.from('estoque_fotos')
+        .upsert([{id:fotoId,imagem:dataUrl}],{onConflict:'id'});
+      if(e1)throw e1;
+      const{error:e2}=await supabase.from('estoque_lotes')
+        .update({foto_id:fotoId,atualizado_em:new Date().toISOString()}).eq('id',lote.id);
+      if(e2)throw e2;
+      addToast('Foto adicionada.');
+      carregarFotos();fetchEstoqueVendas();
+    }catch(e){addToast('Erro ao enviar foto: '+e.message,'error');}
+  };
+
   // Reprogramar a previsão de produção. Guarda a original para mostrar de
   // quanto foi o atraso — trocar a data em silêncio esconderia justamente o
   // que o comercial precisa saber para avisar o cliente.
@@ -7759,6 +7808,15 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
         </div>
         );
       })()}
+
+      {fotoAmpliada&&(
+        <div className="fixed inset-0 bg-slate-900/80 z-[60] flex items-center justify-center p-6" onClick={()=>setFotoAmpliada(null)}>
+          <div onClick={e=>e.stopPropagation()} className="max-w-xl">
+            <img src={fotoAmpliada.src} alt={fotoAmpliada.titulo} className="rounded-2xl max-h-[75vh] w-auto"/>
+            <p className="text-center text-white text-sm font-bold mt-3">{fotoAmpliada.titulo}</p>
+          </div>
+        </div>
+      )}
 
       <div className="fixed top-5 right-5 z-[999] space-y-3" style={{minWidth:'280px'}}>{toasts.map(t=><Toast key={t.id} message={t.message} type={t.type} onClose={()=>removeToast(t.id)}/>)}</div>
       {sidebarOpen&&<div className="fixed inset-0 bg-slate-900/60 z-40 lg:hidden backdrop-blur-sm" onClick={()=>setSidebarOpen(false)}/>}
@@ -11215,6 +11273,24 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
                         return(
                           <div key={p.id} className={`rounded-2xl border-2 p-5 ${borda}`}>
                             <div className="flex flex-wrap items-start justify-between gap-4">
+                              {/* A foto é o que faz o vendedor reconhecer a peça —
+                                  "bandeja 390x390" sozinho não diz qual é. */}
+                              <div className="flex-shrink-0">
+                                {p.foto_id&&fotosLotes[p.foto_id]?(
+                                  <img src={fotosLotes[p.foto_id]} alt={s(p.descricao)}
+                                    onClick={()=>setFotoAmpliada({src:fotosLotes[p.foto_id],titulo:`${s(p.codigo_produto)} · ${s(p.dimensao)}`})}
+                                    className="w-24 h-24 object-cover rounded-xl border-2 border-slate-200 cursor-zoom-in hover:border-indigo-400"/>
+                                ):(
+                                  <label className={`w-24 h-24 rounded-xl border-2 border-dashed flex flex-col items-center justify-center gap-1 ${podeAtualizarEstoqueVendas?'border-slate-300 hover:border-indigo-400 cursor-pointer':'border-slate-200'}`}>
+                                    <Camera className="w-5 h-5 text-slate-300"/>
+                                    <span className="text-[9px] text-slate-400 text-center px-1">{podeAtualizarEstoqueVendas?'adicionar foto':'sem foto'}</span>
+                                    {podeAtualizarEstoqueVendas&&(
+                                      <input type="file" accept="image/*" className="hidden"
+                                        onChange={e=>{enviarFotoLote(p,e.target.files?.[0]);e.target.value='';}}/>
+                                    )}
+                                  </label>
+                                )}
+                              </div>
                               <div className="min-w-0 flex-1">
                                 <div className="flex items-center gap-2.5 flex-wrap mb-1">
                                   <span className="text-lg font-black text-slate-900">{s(p.codigo_produto)}</span>
@@ -11280,6 +11356,13 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
                               {podeAtualizarEstoqueVendas&&(
                                 <>
                                   <Btn variant="secondary" size="sm" onClick={()=>abrirAtualizacao(p)}>Ajustar quantidade</Btn>
+                                  {p.foto_id&&(
+                                    <label className="text-xs font-bold text-slate-600 bg-slate-100 hover:bg-slate-200 rounded-lg px-3 py-2 cursor-pointer">
+                                      Trocar foto
+                                      <input type="file" accept="image/*" className="hidden"
+                                        onChange={e=>{enviarFotoLote(p,e.target.files?.[0]);e.target.value='';}}/>
+                                    </label>
+                                  )}
                                   {emProd&&(
                                     <>
                                       <Btn variant="secondary" size="sm" onClick={()=>reprogramarLote(p)}>Reprogramar previsão</Btn>

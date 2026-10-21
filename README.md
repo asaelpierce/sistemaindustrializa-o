@@ -201,3 +201,31 @@ Garantias:
 
 Bloqueio que não vira reserva é marcado como `CANCELADO`, não `EXPIRADO` —
 nunca chegou a ser reserva, e poluir o histórico atrapalharia a leitura.
+
+## API para o Portal de Propostas
+
+**`api-estoque-vendas`** — os dois portais leem e escrevem a MESMA base. Não há
+cópia nem sincronização: se cada um tivesse seu próprio saldo, dois vendedores
+venderiam a mesma peça, que é justamente o problema que o módulo resolve. As
+travas (reserva acima do disponível, bloqueio de 5 min, lote em produção) são
+as do banco, idênticas às do portal interno.
+
+Autenticação: cabeçalho `x-api-key` (chave em `configuracoes.api_estoque`).
+
+| Ação | O que faz |
+|---|---|
+| `consultar` | Lotes vendáveis; `incluir_producao` traz o que está por vir, `com_fotos` anexa as miniaturas |
+| `bloquear` | Segura a quantidade por 5 minutos e devolve `bloqueio_id` |
+| `reservar` | Confirma; com `bloqueio_id` converte o bloqueio, sem ele cria direto |
+| `cancelar` | Devolve o saldo |
+| `minhas` | Reservas de um vendedor ou cliente |
+
+Saldo insuficiente responde **409** com "outro vendedor reservou antes".
+
+### Fotos das peças
+
+Miniaturas em `estoque_fotos`, referenciadas por `estoque_lotes.foto_id`. Em
+tabela separada porque a lista é carregada inteira ao abrir a tela e imagem
+junto deixaria tudo lento. O upload pela tela reduz para 320px no navegador
+antes de enviar — foto de câmera tem vários MB e não faz diferença numa
+miniatura.
