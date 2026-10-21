@@ -175,3 +175,29 @@ depósito onde há saldo — aconteceu com o 13230, que exibia "0 PC" tendo 2 no
 
 A view **`estoque_incoerente`** lista esses casos. Deve estar sempre vazia;
 havendo linhas, rodar `sankhya-stock-sync`.
+
+## Estoque Disponível para Comercial
+
+A Produção informa o saldo semanalmente; o Comercial consulta e reserva. O
+problema central é dois vendedores negociarem a mesma peça, então **as regras
+críticas vivem no banco**, não na tela — duas abas abertas ao mesmo tempo
+furariam qualquer validação feita só no front.
+
+**`estoque_vendas`** — `qtd_disponivel` é coluna *gerada*
+(`estoque − reservado`), nunca digitada. `qtd_reservada` é mantida por trigger
+a partir das reservas ativas.
+
+**`estoque_reservas`** — status `BLOQUEIO` (5 min), `RESERVADO`, `CONFIRMADO`,
+`EXPIRADO`, `CANCELADO`. Numeração automática `R-AAAA-NNNN`.
+
+Garantias:
+
+| Regra | Onde |
+|---|---|
+| Não reservar acima do disponível | trigger `valida_reserva`, com `FOR UPDATE` |
+| Reservado sempre coerente | trigger `recalcula_reservado` |
+| Bloqueio de 5 min libera sozinho | `expira_reservas()`, cron a cada minuto |
+| Reserva vencida devolve o saldo | idem |
+
+Bloqueio que não vira reserva é marcado como `CANCELADO`, não `EXPIRADO` —
+nunca chegou a ser reserva, e poluir o histórico atrapalharia a leitura.
