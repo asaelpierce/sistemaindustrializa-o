@@ -4329,7 +4329,7 @@ export default function App(){
           // Precisa trazer o saldo de CADA depósito: sem isso saldoNoDeposito
           // lia undefined e mostrava 0 em qualquer depósito que não fosse o
           // 1090 — o item 12893 tem 2 PC no 1002 e a tela dizia "0 PC".
-          supabase.from('estoque_mp').select('codigo_mp,descricao,unidade,saldo_disponivel,saldo_almoxarifado,saldo_1001,saldo_1002,saldo_1050,saldo_1090,reservado_1050'),
+          supabase.from('estoque_mp').select('codigo_mp,descricao,unidade,saldo_disponivel,saldo_almoxarifado,saldo_1001,saldo_1002,saldo_1002_terceiros,saldo_1050,saldo_1090,reservado_1050'),
           supabase.from('remessas').select('*').order('data_criacao',{ascending:false}).limit(200),
           supabase.from('relatorios_ia').select('*').order('data_criacao',{ascending:false}).limit(50),
           supabase.from('notas_remessa_industrializacao').select('*'),
@@ -10452,6 +10452,15 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
                             </td>
                             <td className={`px-5 py-3.5 text-center text-xs font-black ${semSaldo?'text-red-600':'text-emerald-600'}`}>
                               {semSaldo&&<AlertTriangle className="w-3 h-3 inline mr-1"/>}{fmtD(saldoAtual)} {it.um}
+                              {/* Material de cliente guardado no 1002 aparece
+                                  à parte: está fisicamente aqui, mas não é
+                                  nosso para enviar. Antes entrava no saldo e
+                                  inflava o número. */}
+                              {depositoSaida==='1002'&&Number(estoqueDb[it.codigoMP]?.saldo_1002_terceiros||0)>0&&(
+                                <p className="text-[9px] font-normal text-slate-400 mt-1">
+                                  +{fmtD(estoqueDb[it.codigoMP].saldo_1002_terceiros)} de cliente (não enviável)
+                                </p>
+                              )}
                               {/* Saldo zerado aqui não quer dizer que o item não
                                   existe — quase sempre ele está em OUTRO depósito.
                                   Mostrar onde evita a pessoa concluir que falta
