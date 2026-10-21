@@ -1519,6 +1519,7 @@ export default function App(){
   const [evAba,setEvAba]=useState('PAINEL');           // PAINEL | ESTOQUE | RESERVAS | HISTORICO
   const [evBusca,setEvBusca]=useState('');
   const [evFamilia,setEvFamilia]=useState('');
+  const [evSituacao,setEvSituacao]=useState('DISPONIVEL');
   const [evStatusRes,setEvStatusRes]=useState('');
   const [evPagina,setEvPagina]=useState(1);
   const [evHistorico,setEvHistorico]=useState([]);
@@ -1532,7 +1533,7 @@ export default function App(){
     if(!supabase)return;
     try{
       const[ev,res]=await Promise.all([
-        supabase.from('estoque_vendas').select('*').eq('ativo',true).order('descricao'),
+        supabase.from('estoque_lotes').select('*').eq('ativo',true).order('situacao').order('descricao'),
         supabase.from('estoque_reservas').select('*').order('criado_em',{ascending:false}).limit(500),
       ]);
       if(ev.data)setEstVendasDb(ev.data);
@@ -6508,7 +6509,7 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
       const f=s(p.familia)||'(sem família)';
       if(!porFamilia[f])porFamilia[f]={familia:f,disponivel:0,estoque:0,reservado:0,itens:0};
       porFamilia[f].disponivel+=Number(p.qtd_disponivel||0);
-      porFamilia[f].estoque+=Number(p.qtd_estoque||0);
+      porFamilia[f].estoque+=Number(p.quantidade||0);
       porFamilia[f].reservado+=Number(p.qtd_reservada||0);
       porFamilia[f].itens++;
     });
@@ -6519,15 +6520,17 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
       return Object.values(m).sort((a2,b2)=>b2.qtd-a2.qtd);
     };
     const porProduto={};
-    reservasDb.forEach(r=>{const k=s(r.codigo_produto);if(!porProduto[k])porProduto[k]={cod:k,qtd:0,vezes:0};
+    reservasDb.forEach(r=>{const k=r.lote_id;if(!porProduto[k])porProduto[k]={cod:k,qtd:0,vezes:0};
       porProduto[k].qtd+=Number(r.quantidade||0);porProduto[k].vezes++;});
     return{
       produtos:estVendasDb.length,
-      estoqueTotal:estVendasDb.reduce((a2,p)=>a2+Number(p.qtd_estoque||0),0),
+      estoqueTotal:estVendasDb.reduce((a2,p)=>a2+Number(p.quantidade||0),0),
       disponivel:estVendasDb.reduce((a2,p)=>a2+Number(p.qtd_disponivel||0),0),
       reservado:estVendasDb.reduce((a2,p)=>a2+Number(p.qtd_reservada||0),0),
       reservasAtivas:ativos.length,
       semAtualizacao:estVendasDb.filter(desatualizado).length,
+      emProducao:estVendasDb.filter(p=>p.situacao==='EM_PRODUCAO'&&!p.vendido).reduce((a2,p)=>a2+Number(p.quantidade||0),0),
+      jaVendido:estVendasDb.filter(p=>p.vendido).reduce((a2,p)=>a2+Number(p.quantidade||0),0),
       abaixoMinimo:estVendasDb.filter(p=>Number(p.estoque_minimo||0)>0&&Number(p.qtd_disponivel||0)<Number(p.estoque_minimo)).length,
       vencendo:ativos.filter(r=>(new Date(r.validade)-hoje)/864e5<=2).length,
       porFamilia:Object.values(porFamilia).sort((a2,b2)=>b2.disponivel-a2.disponivel),
@@ -6542,17 +6545,21 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
     const t=s(evBusca).toLowerCase();
     return estVendasDb.filter(p=>{
       if(evFamilia&&s(p.familia)!==evFamilia)return false;
+      if(evSituacao==='DISPONIVEL'&&!(p.situacao==='FINALIZADO'&&!p.vendido))return false;
+      if(evSituacao==='VENDIDO'&&!p.vendido)return false;
+      if(['FINALIZADO','EM_PRODUCAO','FORA_ESTOQUE'].includes(evSituacao)&&(s(p.situacao)!==evSituacao||p.vendido))return false;
       if(!t)return true;
-      return s(p.codigo_produto).toLowerCase().includes(t)||s(p.descricao).toLowerCase().includes(t);
+      return s(p.codigo_produto).toLowerCase().includes(t)||s(p.descricao).toLowerCase().includes(t)
+        ||s(p.dimensao).toLowerCase().includes(t)||s(p.op).toLowerCase().includes(t);
     });
-  },[estVendasDb,evBusca,evFamilia]);
+  },[estVendasDb,evBusca,evFamilia,evSituacao]);
 
   const reservasFiltradas=useMemo(()=>{
     const t=s(evBusca).toLowerCase();
     return reservasDb.filter(r=>{
       if(evStatusRes&&s(r.status)!==evStatusRes)return false;
       if(!t)return true;
-      return [r.numero,r.codigo_produto,r.cliente,r.vendedor].some(x=>s(x).toLowerCase().includes(t));
+      return [r.numero,r.cliente,r.vendedor].some(x=>s(x).toLowerCase().includes(t));
     });
   },[reservasDb,evBusca,evStatusRes]);
 
@@ -6571,7 +6578,7 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
     try{
       const validade=new Date(Date.now()+5*60000).toISOString();
       const{data,error}=await supabase.from('estoque_reservas').insert([{
-        codigo_produto:produto.codigo_produto,quantidade:qtd,
+        lote_id:produto.id,quantidade:qtd,
         cliente:'(bloqueio)',vendedor:s(usuarioLogado?.nome)||'—',
         status:'BLOQUEIO',validade,criado_por:s(usuarioLogado?.nome),
       }]).select('id,validade').single();
@@ -6608,7 +6615,7 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
         if(error)throw error;
       }else{
         const{error}=await supabase.from('estoque_reservas').insert([{
-          codigo_produto:p0.codigo_produto,quantidade:qtd,
+          lote_id:p0.id,quantidade:qtd,
           cliente:s(f.cliente).trim(),vendedor:s(f.vendedor).trim(),
           observacao:s(f.observacao)||null,status:'RESERVADO',validade,
           criado_por:s(usuarioLogado?.nome),
@@ -6671,19 +6678,16 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
     if(novo<Number(p0.qtd_reservada||0))
       return addToast(`Já existem ${fmtD(p0.qtd_reservada)} reservados. O estoque não pode ficar abaixo disso.`,'error');
     try{
-      const{error}=await supabase.from('estoque_vendas').update({
-        qtd_estoque:novo,
-        qtd_produzida:Number(f.qtd_produzida)||0,
-        estoque_minimo:Number(f.estoque_minimo)||0,
+      const{error}=await supabase.from('estoque_lotes').update({
+        quantidade:novo,
         observacao:s(f.observacao)||null,
         atualizado_em:new Date().toISOString(),
         atualizado_por:s(usuarioLogado?.nome),
-      }).eq('codigo_produto',p0.codigo_produto);
+      }).eq('id',p0.id);
       if(error)throw error;
-      await supabase.from('estoque_vendas_historico').insert([{
+      await supabase.from('estoque_lotes_historico').insert([{
         codigo_produto:p0.codigo_produto,
-        qtd_estoque_anterior:Number(p0.qtd_estoque||0),qtd_estoque_nova:novo,
-        qtd_produzida:Number(f.qtd_produzida)||0,
+        lote_id:p0.id,qtd_anterior:Number(p0.quantidade||0),qtd_nova:novo,
         observacao:s(f.observacao)||null,atualizado_por:s(usuarioLogado?.nome)||'—',
       }]);
       addToast('Estoque atualizado.');
@@ -6694,7 +6698,7 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
 
   const carregarHistoricoEstoque=useCallback(async()=>{
     if(!supabase)return;
-    const{data}=await supabase.from('estoque_vendas_historico').select('*')
+    const{data}=await supabase.from('estoque_lotes_historico').select('*')
       .order('criado_em',{ascending:false}).limit(300);
     setEvHistorico(data||[]);
   },[supabase]);
@@ -6722,7 +6726,7 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
       estVendasDb.forEach((p,i)=>{
         const r=w1.getRow(2+i);
         [s(p.codigo_produto),s(p.descricao),s(p.familia),s(p.unidade),
-         Number(p.qtd_produzida||0),Number(p.qtd_estoque||0),Number(p.qtd_reservada||0),
+         Number(p.qtd_produzida||0),Number(p.quantidade||0),Number(p.qtd_reservada||0),
          Number(p.qtd_disponivel||0),Number(p.estoque_minimo||0),
          fmtDataHoraLocal(p.atualizado_em),s(p.atualizado_por)
         ].forEach((v,j)=>{r.getCell(j+1).value=v;});
@@ -6735,7 +6739,7 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
               {t:'Cliente',w:26},{t:'Vendedor',w:20},{t:'Status',w:14},
               {t:'Criada em',w:18},{t:'Validade',w:18},{t:'Observação',w:30}]);
       reservasDb.forEach((r0,i)=>{
-        const prod=estVendasDb.find(p=>p.codigo_produto===r0.codigo_produto);
+        const prod=estVendasDb.find(p=>p.id===r0.lote_id);
         const r=w2.getRow(2+i);
         [s(r0.numero),s(r0.codigo_produto),s(prod?.descricao),Number(r0.quantidade||0),
          s(r0.cliente),s(r0.vendedor),s(r0.status),
@@ -7557,7 +7561,7 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
       {modalReserva&&(()=>{
         const p0=modalReserva;
         const f=formReserva;
-        const atual=estVendasDb.find(x=>x.codigo_produto===p0.codigo_produto)||p0;
+        const atual=estVendasDb.find(x=>x.id===p0.id)||p0;
         const livre=Number(atual.qtd_disponivel||0)+(bloqueioAtivo?Number(f.quantidade||0):0);
         return(
         <div className="fixed inset-0 bg-slate-900/60 z-50 flex items-center justify-center p-4" onClick={cancelarBloqueio}>
@@ -11016,12 +11020,12 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
                   <div className="space-y-4">
                     <div className="grid grid-cols-2 lg:grid-cols-6 gap-3">
                       {[
-                        {l:'Produtos',v:R.produtos},
-                        {l:'Estoque total',v:fmtD(R.estoqueTotal)},
-                        {l:'Disponível',v:fmtD(R.disponivel),destaque:true},
+                        {l:'Lotes',v:R.produtos},
+                        {l:'Peças no total',v:fmtD(R.estoqueTotal)},
+                        {l:'Disponível p/ venda',v:fmtD(R.disponivel),destaque:true},
+                        {l:'Em produção',v:fmtD(R.emProducao)},
+                        {l:'Já vendido',v:fmtD(R.jaVendido)},
                         {l:'Reservado',v:fmtD(R.reservado)},
-                        {l:'Reservas ativas',v:R.reservasAtivas},
-                        {l:'Sem atualização',v:R.semAtualizacao,alerta:R.semAtualizacao>0},
                       ].map(c2=>(
                         <div key={c2.l} className={`rounded-2xl border-2 p-4 ${c2.destaque?'bg-emerald-50 border-emerald-300':c2.alerta?'bg-amber-50 border-amber-300':'bg-white border-slate-200'}`}>
                           <p className="text-[10px] font-black text-slate-400 uppercase tracking-wider">{c2.l}</p>
@@ -11090,7 +11094,7 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
                         <p className="text-xs font-black text-slate-600 uppercase tracking-wider mb-3">Itens mais reservados</p>
                         <div className="space-y-1.5">
                           {R.maisReservados.map(i=>{
-                            const prod=estVendasDb.find(p=>p.codigo_produto===i.cod);
+                            const prod=estVendasDb.find(p=>p.id===i.cod);
                             return(
                               <div key={i.cod} className="flex items-center justify-between text-xs">
                                 <span className="truncate"><span className="font-bold text-slate-700">{i.cod}</span> <span className="text-slate-400">{s(prod?.descricao).slice(0,32)}</span></span>
@@ -11111,9 +11115,17 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
                     <div className="flex flex-wrap gap-2">
                       <Inp placeholder="Buscar por código ou descrição..." value={evBusca}
                         onChange={e=>{setEvBusca(e.target.value);setEvPagina(1);}} className="flex-1 min-w-[220px]"/>
-                      <Sel value={evFamilia} onChange={e=>{setEvFamilia(e.target.value);setEvPagina(1);}} className="w-52">
+                      <Sel value={evFamilia} onChange={e=>{setEvFamilia(e.target.value);setEvPagina(1);}} className="w-44">
                         <option value="">Todas as linhas</option>
                         {familias.map(f=><option key={f} value={f}>{f}</option>)}
+                      </Sel>
+                      <Sel value={evSituacao} onChange={e=>{setEvSituacao(e.target.value);setEvPagina(1);}} className="w-52">
+                        <option value="">Todas as situações</option>
+                        <option value="DISPONIVEL">Só o disponível para venda</option>
+                        <option value="FINALIZADO">Finalizado</option>
+                        <option value="EM_PRODUCAO">Em produção</option>
+                        <option value="FORA_ESTOQUE">Fora de estoque</option>
+                        <option value="VENDIDO">Já vendido</option>
                       </Sel>
                     </div>
 
@@ -11123,12 +11135,12 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
                           <thead className="bg-slate-50 border-b border-slate-100">
                             <tr className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">
                               <th className="px-5 py-3">Código</th><th className="px-5 py-3">Descrição</th>
-                              <th className="px-5 py-3">Linha</th>
-                              <th className="px-5 py-3 text-right">Produzido</th>
-                              <th className="px-5 py-3 text-right">Estoque</th>
+                              <th className="px-5 py-3">Dimensão</th>
+                              <th className="px-5 py-3">OP</th>
+                              <th className="px-5 py-3 text-right">Peças</th>
                               <th className="px-5 py-3 text-right">Reservado</th>
                               <th className="px-5 py-3 text-right">Disponível</th>
-                              <th className="px-5 py-3">Atualizado</th>
+                              <th className="px-5 py-3">Situação</th>
                               <th className="px-5 py-3"/>
                             </tr>
                           </thead>
@@ -11137,27 +11149,51 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
                               const velho=R.desatualizado(p);
                               const baixo=Number(p.estoque_minimo||0)>0&&Number(p.qtd_disponivel||0)<Number(p.estoque_minimo);
                               return(
-                                <tr key={p.codigo_produto} className="hover:bg-slate-50/60">
+                                <tr key={p.id} className="hover:bg-slate-50/60">
                                   <td className="px-5 py-2.5 font-bold text-slate-700">{s(p.codigo_produto)}</td>
-                                  <td className="px-5 py-2.5 text-xs text-slate-600 truncate max-w-[260px]" title={s(p.descricao)}>{s(p.descricao)}</td>
-                                  <td className="px-5 py-2.5 text-xs text-slate-500">{s(p.familia)||'—'}</td>
-                                  <td className="px-5 py-2.5 text-right text-slate-500">{fmtD(p.qtd_produzida)}</td>
-                                  <td className="px-5 py-2.5 text-right text-slate-600">{fmtD(p.qtd_estoque)} <span className="text-[10px] text-slate-400">{s(p.unidade)}</span></td>
-                                  <td className="px-5 py-2.5 text-right text-amber-600 font-bold">{fmtD(p.qtd_reservada)}</td>
-                                  <td className={`px-5 py-2.5 text-right font-black ${baixo?'text-red-600':Number(p.qtd_disponivel)>0?'text-emerald-600':'text-slate-300'}`}>
-                                    {fmtD(p.qtd_disponivel)}
-                                    {baixo&&<span className="block text-[9px] font-bold">abaixo do mínimo</span>}
+                                  <td className="px-5 py-2.5 text-xs text-slate-600 truncate max-w-[240px]" title={s(p.descricao)}>
+                                    {s(p.descricao)}
+                                    {p.com_aba!==null&&<span className="ml-1 text-[9px] text-slate-400">{p.com_aba?'c/ aba':'s/ aba'}</span>}
                                   </td>
-                                  <td className="px-5 py-2.5 text-xs">
-                                    <span className={velho?'text-amber-600 font-bold':'text-slate-400'}>{fmtDt(p.atualizado_em)}</span>
-                                    {velho&&<span className="block text-[9px] text-amber-600">desatualizado</span>}
+                                  <td className="px-5 py-2.5 text-xs text-slate-500">{s(p.dimensao)||'—'}</td>
+                                  <td className="px-5 py-2.5 text-xs text-slate-500">
+                                    {s(p.op)||'—'}
+                                    {p.br&&<span className="block text-[9px] text-slate-400">{s(p.br)}</span>}
+                                  </td>
+                                  <td className="px-5 py-2.5 text-right text-slate-600">{fmtD(p.quantidade)} <span className="text-[10px] text-slate-400">{s(p.unidade)}</span></td>
+                                  <td className="px-5 py-2.5 text-right text-amber-600 font-bold">{fmtD(p.qtd_reservada)}</td>
+                                  <td className={`px-5 py-2.5 text-right font-black ${Number(p.qtd_disponivel)>0?'text-emerald-600':'text-slate-300'}`}>
+                                    {fmtD(p.qtd_disponivel)}
+                                  </td>
+                                  <td className="px-5 py-2.5">
+                                    {/* Situação é o que decide se o comercial pode
+                                        vender. Vendido e em produção aparecem, mas
+                                        com o motivo visível. */}
+                                    {p.vendido?(
+                                      <div>
+                                        <span className="text-[10px] font-black px-2 py-0.5 rounded-full bg-slate-200 text-slate-600">VENDIDO</span>
+                                        {p.br_venda&&<span className="block text-[9px] text-slate-400 mt-0.5">{s(p.br_venda)}</span>}
+                                      </div>
+                                    ):p.situacao==='EM_PRODUCAO'?(
+                                      <div>
+                                        <span className="text-[10px] font-black px-2 py-0.5 rounded-full bg-sky-100 text-sky-700">EM PRODUÇÃO</span>
+                                        {p.previsao_termino&&<span className="block text-[9px] text-sky-600 mt-0.5">prev. {s(p.previsao_termino).slice(0,10).split('-').reverse().join('/')}</span>}
+                                      </div>
+                                    ):p.situacao==='FORA_ESTOQUE'?(
+                                      <span className="text-[10px] font-black px-2 py-0.5 rounded-full bg-red-100 text-red-600">FORA DE ESTOQUE</span>
+                                    ):(
+                                      <div>
+                                        <span className="text-[10px] font-black px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-700">DISPONÍVEL</span>
+                                        {p.local&&<span className="block text-[9px] text-slate-400 mt-0.5">{s(p.local)}</span>}
+                                      </div>
+                                    )}
                                   </td>
                                   <td className="px-5 py-2.5">
                                     <div className="flex gap-1.5 justify-end">
                                       {podeAtualizarEstoqueVendas&&(
                                         <button onClick={()=>abrirAtualizacao(p)} className="text-[10px] font-black text-slate-600 bg-slate-100 hover:bg-slate-200 rounded px-2 py-1">Atualizar</button>
                                       )}
-                                      {isComercial&&Number(p.qtd_disponivel)>0&&(
+                                      {isComercial&&Number(p.qtd_disponivel)>0&&p.situacao==='FINALIZADO'&&!p.vendido&&(
                                         <button onClick={()=>abrirReserva(p)} className="text-[10px] font-black text-white bg-indigo-600 hover:bg-indigo-700 rounded px-2 py-1">Reservar</button>
                                       )}
                                     </div>
@@ -11212,7 +11248,7 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
                               return(
                                 <tr key={r.id} className="hover:bg-slate-50/60">
                                   <td className="px-5 py-2.5 font-bold text-slate-700">{s(r.numero)}</td>
-                                  <td className="px-5 py-2.5 text-xs text-slate-600">{s(r.codigo_produto)}</td>
+                                  <td className="px-5 py-2.5 text-xs text-slate-600">{s(estVendasDb.find(p=>p.id===r.lote_id)?.codigo_produto)}</td>
                                   <td className="px-5 py-2.5 text-right font-bold text-slate-700">{fmtD(r.quantidade)}</td>
                                   <td className="px-5 py-2.5 text-xs text-slate-600 truncate max-w-[160px]">{s(r.cliente)}</td>
                                   <td className="px-5 py-2.5 text-xs text-slate-500">{s(r.vendedor)}</td>
@@ -11262,14 +11298,14 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
                         </thead>
                         <tbody className="divide-y divide-slate-50">
                           {evHistorico.map(h=>{
-                            const dif=Number(h.qtd_estoque_nova||0)-Number(h.qtd_estoque_anterior||0);
+                            const dif=Number(h.qtd_nova||0)-Number(h.qtd_anterior||0);
                             return(
                               <tr key={h.id}>
                                 <td className="px-5 py-2.5 text-xs text-slate-500">{fmtDt(h.criado_em)}</td>
                                 <td className="px-5 py-2.5 font-bold text-slate-700">{s(h.codigo_produto)}</td>
-                                <td className="px-5 py-2.5 text-right text-slate-400">{fmtD(h.qtd_estoque_anterior)}</td>
+                                <td className="px-5 py-2.5 text-right text-slate-400">{fmtD(h.qtd_anterior)}</td>
                                 <td className="px-5 py-2.5 text-right font-bold text-slate-700">
-                                  {fmtD(h.qtd_estoque_nova)}
+                                  {fmtD(h.qtd_nova)}
                                   {dif!==0&&<span className={`ml-1 text-[10px] ${dif>0?'text-emerald-600':'text-red-600'}`}>{dif>0?'▲':'▼'}{fmtD(Math.abs(dif))}</span>}
                                 </td>
                                 <td className="px-5 py-2.5 text-xs text-slate-500">{s(h.atualizado_por)}</td>
