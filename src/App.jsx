@@ -1519,7 +1519,7 @@ export default function App(){
   const [evAba,setEvAba]=useState('PAINEL');           // PAINEL | ESTOQUE | RESERVAS | HISTORICO
   const [evBusca,setEvBusca]=useState('');
   const [evFamilia,setEvFamilia]=useState('');
-  const [evSituacao,setEvSituacao]=useState('DISPONIVEL');
+  const [evSituacao,setEvSituacao]=useState('VENDAVEL');
   const [evStatusRes,setEvStatusRes]=useState('');
   const [evPagina,setEvPagina]=useState(1);
   const [evHistorico,setEvHistorico]=useState([]);
@@ -6543,15 +6543,23 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
 
   const evFiltrados=useMemo(()=>{
     const t=s(evBusca).toLowerCase();
+    const ordem={FINALIZADO:0,EM_PRODUCAO:1,FORA_ESTOQUE:2};
     return estVendasDb.filter(p=>{
       if(evFamilia&&s(p.familia)!==evFamilia)return false;
+      // VENDAVEL = o que o comercial pode negociar: pronto agora ou que vai
+      // ficar pronto. É o padrão da tela.
+      if(evSituacao==='VENDAVEL'&&!(['FINALIZADO','EM_PRODUCAO'].includes(s(p.situacao))&&!p.vendido))return false;
       if(evSituacao==='DISPONIVEL'&&!(p.situacao==='FINALIZADO'&&!p.vendido))return false;
       if(evSituacao==='VENDIDO'&&!p.vendido)return false;
-      if(['FINALIZADO','EM_PRODUCAO','FORA_ESTOQUE'].includes(evSituacao)&&(s(p.situacao)!==evSituacao||p.vendido))return false;
+      if(['EM_PRODUCAO','FORA_ESTOQUE'].includes(evSituacao)&&(s(p.situacao)!==evSituacao||p.vendido))return false;
       if(!t)return true;
       return s(p.codigo_produto).toLowerCase().includes(t)||s(p.descricao).toLowerCase().includes(t)
         ||s(p.dimensao).toLowerCase().includes(t)||s(p.op).toLowerCase().includes(t);
-    });
+    }).sort((x,y)=>
+      (x.vendido?1:0)-(y.vendido?1:0)
+      ||(ordem[x.situacao]??9)-(ordem[y.situacao]??9)
+      ||s(x.previsao_termino).localeCompare(s(y.previsao_termino))
+      ||s(x.descricao).localeCompare(s(y.descricao)));
   },[estVendasDb,evBusca,evFamilia,evSituacao]);
 
   const reservasFiltradas=useMemo(()=>{
@@ -6694,6 +6702,64 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
       setModalAtualizar(null);
       fetchEstoqueVendas();
     }catch(e){addToast('Erro ao atualizar: '+e.message,'error');}
+  };
+
+  // Reprogramar a previsão de produção. Guarda a original para mostrar de
+  // quanto foi o atraso — trocar a data em silêncio esconderia justamente o
+  // que o comercial precisa saber para avisar o cliente.
+  const reprogramarLote=async lote=>{
+    const atual=s(lote.previsao_termino).slice(0,10);
+    const nova=window.prompt(
+      `Reprogramar a previsão de "${s(lote.codigo_produto)}" (OP ${s(lote.op)||'—'})\n\n`+
+      `Previsão atual: ${atual?atual.split('-').reverse().join('/'):'não informada'}\n`+
+      `Nova previsão — formato AAAA-MM-DD:`, atual||new Date().toISOString().slice(0,10));
+    if(nova===null)return;
+    const d=s(nova).trim();
+    if(!/^\d{4}-\d{2}-\d{2}$/.test(d))return addToast('Data inválida. Use AAAA-MM-DD.','error');
+    const motivo=window.prompt('O que aconteceu? (motivo da reprogramação)');
+    if(motivo===null)return;
+    if(!s(motivo).trim())return addToast('Explique o motivo.','error');
+    try{
+      const{error}=await supabase.from('estoque_lotes').update({
+        previsao_termino:d,
+        previsao_original:lote.previsao_original||lote.previsao_termino||d,
+        reprogramado_em:new Date().toISOString(),
+        reprogramado_por:s(usuarioLogado?.nome),
+        motivo_reprogramacao:s(motivo).trim(),
+        atualizado_em:new Date().toISOString(),
+        atualizado_por:s(usuarioLogado?.nome),
+      }).eq('id',lote.id);
+      if(error)throw error;
+      await supabase.from('estoque_lotes_historico').insert([{
+        lote_id:lote.id,codigo_produto:lote.codigo_produto,
+        qtd_anterior:Number(lote.quantidade||0),qtd_nova:Number(lote.quantidade||0),
+        observacao:`Previsão reprogramada de ${atual||'—'} para ${d}. Motivo: ${s(motivo).trim()}`,
+        atualizado_por:s(usuarioLogado?.nome)||'—',
+      }]);
+      addToast('Previsão reprogramada.');
+      fetchEstoqueVendas();
+    }catch(e){addToast('Erro ao reprogramar: '+e.message,'error');}
+  };
+
+  // Produção terminou: o lote passa a poder ser vendido.
+  const concluirLote=async lote=>{
+    if(!window.confirm(`Marcar "${s(lote.codigo_produto)}" (${fmtD(lote.quantidade)} pç) como finalizado?\n\nA partir daí o comercial pode reservar.`))return;
+    try{
+      const{error}=await supabase.from('estoque_lotes').update({
+        situacao:'FINALIZADO',previsao_termino:null,
+        atualizado_em:new Date().toISOString(),atualizado_por:s(usuarioLogado?.nome),
+      }).eq('id',lote.id);
+      if(error)throw error;
+      await supabase.from('estoque_lotes_historico').insert([{
+        lote_id:lote.id,codigo_produto:lote.codigo_produto,
+        situacao_anterior:'EM_PRODUCAO',situacao_nova:'FINALIZADO',
+        qtd_anterior:Number(lote.quantidade||0),qtd_nova:Number(lote.quantidade||0),
+        observacao:'Produção concluída — liberado para venda',
+        atualizado_por:s(usuarioLogado?.nome)||'—',
+      }]);
+      addToast('Lote liberado para venda.');
+      fetchEstoqueVendas();
+    }catch(e){addToast('Erro: '+e.message,'error');}
   };
 
   const carregarHistoricoEstoque=useCallback(async()=>{
@@ -11109,112 +11175,142 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
                   </div>
                 )}
 
-                {/* ── ESTOQUE ── */}
+                {/* ── ESTOQUE ──
+                    Mostra disponível E em produção na mesma lista: o comercial
+                    precisa saber o que vem aí para negociar entrega futura, não
+                    só o que está pronto hoje. A situação e a previsão ficam
+                    explícitas em cada linha. */}
                 {evAba==='ESTOQUE'&&(
-                  <div className="space-y-3">
-                    <div className="flex flex-wrap gap-2">
-                      <Inp placeholder="Buscar por código ou descrição..." value={evBusca}
-                        onChange={e=>{setEvBusca(e.target.value);setEvPagina(1);}} className="flex-1 min-w-[220px]"/>
-                      <Sel value={evFamilia} onChange={e=>{setEvFamilia(e.target.value);setEvPagina(1);}} className="w-44">
+                  <div className="space-y-4">
+                    <div className="flex flex-wrap gap-2.5">
+                      <Inp placeholder="Buscar por código, descrição, dimensão ou OP..." value={evBusca}
+                        onChange={e=>{setEvBusca(e.target.value);setEvPagina(1);}}
+                        className="flex-1 min-w-[260px] text-base py-3"/>
+                      <Sel value={evFamilia} onChange={e=>{setEvFamilia(e.target.value);setEvPagina(1);}} className="w-44 text-base py-3">
                         <option value="">Todas as linhas</option>
                         {familias.map(f=><option key={f} value={f}>{f}</option>)}
                       </Sel>
-                      <Sel value={evSituacao} onChange={e=>{setEvSituacao(e.target.value);setEvPagina(1);}} className="w-52">
-                        <option value="">Todas as situações</option>
-                        <option value="DISPONIVEL">Só o disponível para venda</option>
-                        <option value="FINALIZADO">Finalizado</option>
-                        <option value="EM_PRODUCAO">Em produção</option>
+                      <Sel value={evSituacao} onChange={e=>{setEvSituacao(e.target.value);setEvPagina(1);}} className="w-56 text-base py-3">
+                        <option value="">Tudo</option>
+                        <option value="VENDAVEL">Pronto + em produção</option>
+                        <option value="DISPONIVEL">Só o pronto para venda</option>
+                        <option value="EM_PRODUCAO">Só em produção</option>
                         <option value="FORA_ESTOQUE">Fora de estoque</option>
                         <option value="VENDIDO">Já vendido</option>
                       </Sel>
                     </div>
 
-                    <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
-                      <div className="overflow-x-auto">
-                        <table className="w-full text-left text-sm">
-                          <thead className="bg-slate-50 border-b border-slate-100">
-                            <tr className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">
-                              <th className="px-5 py-3">Código</th><th className="px-5 py-3">Descrição</th>
-                              <th className="px-5 py-3">Dimensão</th>
-                              <th className="px-5 py-3">OP</th>
-                              <th className="px-5 py-3 text-right">Peças</th>
-                              <th className="px-5 py-3 text-right">Reservado</th>
-                              <th className="px-5 py-3 text-right">Disponível</th>
-                              <th className="px-5 py-3">Situação</th>
-                              <th className="px-5 py-3"/>
-                            </tr>
-                          </thead>
-                          <tbody className="divide-y divide-slate-50">
-                            {naTela.map(p=>{
-                              const velho=R.desatualizado(p);
-                              const baixo=Number(p.estoque_minimo||0)>0&&Number(p.qtd_disponivel||0)<Number(p.estoque_minimo);
-                              return(
-                                <tr key={p.id} className="hover:bg-slate-50/60">
-                                  <td className="px-5 py-2.5 font-bold text-slate-700">{s(p.codigo_produto)}</td>
-                                  <td className="px-5 py-2.5 text-xs text-slate-600 truncate max-w-[240px]" title={s(p.descricao)}>
-                                    {s(p.descricao)}
-                                    {p.com_aba!==null&&<span className="ml-1 text-[9px] text-slate-400">{p.com_aba?'c/ aba':'s/ aba'}</span>}
-                                  </td>
-                                  <td className="px-5 py-2.5 text-xs text-slate-500">{s(p.dimensao)||'—'}</td>
-                                  <td className="px-5 py-2.5 text-xs text-slate-500">
-                                    {s(p.op)||'—'}
-                                    {p.br&&<span className="block text-[9px] text-slate-400">{s(p.br)}</span>}
-                                  </td>
-                                  <td className="px-5 py-2.5 text-right text-slate-600">{fmtD(p.quantidade)} <span className="text-[10px] text-slate-400">{s(p.unidade)}</span></td>
-                                  <td className="px-5 py-2.5 text-right text-amber-600 font-bold">{fmtD(p.qtd_reservada)}</td>
-                                  <td className={`px-5 py-2.5 text-right font-black ${Number(p.qtd_disponivel)>0?'text-emerald-600':'text-slate-300'}`}>
-                                    {fmtD(p.qtd_disponivel)}
-                                  </td>
-                                  <td className="px-5 py-2.5">
-                                    {/* Situação é o que decide se o comercial pode
-                                        vender. Vendido e em produção aparecem, mas
-                                        com o motivo visível. */}
-                                    {p.vendido?(
-                                      <div>
-                                        <span className="text-[10px] font-black px-2 py-0.5 rounded-full bg-slate-200 text-slate-600">VENDIDO</span>
-                                        {p.br_venda&&<span className="block text-[9px] text-slate-400 mt-0.5">{s(p.br_venda)}</span>}
-                                      </div>
-                                    ):p.situacao==='EM_PRODUCAO'?(
-                                      <div>
-                                        <span className="text-[10px] font-black px-2 py-0.5 rounded-full bg-sky-100 text-sky-700">EM PRODUÇÃO</span>
-                                        {p.previsao_termino&&<span className="block text-[9px] text-sky-600 mt-0.5">prev. {s(p.previsao_termino).slice(0,10).split('-').reverse().join('/')}</span>}
-                                      </div>
-                                    ):p.situacao==='FORA_ESTOQUE'?(
-                                      <span className="text-[10px] font-black px-2 py-0.5 rounded-full bg-red-100 text-red-600">FORA DE ESTOQUE</span>
-                                    ):(
-                                      <div>
-                                        <span className="text-[10px] font-black px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-700">DISPONÍVEL</span>
-                                        {p.local&&<span className="block text-[9px] text-slate-400 mt-0.5">{s(p.local)}</span>}
+                    <div className="grid grid-cols-1 gap-3">
+                      {naTela.map(p=>{
+                        const emProd=p.situacao==='EM_PRODUCAO'&&!p.vendido;
+                        const pronto=p.situacao==='FINALIZADO'&&!p.vendido;
+                        const fora=p.situacao==='FORA_ESTOQUE';
+                        const atrasou=p.previsao_original&&p.previsao_termino&&
+                          s(p.previsao_termino).slice(0,10)>s(p.previsao_original).slice(0,10);
+                        const diasAtraso=atrasou?Math.round((new Date(s(p.previsao_termino).slice(0,10))-new Date(s(p.previsao_original).slice(0,10)))/864e5):0;
+                        const borda=p.vendido?'border-slate-200 bg-slate-50/60'
+                          :emProd?'border-sky-200 bg-sky-50/30'
+                          :fora?'border-red-200 bg-red-50/30'
+                          :'border-emerald-200 bg-white';
+                        return(
+                          <div key={p.id} className={`rounded-2xl border-2 p-5 ${borda}`}>
+                            <div className="flex flex-wrap items-start justify-between gap-4">
+                              <div className="min-w-0 flex-1">
+                                <div className="flex items-center gap-2.5 flex-wrap mb-1">
+                                  <span className="text-lg font-black text-slate-900">{s(p.codigo_produto)}</span>
+                                  {p.dimensao&&<span className="text-sm font-bold text-slate-500 bg-slate-100 px-2.5 py-0.5 rounded-lg">{s(p.dimensao)}</span>}
+                                  {p.com_aba!==null&&<span className="text-xs font-bold text-slate-400">{p.com_aba?'com aba':'sem aba'}</span>}
+                                  {p.vendido?(
+                                    <span className="text-xs font-black px-2.5 py-1 rounded-lg bg-slate-300 text-slate-700">VENDIDO</span>
+                                  ):emProd?(
+                                    <span className="text-xs font-black px-2.5 py-1 rounded-lg bg-sky-500 text-white">EM PRODUÇÃO</span>
+                                  ):fora?(
+                                    <span className="text-xs font-black px-2.5 py-1 rounded-lg bg-red-500 text-white">FORA DE ESTOQUE</span>
+                                  ):(
+                                    <span className="text-xs font-black px-2.5 py-1 rounded-lg bg-emerald-500 text-white">PRONTO</span>
+                                  )}
+                                </div>
+                                <p className="text-sm text-slate-600 leading-snug">{s(p.descricao)}</p>
+                                <div className="flex flex-wrap gap-x-4 gap-y-1 mt-2 text-xs text-slate-500">
+                                  {p.op&&<span>OP <strong className="text-slate-700">{s(p.op)}</strong></span>}
+                                  {p.br&&<span>{s(p.br)}</span>}
+                                  {p.local&&<span>📍 {s(p.local)}</span>}
+                                  {p.br_venda&&<span className="text-slate-400">vendido em {s(p.br_venda)}</span>}
+                                </div>
+
+                                {/* Previsão, com o atraso explícito quando houve
+                                    reprogramação — trocar a data calado esconderia
+                                    o que o comercial precisa dizer ao cliente. */}
+                                {emProd&&(
+                                  <div className="mt-3 flex flex-wrap items-center gap-3">
+                                    <div className={`rounded-xl px-3.5 py-2 ${atrasou?'bg-amber-100':'bg-sky-100'}`}>
+                                      <p className={`text-[10px] font-black uppercase ${atrasou?'text-amber-600':'text-sky-600'}`}>Previsão de término</p>
+                                      <p className={`text-base font-black ${atrasou?'text-amber-700':'text-sky-700'}`}>
+                                        {p.previsao_termino?s(p.previsao_termino).slice(0,10).split('-').reverse().join('/'):'a definir'}
+                                      </p>
+                                    </div>
+                                    {atrasou&&(
+                                      <div className="text-xs">
+                                        <p className="text-amber-700 font-bold">Reprogramado · {diasAtraso} dia(s) a mais</p>
+                                        <p className="text-slate-500">era {s(p.previsao_original).slice(0,10).split('-').reverse().join('/')}{p.reprogramado_por?` · por ${s(p.reprogramado_por)}`:''}</p>
+                                        {p.motivo_reprogramacao&&<p className="text-slate-500 italic">"{s(p.motivo_reprogramacao)}"</p>}
                                       </div>
                                     )}
-                                  </td>
-                                  <td className="px-5 py-2.5">
-                                    <div className="flex gap-1.5 justify-end">
-                                      {podeAtualizarEstoqueVendas&&(
-                                        <button onClick={()=>abrirAtualizacao(p)} className="text-[10px] font-black text-slate-600 bg-slate-100 hover:bg-slate-200 rounded px-2 py-1">Atualizar</button>
-                                      )}
-                                      {isComercial&&Number(p.qtd_disponivel)>0&&p.situacao==='FINALIZADO'&&!p.vendido&&(
-                                        <button onClick={()=>abrirReserva(p)} className="text-[10px] font-black text-white bg-indigo-600 hover:bg-indigo-700 rounded px-2 py-1">Reservar</button>
-                                      )}
-                                    </div>
-                                  </td>
-                                </tr>
-                              );
-                            })}
-                            {naTela.length===0&&<tr><td colSpan={9} className="py-12 text-center text-slate-300 text-sm">Nenhum produto encontrado.</td></tr>}
-                          </tbody>
-                        </table>
-                      </div>
-                      {totalPag>1&&(
-                        <div className="flex items-center justify-between px-5 py-3 bg-slate-50 border-t border-slate-100">
-                          <p className="text-xs text-slate-500">{evFiltrados.length} produto(s) · página {pagina} de {totalPag}</p>
-                          <div className="flex gap-1.5">
-                            <Btn variant="secondary" size="sm" onClick={()=>setEvPagina(p=>Math.max(1,p-1))} disabled={pagina<=1}>Anterior</Btn>
-                            <Btn variant="secondary" size="sm" onClick={()=>setEvPagina(p=>Math.min(totalPag,p+1))} disabled={pagina>=totalPag}>Próxima</Btn>
+                                  </div>
+                                )}
+                              </div>
+
+                              <div className="flex items-start gap-5">
+                                <div className="text-right">
+                                  <p className="text-[10px] font-black text-slate-400 uppercase">Peças</p>
+                                  <p className="text-2xl font-black text-slate-800">{fmtD(p.quantidade)}</p>
+                                  {Number(p.qtd_reservada)>0&&<p className="text-xs font-bold text-amber-600">{fmtD(p.qtd_reservada)} reservadas</p>}
+                                </div>
+                                <div className="text-right min-w-[90px]">
+                                  <p className="text-[10px] font-black text-slate-400 uppercase">Disponível</p>
+                                  <p className={`text-2xl font-black ${Number(p.qtd_disponivel)>0?'text-emerald-600':'text-slate-300'}`}>{fmtD(p.qtd_disponivel)}</p>
+                                </div>
+                              </div>
+                            </div>
+
+                            <div className="flex flex-wrap gap-2 mt-4 pt-3 border-t border-slate-100">
+                              {isComercial&&pronto&&Number(p.qtd_disponivel)>0&&(
+                                <Btn variant="primary" size="sm" onClick={()=>abrirReserva(p)}>Reservar</Btn>
+                              )}
+                              {podeAtualizarEstoqueVendas&&(
+                                <>
+                                  <Btn variant="secondary" size="sm" onClick={()=>abrirAtualizacao(p)}>Ajustar quantidade</Btn>
+                                  {emProd&&(
+                                    <>
+                                      <Btn variant="secondary" size="sm" onClick={()=>reprogramarLote(p)}>Reprogramar previsão</Btn>
+                                      <Btn variant="dark" size="sm" onClick={()=>concluirLote(p)}>Produção concluída</Btn>
+                                    </>
+                                  )}
+                                </>
+                              )}
+                              <span className="ml-auto text-[11px] text-slate-400 self-center">
+                                atualizado {fmtDt(p.atualizado_em)}{p.atualizado_por?` · ${s(p.atualizado_por)}`:''}
+                              </span>
+                            </div>
                           </div>
+                        );
+                      })}
+                      {naTela.length===0&&(
+                        <div className="bg-white rounded-2xl border-2 border-slate-200 py-16 text-center">
+                          <p className="text-base text-slate-400">Nenhum lote encontrado com esses filtros.</p>
                         </div>
                       )}
                     </div>
+
+                    {totalPag>1&&(
+                      <div className="flex items-center justify-between bg-white rounded-2xl border border-slate-200 px-5 py-3">
+                        <p className="text-sm text-slate-500">{evFiltrados.length} lote(s) · página {pagina} de {totalPag}</p>
+                        <div className="flex gap-2">
+                          <Btn variant="secondary" size="sm" onClick={()=>setEvPagina(p2=>Math.max(1,p2-1))} disabled={pagina<=1}>Anterior</Btn>
+                          <Btn variant="secondary" size="sm" onClick={()=>setEvPagina(p2=>Math.min(totalPag,p2+1))} disabled={pagina>=totalPag}>Próxima</Btn>
+                        </div>
+                      </div>
+                    )}
                   </div>
                 )}
 
