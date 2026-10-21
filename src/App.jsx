@@ -1520,6 +1520,7 @@ export default function App(){
   const [evBusca,setEvBusca]=useState('');
   const [evFamilia,setEvFamilia]=useState('');
   const [evSituacao,setEvSituacao]=useState('VENDAVEL');
+  const [evMes,setEvMes]=useState(()=>{const d=new Date();return{ano:d.getFullYear(),mes:d.getMonth()};});
   const [evStatusRes,setEvStatusRes]=useState('');
   const [evPagina,setEvPagina]=useState(1);
   const [evHistorico,setEvHistorico]=useState([]);
@@ -11131,6 +11132,7 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
                 <div className="flex items-center gap-1 bg-slate-100 rounded-xl p-1 w-fit">
                   {[{id:'PAINEL',l:'Painel'},{id:'ESTOQUE',l:'Estoque'},
                     {id:'RESERVAS',l:`Reservas${R.reservasAtivas?` (${R.reservasAtivas})`:''}`},
+                    {id:'CALENDARIO',l:'Calendário'},
                     {id:'HISTORICO',l:'Histórico'}].map(v=>(
                     <button key={v.id} onClick={()=>{setEvAba(v.id);if(v.id==='HISTORICO')carregarHistoricoEstoque();}}
                       className={`text-xs font-bold px-4 py-2 rounded-lg transition-all ${evAba===v.id?'bg-white text-slate-900 shadow-sm':'text-slate-500 hover:text-slate-700'}`}>
@@ -11459,6 +11461,151 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
                     </div>
                   </div>
                 )}
+
+                {/* ── CALENDÁRIO ────────────────────────────────────────────
+                    Junta as duas datas que mandam no módulo: quando a produção
+                    fica pronta e quando as reservas vencem. Separadas, cada
+                    uma só conta meia história — a peça que chega dia 17 pode
+                    ser justamente a da reserva que vence dia 16. */}
+                {evAba==='CALENDARIO'&&(()=>{
+                  const {ano,mes}=evMes;
+                  const primeiro=new Date(ano,mes,1);
+                  const diasNoMes=new Date(ano,mes+1,0).getDate();
+                  const comecaEm=primeiro.getDay();
+                  const nomeMes=primeiro.toLocaleDateString('pt-BR',{month:'long',year:'numeric'});
+                  const iso=d=>`${ano}-${String(mes+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
+                  const hojeIso=new Date().toISOString().slice(0,10);
+
+                  // Eventos do mês: produção ficando pronta e reserva vencendo.
+                  const eventos={};
+                  const add=(dia,ev)=>{(eventos[dia]=eventos[dia]||[]).push(ev);};
+                  estVendasDb.forEach(l=>{
+                    if(l.situacao!=='EM_PRODUCAO'||l.vendido||!l.previsao_termino)return;
+                    const d=s(l.previsao_termino).slice(0,10);
+                    const atrasou=l.previsao_original&&d>s(l.previsao_original).slice(0,10);
+                    add(d,{tipo:'PRODUCAO',titulo:`${s(l.codigo_produto)} ${s(l.dimensao)}`,
+                      detalhe:`${fmtD(l.quantidade)} pç${l.op?` · OP ${s(l.op)}`:''}`,atrasou,lote:l});
+                  });
+                  reservasDb.filter(r=>s(r.status)==='RESERVADO').forEach(r=>{
+                    const d=s(r.validade).slice(0,10);
+                    const lote=estVendasDb.find(x=>x.id===r.lote_id);
+                    add(d,{tipo:'RESERVA',titulo:`${s(r.numero)} · ${s(r.cliente)}`,
+                      detalhe:`${fmtD(r.quantidade)} pç${lote?` de ${s(lote.codigo_produto)}`:''} · ${s(r.vendedor)}`,
+                      vencida:d<hojeIso,res:r});
+                  });
+
+                  const semanas=[];let sem=[];
+                  for(let i=0;i<comecaEm;i++)sem.push(null);
+                  for(let d=1;d<=diasNoMes;d++){sem.push(d);if(sem.length===7){semanas.push(sem);sem=[];}}
+                  if(sem.length){while(sem.length<7)sem.push(null);semanas.push(sem);}
+
+                  const doMes=Object.entries(eventos).filter(([d])=>d.startsWith(`${ano}-${String(mes+1).padStart(2,'0')}`));
+                  const totalProd=doMes.reduce((a2,[,evs])=>a2+evs.filter(e=>e.tipo==='PRODUCAO').length,0);
+                  const totalRes=doMes.reduce((a2,[,evs])=>a2+evs.filter(e=>e.tipo==='RESERVA').length,0);
+
+                  return(
+                    <div className="space-y-4">
+                      <div className="bg-white rounded-2xl border border-slate-200 p-5">
+                        <div className="flex items-center justify-between mb-5">
+                          <button onClick={()=>setEvMes(p2=>{const d=new Date(p2.ano,p2.mes-1,1);return{ano:d.getFullYear(),mes:d.getMonth()};})}
+                            className="w-10 h-10 rounded-xl border border-slate-200 hover:bg-slate-50 flex items-center justify-center">
+                            <ArrowRight className="w-5 h-5 rotate-180 text-slate-600"/>
+                          </button>
+                          <div className="text-center">
+                            <p className="text-lg font-black text-slate-800 capitalize">{nomeMes}</p>
+                            <p className="text-xs text-slate-500">
+                              {totalProd} lote(s) ficando pronto{totalProd!==1?'s':''} · {totalRes} reserva(s) vencendo
+                            </p>
+                          </div>
+                          <button onClick={()=>setEvMes(p2=>{const d=new Date(p2.ano,p2.mes+1,1);return{ano:d.getFullYear(),mes:d.getMonth()};})}
+                            className="w-10 h-10 rounded-xl border border-slate-200 hover:bg-slate-50 flex items-center justify-center">
+                            <ArrowRight className="w-5 h-5 text-slate-600"/>
+                          </button>
+                        </div>
+
+                        <div className="grid grid-cols-7 gap-1.5 mb-1.5">
+                          {['Domingo','Segunda','Terça','Quarta','Quinta','Sexta','Sábado'].map(d=>(
+                            <div key={d} className="text-xs font-black text-slate-500 uppercase text-center py-1.5">
+                              <span className="hidden sm:inline">{d}</span><span className="sm:hidden">{d.slice(0,3)}</span>
+                            </div>
+                          ))}
+                        </div>
+
+                        <div className="grid grid-cols-7 gap-1.5">
+                          {semanas.flat().map((d,i)=>{
+                            if(d===null)return <div key={`v${i}`} className="min-h-[104px] rounded-xl bg-slate-50/50"/>;
+                            const dIso=iso(d);
+                            const evs=eventos[dIso]||[];
+                            const ehHoje=dIso===hojeIso;
+                            return(
+                              <div key={dIso} className={`min-h-[104px] rounded-xl border-2 p-2 ${ehHoje?'border-indigo-400 bg-indigo-50/40':'border-slate-100 bg-white'}`}>
+                                <p className={`text-base font-black mb-1 ${ehHoje?'text-indigo-700':'text-slate-600'}`}>{d}</p>
+                                <div className="space-y-1">
+                                  {evs.slice(0,3).map((e,j)=>(
+                                    <div key={j} title={`${e.titulo} — ${e.detalhe}`}
+                                      className={`text-[10px] font-bold px-1.5 py-1 rounded-md truncate ${
+                                        e.tipo==='PRODUCAO'
+                                          ?(e.atrasou?'bg-amber-100 text-amber-800':'bg-sky-100 text-sky-800')
+                                          :(e.vencida?'bg-red-100 text-red-700':'bg-indigo-100 text-indigo-700')}`}>
+                                      {e.tipo==='PRODUCAO'?'📦 ':'⏳ '}{e.titulo}
+                                    </div>
+                                  ))}
+                                  {evs.length>3&&<p className="text-[9px] text-slate-400 px-1">+{evs.length-3}</p>}
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+
+                        <div className="flex flex-wrap items-center gap-x-4 gap-y-2 mt-5 pt-4 border-t border-slate-100">
+                          {[{c:'bg-sky-200',l:'Produção ficando pronta'},
+                            {c:'bg-amber-200',l:'Produção reprogramada'},
+                            {c:'bg-indigo-200',l:'Reserva vencendo'},
+                            {c:'bg-red-200',l:'Reserva vencida'}].map(x=>(
+                            <span key={x.l} className="flex items-center gap-1.5 text-xs text-slate-600">
+                              <span className={`w-3 h-3 rounded ${x.c} inline-block`}/>{x.l}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+
+                      {/* Lista do mês, em ordem — o calendário mostra o quadro
+                          geral; aqui dá para ler o detalhe sem passar o mouse. */}
+                      {doMes.length>0&&(
+                        <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
+                          <div className="px-5 py-3 bg-slate-50 border-b border-slate-100">
+                            <p className="text-xs font-black text-slate-600 uppercase tracking-wider">O que acontece neste mês</p>
+                          </div>
+                          <div className="divide-y divide-slate-50">
+                            {doMes.sort(([a2],[b2])=>a2.localeCompare(b2)).map(([dia,evs])=>(
+                              <div key={dia} className="px-5 py-3">
+                                <p className="text-sm font-black text-slate-700 mb-1.5">
+                                  {new Date(dia+'T12:00:00').toLocaleDateString('pt-BR',{weekday:'long',day:'2-digit',month:'2-digit'})}
+                                  {dia<hojeIso&&<span className="ml-2 text-[10px] font-black text-red-600 bg-red-100 px-2 py-0.5 rounded">passou</span>}
+                                </p>
+                                {evs.map((e,j)=>(
+                                  <p key={j} className="text-xs text-slate-600 ml-1">
+                                    <span className={e.tipo==='PRODUCAO'?'text-sky-600':'text-indigo-600'}>
+                                      {e.tipo==='PRODUCAO'?'📦 fica pronto':'⏳ reserva vence'}
+                                    </span>
+                                    {' · '}<strong>{e.titulo}</strong>{' — '}{e.detalhe}
+                                    {e.atrasou&&<span className="text-amber-600 font-bold"> (reprogramado)</span>}
+                                  </p>
+                                ))}
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
+                      {doMes.length===0&&(
+                        <div className="bg-white rounded-2xl border-2 border-slate-200 py-14 text-center">
+                          <p className="text-base text-slate-400">Nada marcado para {nomeMes}.</p>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })()}
 
                 {/* ── HISTÓRICO ── */}
                 {evAba==='HISTORICO'&&(
