@@ -1419,6 +1419,9 @@ export default function App(){
   // Retorno
   const [buscaForn,setBuscaForn]=useState('');
   const [filtroSoPendentes,setFiltroSoPendentes]=useState(false);
+  // Calendário de saída e retorno das remessas.
+  const [retVisao,setRetVisao]=useState('LISTA');   // LISTA | CALENDARIO
+  const [retMes,setRetMes]=useState(()=>{const d=new Date();return{ano:d.getFullYear(),mes:d.getMonth()};});
   const [filtroSoEmTransito,setFiltroSoEmTransito]=useState(false); // pega ENVIADO + as RETORNADO com marcação incorreta (nota real ainda pendente)
   // Preferência de recolher a lista de notas sem BR — fica salva no navegador
   // porque é ruído recorrente pra quem já sabe que aquelas notas não dá pra
@@ -6498,6 +6501,40 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
       );
     });
   };
+
+  // ── Prazos das remessas: saída e retorno ────────────────────────────────
+  // Uma regra só, usada no calendário e nos avisos, pra não existirem duas
+  // noções diferentes de "atrasado".
+  const prazosRemessas=useMemo(()=>{
+    const hoje=new Date();hoje.setHours(0,0,0,0);
+    const dia=d=>{const x=s(d).slice(0,10);return x||null;};
+    const diasAte=d=>Math.round((new Date(d+'T12:00:00')-hoje)/864e5);
+
+    const linhas=(remessasDb||[])
+      .filter(r=>!['CANCELADA'].includes(s(r.status)))
+      .map(r=>{
+        const prevEnvio=dia(r.data_envio_prevista);
+        const prevRetorno=dia(r.data_retorno_desejada);
+        const saiu=!!r.data_envio;
+        const voltou=['RETORNADA','CONCLUIDA'].includes(s(r.status))||!!r.data_retorno;
+        return{
+          ...r,prevEnvio,prevRetorno,saiu,voltou,
+          envioAtrasado:!!(prevEnvio&&!saiu&&diasAte(prevEnvio)<0),
+          retornoAtrasado:!!(prevRetorno&&!voltou&&diasAte(prevRetorno)<0),
+          retornoProximo:!!(prevRetorno&&!voltou&&diasAte(prevRetorno)>=0&&diasAte(prevRetorno)<=3),
+          diasEnvio:prevEnvio?diasAte(prevEnvio):null,
+          diasRetorno:prevRetorno?diasAte(prevRetorno):null,
+        };
+      });
+
+    return{
+      linhas,
+      semPrazo:linhas.filter(r=>!r.prevRetorno&&!r.voltou).length,
+      envioAtrasado:linhas.filter(r=>r.envioAtrasado),
+      retornoAtrasado:linhas.filter(r=>r.retornoAtrasado),
+      retornoProximo:linhas.filter(r=>r.retornoProximo),
+    };
+  },[remessasDb]);
 
   // ── Estoque p/ Vendas: cálculos ─────────────────────────────────────────
   const DIAS_SEM_ATUALIZAR=7;
@@ -12509,10 +12546,182 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
                   }
                 />
 
+                {/* Alternância lista / calendário */}
+                <div className="flex items-center gap-1 bg-slate-100 rounded-xl p-1 w-fit">
+                  {[{id:'LISTA',l:'Lista'},{id:'CALENDARIO',l:'Calendário de prazos'}].map(v=>(
+                    <button key={v.id} onClick={()=>setRetVisao(v.id)}
+                      className={`text-xs font-bold px-4 py-2 rounded-lg transition-all ${retVisao===v.id?'bg-white text-slate-900 shadow-sm':'text-slate-500 hover:text-slate-700'}`}>
+                      {v.l}
+                    </button>
+                  ))}
+                </div>
+
+                {/* ── CALENDÁRIO DE PRAZOS ──────────────────────────────────
+                    Saída e retorno no mesmo mês. Separados, não dá pra ver o
+                    que importa: o material que saiu e já passou do prazo de
+                    voltar. */}
+                {retVisao==='CALENDARIO'&&(()=>{
+                  const P=prazosRemessas;
+                  const {ano,mes}=retMes;
+                  const primeiro=new Date(ano,mes,1);
+                  const diasNoMes=new Date(ano,mes+1,0).getDate();
+                  const comecaEm=primeiro.getDay();
+                  const nomeMes=primeiro.toLocaleDateString('pt-BR',{month:'long',year:'numeric'});
+                  const iso=d=>`${ano}-${String(mes+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
+                  const hojeIso=new Date().toISOString().slice(0,10);
+
+                  const eventos={};
+                  const add=(d,ev)=>{if(d)(eventos[d]=eventos[d]||[]).push(ev);};
+                  P.linhas.forEach(r=>{
+                    // O campo é 'cliente'/'fornecedor_destino', não
+                    // 'destinatario' — este não existe na tabela e saía vazio.
+                    const rotulo=`${s(r.projeto)||'sem BR'}${s(r.cliente||r.fornecedor_destino)?` · ${s(r.cliente||r.fornecedor_destino)}`:''}`;
+                    if(r.prevEnvio&&!r.saiu) add(r.prevEnvio,{tipo:'SAIDA',rotulo,r,atrasado:r.envioAtrasado});
+                    if(r.prevEnvio&&r.saiu)  add(r.prevEnvio,{tipo:'SAIU',rotulo,r});
+                    if(r.prevRetorno)        add(r.prevRetorno,{tipo:'RETORNO',rotulo,r,atrasado:r.retornoAtrasado,ok:r.voltou});
+                  });
+
+                  const semanas=[];let sem=[];
+                  for(let i=0;i<comecaEm;i++)sem.push(null);
+                  for(let d=1;d<=diasNoMes;d++){sem.push(d);if(sem.length===7){semanas.push(sem);sem=[];}}
+                  if(sem.length){while(sem.length<7)sem.push(null);semanas.push(sem);}
+                  const doMes=Object.entries(eventos)
+                    .filter(([d])=>d.startsWith(`${ano}-${String(mes+1).padStart(2,'0')}`))
+                    .sort(([a2],[b2])=>a2.localeCompare(b2));
+
+                  return(
+                    <div className="space-y-4">
+                      {/* Avisos que exigem ação agora */}
+                      {(P.retornoAtrasado.length>0||P.retornoProximo.length>0||P.envioAtrasado.length>0)&&(
+                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                          {P.retornoAtrasado.length>0&&(
+                            <div className="bg-red-50 border-2 border-red-200 rounded-xl px-4 py-3">
+                              <p className="text-2xl font-black text-red-600">{P.retornoAtrasado.length}</p>
+                              <p className="text-xs font-bold text-red-800">retorno(s) atrasado(s)</p>
+                              <p className="text-[11px] text-red-700">Material fora, passou da data</p>
+                            </div>
+                          )}
+                          {P.retornoProximo.length>0&&(
+                            <div className="bg-amber-50 border-2 border-amber-200 rounded-xl px-4 py-3">
+                              <p className="text-2xl font-black text-amber-600">{P.retornoProximo.length}</p>
+                              <p className="text-xs font-bold text-amber-800">vencem em até 3 dias</p>
+                              <p className="text-[11px] text-amber-700">Vale cobrar o fornecedor</p>
+                            </div>
+                          )}
+                          {P.envioAtrasado.length>0&&(
+                            <div className="bg-sky-50 border-2 border-sky-200 rounded-xl px-4 py-3">
+                              <p className="text-2xl font-black text-sky-600">{P.envioAtrasado.length}</p>
+                              <p className="text-xs font-bold text-sky-800">envio(s) atrasado(s)</p>
+                              <p className="text-[11px] text-sky-700">Previsto sair e ainda não saiu</p>
+                            </div>
+                          )}
+                        </div>
+                      )}
+
+                      <div className="bg-white rounded-2xl border border-slate-200 p-5">
+                        <div className="flex items-center justify-between mb-5">
+                          <button onClick={()=>setRetMes(p2=>{const d=new Date(p2.ano,p2.mes-1,1);return{ano:d.getFullYear(),mes:d.getMonth()};})}
+                            className="w-10 h-10 rounded-xl border border-slate-200 hover:bg-slate-50 flex items-center justify-center"><ArrowRight className="w-5 h-5 rotate-180 text-slate-600"/></button>
+                          <p className="text-lg font-black text-slate-800 capitalize">{nomeMes}</p>
+                          <button onClick={()=>setRetMes(p2=>{const d=new Date(p2.ano,p2.mes+1,1);return{ano:d.getFullYear(),mes:d.getMonth()};})}
+                            className="w-10 h-10 rounded-xl border border-slate-200 hover:bg-slate-50 flex items-center justify-center"><ArrowRight className="w-5 h-5 text-slate-600"/></button>
+                        </div>
+
+                        <div className="grid grid-cols-7 gap-1.5 mb-1.5">
+                          {['Domingo','Segunda','Terça','Quarta','Quinta','Sexta','Sábado'].map(d=>(
+                            <div key={d} className="text-xs font-black text-slate-500 uppercase text-center py-1.5">
+                              <span className="hidden sm:inline">{d}</span><span className="sm:hidden">{d.slice(0,3)}</span>
+                            </div>
+                          ))}
+                        </div>
+
+                        <div className="grid grid-cols-7 gap-1.5">
+                          {semanas.flat().map((d,i)=>{
+                            if(d===null)return <div key={`v${i}`} className="min-h-[104px] rounded-xl bg-slate-50/50"/>;
+                            const dIso=iso(d);
+                            const evs=eventos[dIso]||[];
+                            const ehHoje=dIso===hojeIso;
+                            return(
+                              <div key={dIso} className={`min-h-[104px] rounded-xl border-2 p-2 ${ehHoje?'border-indigo-400 bg-indigo-50/40':'border-slate-100 bg-white'}`}>
+                                <p className={`text-base font-black mb-1 ${ehHoje?'text-indigo-700':'text-slate-600'}`}>{d}</p>
+                                <div className="space-y-1">
+                                  {evs.slice(0,3).map((e,j)=>(
+                                    <div key={j} title={`${e.tipo==='RETORNO'?'Retorno previsto':'Saída prevista'} — ${e.rotulo}`}
+                                      className={`text-[10px] font-bold px-1.5 py-1 rounded-md truncate ${
+                                        e.tipo==='RETORNO'
+                                          ?(e.ok?'bg-emerald-100 text-emerald-700':e.atrasado?'bg-red-100 text-red-700':'bg-amber-100 text-amber-800')
+                                          :(e.tipo==='SAIU'?'bg-slate-100 text-slate-500':e.atrasado?'bg-sky-200 text-sky-900':'bg-sky-100 text-sky-800')}`}>
+                                      {e.tipo==='RETORNO'?'↩ ':'↗ '}{e.rotulo}
+                                    </div>
+                                  ))}
+                                  {evs.length>3&&<p className="text-[9px] text-slate-400 px-1">+{evs.length-3}</p>}
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+
+                        <div className="flex flex-wrap items-center gap-x-4 gap-y-2 mt-5 pt-4 border-t border-slate-100">
+                          {[{c:'bg-sky-200',l:'Saída prevista'},{c:'bg-slate-200',l:'Já saiu'},
+                            {c:'bg-amber-200',l:'Retorno previsto'},{c:'bg-red-200',l:'Retorno atrasado'},
+                            {c:'bg-emerald-200',l:'Já retornou'}].map(x=>(
+                            <span key={x.l} className="flex items-center gap-1.5 text-xs text-slate-600">
+                              <span className={`w-3 h-3 rounded ${x.c} inline-block`}/>{x.l}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+
+                      {doMes.length>0&&(
+                        <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
+                          <div className="px-5 py-3 bg-slate-50 border-b border-slate-100">
+                            <p className="text-xs font-black text-slate-600 uppercase tracking-wider">O que acontece neste mês</p>
+                          </div>
+                          <div className="divide-y divide-slate-50 max-h-96 overflow-y-auto custom-scrollbar">
+                            {doMes.map(([dia,evs])=>(
+                              <div key={dia} className="px-5 py-3">
+                                <p className="text-sm font-black text-slate-700 mb-1.5">
+                                  {new Date(dia+'T12:00:00').toLocaleDateString('pt-BR',{weekday:'long',day:'2-digit',month:'2-digit'})}
+                                  {dia<hojeIso&&evs.some(e=>e.atrasado)&&<span className="ml-2 text-[10px] font-black text-red-600 bg-red-100 px-2 py-0.5 rounded">em atraso</span>}
+                                </p>
+                                {evs.map((e,j)=>(
+                                  <p key={j} className="text-xs text-slate-600 ml-1">
+                                    <span className={e.tipo==='RETORNO'?(e.ok?'text-emerald-600':e.atrasado?'text-red-600':'text-amber-600'):'text-sky-600'}>
+                                      {e.tipo==='RETORNO'?(e.ok?'↩ retornou':'↩ retorno previsto'):(e.tipo==='SAIU'?'↗ saiu':'↗ saída prevista')}
+                                    </span>
+                                    {' · '}<strong>{e.rotulo}</strong>
+                                    {e.tipo==='RETORNO'&&!e.ok&&e.r.diasRetorno!==null&&(
+                                      <span className={e.atrasado?'text-red-600 font-bold':'text-slate-400'}>
+                                        {e.atrasado?` — ${Math.abs(e.r.diasRetorno)} dia(s) de atraso`:` — faltam ${e.r.diasRetorno} dia(s)`}
+                                      </span>
+                                    )}
+                                  </p>
+                                ))}
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
+                      {doMes.length===0&&(
+                        <div className="bg-white rounded-2xl border-2 border-slate-200 py-14 text-center">
+                          <p className="text-base text-slate-400">Nenhuma saída ou retorno previsto para {nomeMes}.</p>
+                        </div>
+                      )}
+
+                      {P.semPrazo>0&&(
+                        <p className="text-xs text-slate-500 flex items-center gap-1.5">
+                          <Info className="w-3.5 h-3.5"/>{P.semPrazo} remessa(s) em aberto sem data de retorno informada — não aparecem no calendário.
+                        </p>
+                      )}
+                    </div>
+                  );
+                })()}
+
                 {/* Alerta-resumo bem no topo — antes o "pendente" só aparecia dentro do
                     card de cada remessa (precisava rolar/achar); agora avisa de cara
                     quantas notas ainda estão sem retornar, e clicar já filtra a lista. */}
-                {notasRemessaPendentesCount>0&&(
+                {retVisao==='LISTA'&&notasRemessaPendentesCount>0&&(
                   <button onClick={()=>setFiltroSoPendentes(true)} className="w-full text-left bg-red-600 hover:bg-red-700 text-white rounded-2xl px-5 py-3.5 flex items-center gap-3 transition-colors">
                     <AlertTriangle className="w-5 h-5 flex-shrink-0"/>
                     <p className="text-sm font-bold">{notasRemessaPendentesCount} nota{notasRemessaPendentesCount>1?'s':''} fiscal{notasRemessaPendentesCount>1?'is':''} de industrialização ainda PENDENTE{notasRemessaPendentesCount>1?'S':''} de retorno físico — material fora, no fornecedor, sem ter voltado. <span className="underline">Clique pra filtrar</span>.</p>
@@ -12524,7 +12733,7 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
                     que não têm remessa cadastrada no controle interno (achado real: 53
                     dos BRs com OC não têm nenhuma remessa aqui — o fornecedor cobra pela
                     OC direto, sem passar pelo fluxo de remessa do portal). */}
-                {riscoOCPendente.length>0&&(
+                {retVisao==='LISTA'&&riscoOCPendente.length>0&&(
                   <div className="bg-red-50 border border-red-200 rounded-2xl overflow-hidden">
                     <div className="px-5 py-3.5 border-b border-red-100">
                       <p className="text-sm font-black text-red-800 flex items-center gap-1.5"><AlertTriangle className="w-4 h-4"/>{riscoOCPendente.length} fornecedor(es) com cobrança emitida, ainda sem retorno físico</p>
@@ -12560,7 +12769,7 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
                     construída em cima de REMESSA, não da nota fiscal em si. Sem
                     esta seção, "Só pendentes" contava certo no banner mas mostrava
                     lista vazia, sem explicação nenhuma pro usuário. */}
-                {notasPendentesSemRemessa.length>0&&(
+                {retVisao==='LISTA'&&notasPendentesSemRemessa.length>0&&(
                   <div className="bg-orange-50 border border-orange-200 rounded-2xl overflow-hidden">
                     <button onClick={()=>{const nv=!ocultarNotasSemBR;setOcultarNotasSemBR(nv);try{localStorage.setItem('ocultarNotasSemBR',nv?'1':'0');}catch(_){}}}
                       className="w-full px-5 py-3.5 border-b border-orange-100 text-left hover:bg-orange-100/40 transition-colors">
@@ -12594,6 +12803,7 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
                   </div>
                 )}
 
+                {retVisao==='LISTA'&&(
                 <div className="space-y-4">
                   {(()=>{
                     const remessasFiltradas=remFora
@@ -12829,6 +13039,7 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
                     );
                   })()}
                 </div>
+                )}
               </div>
             )}
 
