@@ -1541,8 +1541,9 @@ export default function App(){
   const [racFiltroStatus,setRacFiltroStatus]=useState('ABERTAS');
   const [modalNovoRac,setModalNovoRac]=useState(false);
   const [formRac,setFormRac]=useState({origem:'INTERNA',dados_origem:'QUALIDADE',processo:'',
-    setor_responsavel:'',descricao_observacao:'',br:'',op:'',cod_produto:'',quantidade:''});
+    setor_responsavel:'',descricao_observacao:'',br:'',op:'',cod_produto:'',produto_descricao:'',quantidade:''});
   const [fotosRac,setFotosRac]=useState([]);
+  const [buscandoProduto,setBuscandoProduto]=useState(false);
 
   // Link direto do aviso: ?rac=12 abre a RAC assim que os dados carregam.
   // Sem isso o responsável recebe o aviso e ainda precisa achar a demanda
@@ -6613,6 +6614,7 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
         setor_responsavel:s(f.setor_responsavel),
         descricao_observacao:s(f.descricao_observacao).trim(),
         br:s(f.br)||null,op:s(f.op)||null,cod_produto:s(f.cod_produto)||null,
+        produto_descricao:s(f.produto_descricao)||null,
         quantidade:f.quantidade?Number(f.quantidade):null,
         fotos:fotosRac.map(x=>({nome:x.name,tipo:x.type,dados:x.b64})),
         // aberta_em vem do banco (now()): é a hora real do apontamento, que
@@ -6641,7 +6643,7 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
       addToast(`RAC #${data.numero} aberta. Responsáveis avisados.`);
       setModalNovoRac(false);setFotosRac([]);
       setFormRac({origem:'INTERNA',dados_origem:'QUALIDADE',processo:'',setor_responsavel:'',
-        descricao_observacao:'',br:'',op:'',cod_produto:'',quantidade:''});
+        descricao_observacao:'',br:'',op:'',cod_produto:'',produto_descricao:'',quantidade:''});
       fetchRac();
     }catch(e){addToast('Erro ao abrir RAC: '+e.message,'error');}
   };
@@ -6677,6 +6679,32 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
       addToast('Status atualizado.');
       fetchRac();buscarHistRac(rac.id);
     }catch(e){addToast('Erro: '+e.message,'error');}
+  };
+
+  // Busca o produto a partir da OP. O inspetor não sabe o código da peça, mas
+  // sabe a OP que está na frente dele — e cada OP tem um produto só.
+  const buscarProdutoPelaOp=async op=>{
+    const limpo=s(op).replace(/\D/g,'');
+    if(!limpo){setFormRac(f=>({...f,cod_produto:'',produto_descricao:''}));return;}
+    setBuscandoProduto(true);
+    try{
+      const{data,error}=await supabase.rpc('produto_da_op',{p_op:limpo});
+      if(error)throw error;
+      const achado=Array.isArray(data)?data[0]:data;
+      if(achado?.cod_produto){
+        setFormRac(f=>({...f,
+          cod_produto:String(achado.cod_produto),
+          produto_descricao:s(achado.descricao),
+          // Só preenche o BR se ainda estiver vazio: o que o inspetor digitou manda.
+          br:s(f.br)||s(achado.br),
+        }));
+      }else{
+        setFormRac(f=>({...f,cod_produto:'',produto_descricao:''}));
+      }
+    }catch(e){
+      console.warn('Falha ao buscar o produto da OP:',e);
+      setFormRac(f=>({...f,cod_produto:'',produto_descricao:''}));
+    }finally{setBuscandoProduto(false);}
   };
 
   const handleFotoRac=async files=>{
@@ -8114,12 +8142,41 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
               className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-base sm:text-sm outline-none focus:border-indigo-400 resize-none"/>
           </Field>
 
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-            <Field label="Projeto (BR)"><Inp value={formRac.br} onChange={e=>setFormRac({...formRac,br:e.target.value})}/></Field>
-            <Field label="OP"><Inp value={formRac.op} onChange={e=>setFormRac({...formRac,op:e.target.value})}/></Field>
-            <Field label="Código"><Inp value={formRac.cod_produto} onChange={e=>setFormRac({...formRac,cod_produto:e.target.value})}/></Field>
-            <Field label="Qtd"><Inp type="number" value={formRac.quantidade} onChange={e=>setFormRac({...formRac,quantidade:e.target.value})}/></Field>
+          {/* O código do produto saiu: o inspetor está no chão de fábrica e não
+              tem como saber. Cada OP aponta para um único produto acabado
+              (conferido nas 904 OPs do Sankhya), então ao digitar a OP o
+              sistema busca o código e a descrição sozinho. */}
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+            <Field label="Projeto (BR)">
+              <Inp value={formRac.br} onChange={e=>setFormRac({...formRac,br:e.target.value})}/>
+            </Field>
+            <Field label="OP">
+              <Inp value={formRac.op} placeholder="ex: 7951"
+                onChange={e=>setFormRac({...formRac,op:e.target.value})}
+                onBlur={e=>buscarProdutoPelaOp(e.target.value)}/>
+            </Field>
+            <Field label="Qtd">
+              <Inp type="number" value={formRac.quantidade} onChange={e=>setFormRac({...formRac,quantidade:e.target.value})}/>
+            </Field>
           </div>
+
+          {buscandoProduto&&<p className="text-xs text-slate-400">Procurando o produto da OP...</p>}
+          {formRac.cod_produto&&(
+            <div className="bg-emerald-50 border border-emerald-200 rounded-xl px-4 py-2.5 flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <p className="text-[10px] font-black text-emerald-600 uppercase">Produto identificado pela OP</p>
+                <p className="text-sm font-bold text-slate-800">{s(formRac.cod_produto)}</p>
+                <p className="text-xs text-slate-600 leading-snug">{s(formRac.produto_descricao)}</p>
+              </div>
+              <button onClick={()=>setFormRac({...formRac,cod_produto:'',produto_descricao:''})}
+                className="text-[11px] font-bold text-slate-400 hover:text-slate-600 flex-shrink-0">não é esse</button>
+            </div>
+          )}
+          {formRac.op&&!formRac.cod_produto&&!buscandoProduto&&(
+            <p className="text-[11px] text-slate-400">
+              OP não encontrada no Sankhya — tudo bem, a descrição acima já identifica a peça.
+            </p>
+          )}
 
           <div>
             <p className="text-xs font-black text-slate-500 uppercase tracking-wider mb-1.5">Fotos da anomalia</p>
@@ -8208,6 +8265,9 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
                 {r.cod_produto&&<span>Cód. {s(r.cod_produto)}</span>}
                 {r.quantidade&&<span>{fmtD(r.quantidade)} pç</span>}
               </div>
+              {r.produto_descricao&&(
+                <p className="text-[11px] text-slate-500 mt-1 leading-snug">{s(r.produto_descricao)}</p>
+              )}
               {Array.isArray(r.fotos)&&r.fotos.length>0&&(
                 <div className="grid grid-cols-3 sm:grid-cols-4 gap-2 mt-3">
                   {r.fotos.map((f,i)=>(
