@@ -516,15 +516,19 @@ function DataTable({columns,data,emptyMessage="Nenhum registro encontrado"}){
 
 function Modal({open,onClose,title,subtitle,maxWidth='max-w-4xl',children,footer}){
   if(!open)return null;
+  // No celular o modal ocupa a tela inteira (folha que sobe), com padding
+  // menor: 28px de borda em tela de 360px comia metade do espaço útil.
+  // Cabeçalho fica grudado no topo ao rolar, senão a pessoa perde a
+  // referência de qual demanda está vendo.
   return(
-    <div className="fixed inset-0 z-[200] flex items-center justify-center p-4" style={{backdropFilter:'blur(8px)',background:'rgba(15,23,42,0.7)'}}>
-      <div className={`bg-white rounded-3xl w-full ${maxWidth} shadow-2xl max-h-[90vh] flex flex-col overflow-hidden`} style={{animation:'modalIn 0.2s ease'}}>
-        <div className="flex items-start justify-between p-7 border-b border-slate-100 flex-shrink-0">
-          <div><h3 className="text-lg font-black text-slate-900">{title}</h3>{subtitle&&<p className="text-sm text-slate-500 mt-0.5">{subtitle}</p>}</div>
-          <button onClick={onClose} className="p-2 rounded-xl hover:bg-slate-100 text-slate-400 hover:text-slate-600 transition-colors ml-4"><X className="w-5 h-5"/></button>
+    <div className="fixed inset-0 z-[200] flex items-end sm:items-center justify-center p-0 sm:p-4" style={{backdropFilter:'blur(8px)',background:'rgba(15,23,42,0.7)'}}>
+      <div className={`bg-white rounded-t-3xl sm:rounded-3xl w-full ${maxWidth} shadow-2xl h-[94vh] sm:h-auto sm:max-h-[90vh] flex flex-col overflow-hidden`} style={{animation:'modalIn 0.2s ease'}}>
+        <div className="flex items-start justify-between p-4 sm:p-7 border-b border-slate-100 flex-shrink-0">
+          <div className="min-w-0"><h3 className="text-base sm:text-lg font-black text-slate-900 leading-tight">{title}</h3>{subtitle&&<p className="text-xs sm:text-sm text-slate-500 mt-0.5">{subtitle}</p>}</div>
+          <button onClick={onClose} aria-label="Fechar" className="p-3 -m-1 rounded-xl hover:bg-slate-100 text-slate-400 hover:text-slate-600 transition-colors ml-2 flex-shrink-0"><X className="w-6 h-6 sm:w-5 sm:h-5"/></button>
         </div>
-        <div className="flex-1 overflow-y-auto p-7 custom-scrollbar">{children}</div>
-        {footer&&<div className="p-7 border-t border-slate-100 bg-slate-50/50 flex-shrink-0">{footer}</div>}
+        <div className="flex-1 overflow-y-auto p-4 sm:p-7 custom-scrollbar overscroll-contain">{children}</div>
+        {footer&&<div className="p-4 sm:p-7 border-t border-slate-100 bg-slate-50/50 flex-shrink-0">{footer}</div>}
       </div>
     </div>
   );
@@ -540,7 +544,10 @@ function Field({label,required,children,className=""}){
 }
 
 function Inp({className="",...props}){
-  return<input className={`w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-2.5 text-sm font-medium text-slate-900 outline-none focus:border-indigo-400 focus:bg-white transition-colors placeholder:text-slate-400 ${className}`} {...props}/>;
+  // text-base no celular (16px): abaixo disso o iOS dá zoom automático ao
+  // tocar no campo e a tela fica torta. Altura maior também, para acertar o
+  // campo com o dedo. No desktop volta ao tamanho normal.
+  return<input className={`w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 sm:py-2.5 text-base sm:text-sm font-medium text-slate-900 outline-none focus:border-indigo-400 focus:bg-white transition-colors placeholder:text-slate-400 ${className}`} {...props}/>;
 }
 
 // Filtro multi-seleção estilo Excel: marca várias opções ao mesmo tempo, com busca
@@ -1244,12 +1251,16 @@ function ItemFaturamentoManualForm({item,onSalvar}){
 }
 
 function Sel({className="",children,...props}){
-  return<select className={`w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-2.5 text-sm font-medium text-slate-900 outline-none focus:border-indigo-400 focus:bg-white transition-colors cursor-pointer ${className}`} {...props}>{children}</select>;
+  return<select className={`w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 sm:py-2.5 text-base sm:text-sm font-medium text-slate-900 outline-none focus:border-indigo-400 focus:bg-white transition-colors cursor-pointer ${className}`} {...props}>{children}</select>;
 }
 
+// Botão: no celular ganha altura mínima de 44px, que é o alvo de toque
+// confortável. Sem isso, "sm" dava 28px e errar o clique era comum.
 function Btn({variant='primary',size='md',className="",children,...props}){
   const base="inline-flex items-center justify-center gap-2 font-bold rounded-xl transition-all active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed";
-  const sz={sm:'px-3 py-1.5 text-xs',md:'px-5 py-2.5 text-sm',lg:'px-7 py-3.5 text-sm'}[size];
+  const sz={sm:'px-3 py-2 sm:py-1.5 text-xs min-h-[36px] sm:min-h-0',
+            md:'px-5 py-3 sm:py-2.5 text-sm min-h-[44px] sm:min-h-0',
+            lg:'px-7 py-3.5 text-sm min-h-[48px]'}[size];
   const vr={
     primary:'bg-indigo-600 text-white hover:bg-indigo-700 shadow-sm',
     secondary:'bg-white text-slate-700 border border-slate-200 hover:bg-slate-50',
@@ -15665,17 +15676,29 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
               {/* ── FOTOS DA DEMANDA ──────────────────────────────────────
                   O pessoal quase sempre manda foto do problema. */}
               <div className="border-t border-slate-100 pt-4">
-                <div className="flex items-center justify-between mb-2">
-                  <p className="text-[10px] font-black text-slate-400 uppercase tracking-wider">Fotos</p>
-                  {isManutencao&&(
-                    <label className="text-[10px] font-black text-indigo-600 hover:underline cursor-pointer flex items-center gap-1">
-                      <Camera className="w-3 h-3"/>Anexar foto
-                      <input type="file" multiple accept="image/*" capture="environment" className="hidden" onChange={e=>handleFotoManutencao(e.target.files)}/>
+                <p className="text-[10px] font-black text-slate-400 uppercase tracking-wider mb-2">Fotos</p>
+
+                {/* Dois botões, não um. Com capture="environment" o celular abre
+                    DIRETO a câmera e não deixa escolher da galeria — ótimo para
+                    registrar na hora, ruim quando a foto já foi tirada antes.
+                    Separados, o técnico escolhe. Altura 48px: alvo de toque que
+                    funciona com luva, no meio da fábrica. */}
+                {isManutencao&&(
+                  <div className="grid grid-cols-2 gap-2 mb-3">
+                    <label className="h-12 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-sm flex items-center justify-center gap-2 cursor-pointer active:scale-[0.98] transition-transform">
+                      <Camera className="w-5 h-5"/>Tirar foto
+                      <input type="file" accept="image/*" capture="environment" className="hidden"
+                        onChange={e=>{handleFotoManutencao(e.target.files);e.target.value='';}}/>
                     </label>
-                  )}
-                </div>
+                    <label className="h-12 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-sm flex items-center justify-center gap-2 cursor-pointer active:scale-[0.98] transition-transform">
+                      <Upload className="w-5 h-5"/>Da galeria
+                      <input type="file" multiple accept="image/*" className="hidden"
+                        onChange={e=>{handleFotoManutencao(e.target.files);e.target.value='';}}/>
+                    </label>
+                  </div>
+                )}
                 {(Array.isArray(sol.fotos)&&sol.fotos.length>0)?(
-                  <div className="grid grid-cols-4 gap-2">
+                  <div className="grid grid-cols-3 sm:grid-cols-4 gap-2">
                     {sol.fotos.map((f,i)=>(
                       <img key={i} src={`data:${f.tipo};base64,${f.dados}`} alt={f.nome}
                         className="w-full h-20 object-cover rounded-lg border border-slate-200 cursor-pointer hover:opacity-80"
@@ -15686,20 +15709,27 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
                 {/* Fotos pendentes de salvar */}
                 {fotosManutencaoUpload.length>0&&(
                   <div className="mt-2 bg-indigo-50 border border-indigo-200 rounded-xl p-2">
-                    <div className="grid grid-cols-4 gap-2 mb-2">
+                    {/* 3 colunas e miniatura maior: no celular, 4 colunas
+                        deixavam a foto do tamanho de um selo. O X fica sempre
+                        visível — em tela de toque não existe "passar o mouse". */}
+                    <div className="grid grid-cols-3 sm:grid-cols-4 gap-2 mb-3">
                       {fotosManutencaoUpload.map((f,i)=>(
-                        <div key={i} className="relative group">
-                          <img src={f.preview} className="w-full h-16 object-cover rounded-lg"/>
+                        <div key={i} className="relative">
+                          <img src={f.preview} className="w-full h-24 sm:h-16 object-cover rounded-lg"/>
                           <button onClick={()=>setFotosManutencaoUpload(p=>p.filter((_,idx)=>idx!==i))}
-                            className="absolute top-0.5 right-0.5 bg-red-500 text-white rounded-full w-4 h-4 flex items-center justify-center opacity-0 group-hover:opacity-100"><X className="w-2.5 h-2.5"/></button>
+                            className="absolute -top-1.5 -right-1.5 bg-red-500 text-white rounded-full w-7 h-7 flex items-center justify-center shadow-md active:scale-90"><X className="w-4 h-4"/></button>
                         </div>
                       ))}
                     </div>
-                    <div className="flex gap-2">
-                      <Btn variant="dark" size="sm" onClick={()=>salvarFotosNaDemanda(sol)}>Anexar à demanda</Btn>
-                      <Btn variant="ghost" size="sm" onClick={()=>setFotosManutencaoUpload([])}>Descartar</Btn>
-                    </div>
-                    <p className="text-[10px] text-indigo-600 mt-1.5">Ou use estas fotos ao adicionar um item de compra abaixo.</p>
+                    {/* Botão largo e alto: é a ação que não pode falhar com o
+                        técnico de pé no meio da fábrica. */}
+                    <button onClick={()=>salvarFotosNaDemanda(sol)}
+                      className="w-full h-12 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-black text-sm flex items-center justify-center gap-2 active:scale-[0.98] transition-transform">
+                      <CheckCircle className="w-5 h-5"/>Anexar {fotosManutencaoUpload.length} foto(s) à demanda
+                    </button>
+                    <button onClick={()=>setFotosManutencaoUpload([])}
+                      className="w-full h-10 mt-1.5 rounded-xl text-slate-500 font-bold text-xs">Descartar</button>
+                    <p className="text-[10px] text-indigo-600 mt-1.5 text-center">Ou use estas fotos ao adicionar um item de compra abaixo.</p>
                   </div>
                 )}
               </div>
