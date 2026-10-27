@@ -1527,6 +1527,36 @@ export default function App(){
   // solicitação (não precisa dos 3 juntos) — confirmado pelo usuário.
   const [manutencaoDb,setManutencaoDb]=useState([]);
 
+  // ── RAC ─────────────────────────────────────────────────────────────────
+  const SETORES_RAC=['Vulcanização','Revestimento','Caldeiraria','Pintura','Corte'];
+  const ORIGENS_RAC=[
+    {v:'QUALIDADE',l:'Qualidade'},{v:'PRODUCAO',l:'Produção'},
+    {v:'AUDITORIA',l:'Auditoria'},{v:'INDICADORES',l:'Indicadores'},
+    {v:'PRODUTO',l:'Produto'},{v:'PROCESSO',l:'Processo'},
+  ];
+  const [racDb,setRacDb]=useState([]);
+  const [racHist,setRacHist]=useState({});
+  const [racSel,setRacSel]=useState(null);
+  const [racBusca,setRacBusca]=useState('');
+  const [racFiltroStatus,setRacFiltroStatus]=useState('ABERTAS');
+  const [modalNovoRac,setModalNovoRac]=useState(false);
+  const [formRac,setFormRac]=useState({origem:'INTERNA',dados_origem:'QUALIDADE',processo:'',
+    setor_responsavel:'',descricao_observacao:'',br:'',op:'',cod_produto:'',quantidade:''});
+  const [fotosRac,setFotosRac]=useState([]);
+
+  const fetchRac=useCallback(async()=>{
+    if(!supabase)return;
+    try{
+      const{data,error}=await supabase.from('rac').select('*').order('aberta_em',{ascending:false});
+      if(error)throw error;
+      setRacDb(data||[]);
+    }catch(e){console.warn('Erro ao buscar RAC:',e);}
+  },[supabase]);
+
+  const racAbertasCount=useMemo(()=>
+    racDb.filter(r=>['ABERTA','EM_TRATATIVA','AGUARDANDO_VERIFICACAO'].includes(s(r.status))).length,
+  [racDb]);
+
   // ── Estoque p/ Vendas ───────────────────────────────────────────────────
   const [estVendasDb,setEstVendasDb]=useState([]);
   const [reservasDb,setReservasDb]=useState([]);
@@ -1737,6 +1767,17 @@ export default function App(){
   // Estoque p/ Vendas: a Produção informa o saldo, o Comercial reserva.
   // Separado de propósito — quem vende não mexe no estoque e vice-versa.
   const isComercial=temPerfil('COMERCIAL')||isAdmin;
+
+  // ── RAC (não conformidade interna, KdB 123) ─────────────────────────────
+  // Três papéis distintos, conforme definido pelo usuário:
+  //  abrir    -> só a Qualidade (é o inspetor que constata)
+  //  tratar   -> Daniel, Diogo e Arthur; qualquer um deles, qualquer RAC
+  //  ver      -> Qualidade e quem acompanha
+  const RAC_RESPONSAVEIS=['daniel.toledo@kalenborn.com.br','diogo.ribeiro@kalenborn.com.br','arthur.silva@kalenborn.com.br'];
+  const emailUsuario=String(usuarioLogado?.email??'').trim().toLowerCase();
+  const podeAbrirRAC=isQual;
+  const podeTratarRAC=isAdmin||RAC_RESPONSAVEIS.includes(emailUsuario);
+  const veRAC=isQual||podeTratarRAC||isCoordenador;
   const podeAtualizarEstoqueVendas=isPCP||isAdmin;
   const veEstoqueVendas=isComercial||podeAtualizarEstoqueVendas||isCoordenador;
   // Quem SÓ tem Manutenção (caso do Welton) não precisa ver apontamento de
@@ -4361,7 +4402,7 @@ export default function App(){
   },[supabase,usuarioLogado?.perfil]);
 
   // fetchAll na inicialização + a cada 60s (dados pesados)
-  useEffect(()=>{if(supabase){fetchAll();fetchQual();fetchManutencao();fetchEquipamentosPreventivas();fetchApontamento();fetchApontPortal();fetchColaboradores();fetchEstoqueVendas();carregarFotos();const iv=setInterval(fetchAll,90000);return()=>clearInterval(iv);}},[supabase]);
+  useEffect(()=>{if(supabase){fetchAll();fetchQual();fetchManutencao();fetchEquipamentosPreventivas();fetchApontamento();fetchApontPortal();fetchColaboradores();fetchEstoqueVendas();carregarFotos();fetchRac();const iv=setInterval(fetchAll,90000);return()=>clearInterval(iv);}},[supabase]);
 
   // Bug real encontrado: como o logout não recarrega a página (só limpa
   // usuarioLogado), filtros deixados marcados numa sessão (ex: "Predial")
@@ -6513,6 +6554,130 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
     });
   };
 
+  // ── RAC: ações ──────────────────────────────────────────────────────────
+  const registrarHistRac=async(racId,tipo,mensagem)=>{
+    await supabase.from('rac_historico').insert([{rac_id:racId,tipo,
+      autor:s(usuarioLogado?.nome)||'—',mensagem}]).catch(()=>{});
+  };
+
+  const buscarHistRac=useCallback(async racId=>{
+    const{data}=await supabase.from('rac_historico').select('*')
+      .eq('rac_id',racId).order('criado_em');
+    setRacHist(p=>({...p,[racId]:data||[]}));
+  },[supabase]);
+
+  const abrirRac=async()=>{
+    const f=formRac;
+    if(!s(f.setor_responsavel))return addToast('Aponte o setor responsável.','error');
+    if(!s(f.descricao_observacao).trim())return addToast('Descreva o que foi observado.','error');
+    try{
+      const prazoDias=15;   // prazo padrão de tratativa
+      const id='RAC-'+Date.now();
+      const prazo=new Date(Date.now()+prazoDias*864e5).toISOString().slice(0,10);
+      const{data,error}=await supabase.from('rac').insert([{
+        id,origem:f.origem,dados_origem:f.dados_origem,
+        processo:s(f.processo)||s(f.setor_responsavel),
+        setor_responsavel:s(f.setor_responsavel),
+        descricao_observacao:s(f.descricao_observacao).trim(),
+        br:s(f.br)||null,op:s(f.op)||null,cod_produto:s(f.cod_produto)||null,
+        quantidade:f.quantidade?Number(f.quantidade):null,
+        fotos:fotosRac.map(x=>({nome:x.name,tipo:x.type,dados:x.b64})),
+        // aberta_em vem do banco (now()): é a hora real do apontamento, que
+        // a auditoria cobra. Não é campo digitado.
+        inspetor:s(usuarioLogado?.nome)||'—',
+        prazo_tratativa:prazo,status:'ABERTA',
+      }]).select('id,numero').single();
+      if(error)throw error;
+      await registrarHistRac(id,'ABERTURA',
+        `RAC aberta por ${s(usuarioLogado?.nome)} — setor ${s(f.setor_responsavel)}.`);
+      // Avisa quem precisa tratar.
+      fetch(`${SUPABASE_URL}/functions/v1/notificar`,{
+        method:'POST',headers:{'Content-Type':'application/json','apikey':SUPABASE_KEY},
+        body:JSON.stringify({
+          destinatarios:RAC_RESPONSAVEIS,
+          titulo:`⚠️ RAC #${data.numero} aberta — ${s(f.setor_responsavel)}`,
+          mensagem:[s(f.descricao_observacao).trim(),'',
+            `Setor: ${s(f.setor_responsavel)}`,
+            f.br?`Projeto: ${s(f.br)}`:null,
+            `Inspetor: ${s(usuarioLogado?.nome)}`,
+            `Prazo para tratativa: ${prazo.split('-').reverse().join('/')}`].filter(Boolean).join('\n'),
+          modulo:'QUALIDADE',prioridade:'ALTA',
+          link:'https://sistemaindustrializa-o.vercel.app/',
+        })
+      }).catch(()=>{});
+      addToast(`RAC #${data.numero} aberta. Responsáveis avisados.`);
+      setModalNovoRac(false);setFotosRac([]);
+      setFormRac({origem:'INTERNA',dados_origem:'QUALIDADE',processo:'',setor_responsavel:'',
+        descricao_observacao:'',br:'',op:'',cod_produto:'',quantidade:''});
+      fetchRac();
+    }catch(e){addToast('Erro ao abrir RAC: '+e.message,'error');}
+  };
+
+  // Salva um bloco do formulário (correção, causa, ação) e registra quem fez.
+  const salvarBlocoRac=async(rac,campos,descricaoHist)=>{
+    if(!podeTratarRAC)return addToast('Só Daniel, Diogo ou Arthur podem tratar a RAC.','error');
+    try{
+      const{error}=await supabase.from('rac')
+        .update({...campos,atualizado_em:new Date().toISOString()}).eq('id',rac.id);
+      if(error)throw error;
+      if(descricaoHist)await registrarHistRac(rac.id,'TRATATIVA',descricaoHist);
+      setRacSel(p=>p&&p.id===rac.id?{...p,...campos}:p);
+      addToast('Salvo.');
+      fetchRac();buscarHistRac(rac.id);
+    }catch(e){addToast('Erro ao salvar: '+e.message,'error');}
+  };
+
+  const mudarStatusRac=async(rac,novo)=>{
+    if(!podeTratarRAC&&!isQual)return addToast('Sem permissão para alterar.','error');
+    try{
+      const campos={status:novo,atualizado_em:new Date().toISOString()};
+      if(novo==='CONCLUIDA'){
+        if(rac.eficaz===null||rac.eficaz===undefined)
+          return addToast('Antes de concluir, informe se as ações foram eficazes.','error');
+        campos.data_fechamento=new Date().toISOString().slice(0,10);
+        campos.responsavel_gestao=s(usuarioLogado?.nome);
+      }
+      const{error}=await supabase.from('rac').update(campos).eq('id',rac.id);
+      if(error)throw error;
+      await registrarHistRac(rac.id,'STATUS',`Status alterado para ${novo.replace('_',' ')}.`);
+      setRacSel(p=>p&&p.id===rac.id?{...p,...campos}:p);
+      addToast('Status atualizado.');
+      fetchRac();buscarHistRac(rac.id);
+    }catch(e){addToast('Erro: '+e.message,'error');}
+  };
+
+  const handleFotoRac=async files=>{
+    const arr=Array.from(files||[]);const proc=[];
+    for(const file of arr){
+      if(!file.type.startsWith('image/'))continue;
+      const b64=await new Promise(res=>{
+        const img=new Image();
+        img.onload=()=>{
+          const cv=document.createElement('canvas');
+          const esc=Math.min(1,1280/Math.max(img.width,img.height));
+          cv.width=img.width*esc;cv.height=img.height*esc;
+          cv.getContext('2d').drawImage(img,0,0,cv.width,cv.height);
+          res(cv.toDataURL('image/jpeg',0.75).split(',')[1]);
+        };
+        img.onerror=()=>res(null);
+        const r=new FileReader();r.onload=e=>{img.src=e.target.result;};r.readAsDataURL(file);
+      });
+      if(b64)proc.push({name:file.name,type:'image/jpeg',b64,preview:`data:image/jpeg;base64,${b64}`});
+    }
+    setFotosRac(p=>[...p,...proc].slice(0,6));
+  };
+
+  const racFiltradas=useMemo(()=>{
+    const t=s(racBusca).toLowerCase();
+    return racDb.filter(r=>{
+      if(racFiltroStatus==='ABERTAS'&&!['ABERTA','EM_TRATATIVA','AGUARDANDO_VERIFICACAO'].includes(s(r.status)))return false;
+      if(['ABERTA','EM_TRATATIVA','AGUARDANDO_VERIFICACAO','CONCLUIDA','CANCELADA'].includes(racFiltroStatus)&&s(r.status)!==racFiltroStatus)return false;
+      if(!t)return true;
+      return [r.numero,r.setor_responsavel,r.descricao_observacao,r.br,r.op,r.inspetor]
+        .some(x=>s(x).toLowerCase().includes(t));
+    });
+  },[racDb,racBusca,racFiltroStatus]);
+
   // ── Prazos das remessas: saída e retorno ────────────────────────────────
   // Uma regra só, usada no calendário e nos avisos, pra não existirem duas
   // noções diferentes de "atrasado".
@@ -7509,6 +7674,7 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
     ...(isAdmin?[{id:'IA_ANALISTA',label:'Analista IA',icon:Bot,group:'Inteligência'},{id:'AUDITORIA',label:'Auditoria BOM',icon:FileSearch,group:'Inteligência'},{id:'GESTAO_USUARIOS',label:'Gestão de Acessos',icon:Users,group:'Sistema'}]:[]),
     ...(soManutencao?[]:[{id:'CHAT_INTERNO',label:'Chat da Equipe',icon:MessageSquare,group:'Comunicação',badge:chatNaoLidos||null}]),
     ...(isQual?[{id:'QUALIDADE',label:'Qualidade',icon:ShieldAlert,group:'Qualidade'},{id:'RNCS',label:'Registro de RNCs',icon:AlertOctagon,group:'Qualidade'}]:[]),
+    ...(veRAC?[{id:'RAC',label:'Não Conformidades',icon:FileSearch,group:'Qualidade',badge:racAbertasCount||null}]:[]),
     {id:'MANUTENCAO',label:'Manutenção',icon:Wrench,group:'Manutenção',badge:manutencaoPendentesCount||null},
   ];
 
@@ -7866,6 +8032,273 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
           </div>
         </div>
       )}
+
+      {/* ── MODAL: ABRIR RAC ──────────────────────────────────────────────
+          O inspetor registra o que viu. Data e hora não são digitadas: o
+          banco grava o instante da abertura, que é o que a auditoria cobra. */}
+      <Modal open={modalNovoRac} onClose={()=>{setModalNovoRac(false);setFotosRac([]);}}
+        title="Abrir Relatório de Ações Corretivas" subtitle="KdB 123 · não conformidade interna" maxWidth="max-w-2xl">
+        <div className="space-y-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div>
+              <p className="text-xs font-black text-slate-500 uppercase tracking-wider mb-1.5">Origem</p>
+              <div className="grid grid-cols-2 gap-2">
+                {['INTERNA','EXTERNA'].map(o=>(
+                  <button key={o} onClick={()=>setFormRac({...formRac,origem:o})}
+                    className={`text-sm font-bold rounded-xl py-2.5 border-2 ${formRac.origem===o?'bg-indigo-50 border-indigo-400 text-indigo-700':'bg-white border-slate-200 text-slate-500'}`}>
+                    {o==='INTERNA'?'Interna':'Externa'}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <Field label="Detectada em">
+              <Sel value={formRac.dados_origem} onChange={e=>setFormRac({...formRac,dados_origem:e.target.value})}>
+                {ORIGENS_RAC.map(o=><option key={o.v} value={o.v}>{o.l}</option>)}
+              </Sel>
+            </Field>
+          </div>
+
+          <div>
+            <p className="text-xs font-black text-slate-500 uppercase tracking-wider mb-1.5">
+              Setor responsável <span className="text-red-500">*</span>
+            </p>
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+              {SETORES_RAC.map(st=>(
+                <button key={st} onClick={()=>setFormRac({...formRac,setor_responsavel:st})}
+                  className={`text-sm font-bold rounded-xl py-3 border-2 ${formRac.setor_responsavel===st?'bg-indigo-50 border-indigo-400 text-indigo-700':'bg-white border-slate-200 text-slate-500 hover:border-slate-300'}`}>
+                  {st}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <Field label="O que foi observado?" required>
+            <textarea rows={4} value={formRac.descricao_observacao}
+              onChange={e=>setFormRac({...formRac,descricao_observacao:e.target.value})}
+              placeholder="Ex: bandeja produzida sem a camada de borracha na face interna"
+              className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-base sm:text-sm outline-none focus:border-indigo-400 resize-none"/>
+          </Field>
+
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+            <Field label="Projeto (BR)"><Inp value={formRac.br} onChange={e=>setFormRac({...formRac,br:e.target.value})}/></Field>
+            <Field label="OP"><Inp value={formRac.op} onChange={e=>setFormRac({...formRac,op:e.target.value})}/></Field>
+            <Field label="Código"><Inp value={formRac.cod_produto} onChange={e=>setFormRac({...formRac,cod_produto:e.target.value})}/></Field>
+            <Field label="Qtd"><Inp type="number" value={formRac.quantidade} onChange={e=>setFormRac({...formRac,quantidade:e.target.value})}/></Field>
+          </div>
+
+          <div>
+            <p className="text-xs font-black text-slate-500 uppercase tracking-wider mb-1.5">Fotos da anomalia</p>
+            <div className="grid grid-cols-2 gap-2">
+              <label className="h-12 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-sm flex items-center justify-center gap-2 cursor-pointer active:scale-[0.98]">
+                <Camera className="w-5 h-5"/>Tirar foto
+                <input type="file" accept="image/*" capture="environment" className="hidden" onChange={e=>{handleFotoRac(e.target.files);e.target.value='';}}/>
+              </label>
+              <label className="h-12 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-sm flex items-center justify-center gap-2 cursor-pointer active:scale-[0.98]">
+                <Upload className="w-5 h-5"/>Da galeria
+                <input type="file" multiple accept="image/*" className="hidden" onChange={e=>{handleFotoRac(e.target.files);e.target.value='';}}/>
+              </label>
+            </div>
+            {fotosRac.length>0&&(
+              <div className="grid grid-cols-3 gap-2 mt-3">
+                {fotosRac.map((f,i)=>(
+                  <div key={i} className="relative">
+                    <img src={f.preview} className="w-full h-24 object-cover rounded-lg"/>
+                    <button onClick={()=>setFotosRac(p=>p.filter((_,x)=>x!==i))}
+                      className="absolute -top-1.5 -right-1.5 bg-red-500 text-white rounded-full w-7 h-7 flex items-center justify-center shadow-md"><X className="w-4 h-4"/></button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <div className="bg-slate-50 rounded-xl px-4 py-3">
+            <p className="text-[11px] text-slate-500">
+              Ao abrir, <strong>Daniel, Diogo e Arthur</strong> são avisados no Teams.
+              A data e a hora da abertura são registradas automaticamente, e o prazo de tratativa é de 15 dias.
+            </p>
+          </div>
+
+          <div className="flex justify-end gap-2">
+            <Btn variant="secondary" onClick={()=>{setModalNovoRac(false);setFotosRac([]);}}>Cancelar</Btn>
+            <Btn variant="primary" onClick={abrirRac}>Abrir RAC</Btn>
+          </div>
+        </div>
+      </Modal>
+
+      {/* ── MODAL: TRATATIVA ──────────────────────────────────────────────
+          Segue os blocos do KdB 123 na ordem. Correção e ação sobre a causa
+          são campos SEPARADOS de propósito: a ISO cobra as duas, e juntar
+          num campo só é o erro clássico que a auditoria aponta. */}
+      <Modal open={!!racSel} onClose={()=>setRacSel(null)}
+        title={racSel?`RAC #${racSel.numero} — ${s(racSel.setor_responsavel)}`:''}
+        subtitle={racSel?`Aberta em ${new Date(racSel.aberta_em).toLocaleString('pt-BR')} por ${s(racSel.inspetor)}`:''}
+        maxWidth="max-w-3xl">
+        {racSel&&(()=>{
+          const r=racSel;
+          const hist=racHist[r.id]||[];
+          const bloqueado=!podeTratarRAC;
+          const campo=(valor,onBlur,rows=3,ph='')=>(
+            <textarea rows={rows} defaultValue={valor||''} disabled={bloqueado} placeholder={ph}
+              onBlur={e=>e.target.value!==(valor||'')&&onBlur(e.target.value)}
+              className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-base sm:text-sm outline-none focus:border-indigo-400 resize-none disabled:bg-slate-50 disabled:text-slate-500"/>
+          );
+          return(
+          <div className="space-y-5">
+            {bloqueado&&(
+              <div className="bg-slate-100 rounded-xl px-4 py-2.5 flex items-center gap-2">
+                <Lock className="w-4 h-4 text-slate-400"/>
+                <p className="text-xs text-slate-600">Somente leitura. A tratativa é de Daniel, Diogo ou Arthur.</p>
+              </div>
+            )}
+
+            <div className="flex flex-wrap gap-2">
+              {[{v:'ABERTA',l:'Aberta'},{v:'EM_TRATATIVA',l:'Em tratativa'},
+                {v:'AGUARDANDO_VERIFICACAO',l:'Aguardando verificação'},
+                {v:'CONCLUIDA',l:'Concluída'},{v:'CANCELADA',l:'Cancelada'}].map(o=>(
+                <button key={o.v} onClick={()=>mudarStatusRac(r,o.v)} disabled={bloqueado&&!isQual}
+                  className={`text-xs font-bold px-3.5 py-2 rounded-xl border-2 ${s(r.status)===o.v?'bg-slate-900 border-slate-900 text-white':'bg-white border-slate-200 text-slate-500 hover:border-slate-300'} disabled:opacity-40`}>
+                  {o.l}
+                </button>
+              ))}
+            </div>
+
+            {/* O que foi observado */}
+            <div className="bg-red-50 border border-red-200 rounded-2xl p-4">
+              <p className="text-[10px] font-black text-red-500 uppercase tracking-wider mb-1">Não conformidade observada</p>
+              <p className="text-sm text-slate-800">{s(r.descricao_observacao)}</p>
+              <div className="flex flex-wrap gap-x-4 gap-y-1 mt-2 text-[11px] text-slate-500">
+                <span>Origem: {s(r.origem)} · {s(r.dados_origem)}</span>
+                {r.br&&<span>Projeto {s(r.br)}</span>}
+                {r.op&&<span>OP {s(r.op)}</span>}
+                {r.cod_produto&&<span>Cód. {s(r.cod_produto)}</span>}
+                {r.quantidade&&<span>{fmtD(r.quantidade)} pç</span>}
+              </div>
+              {Array.isArray(r.fotos)&&r.fotos.length>0&&(
+                <div className="grid grid-cols-3 sm:grid-cols-4 gap-2 mt-3">
+                  {r.fotos.map((f,i)=>(
+                    <img key={i} src={`data:${f.tipo};base64,${f.dados}`} alt={f.nome}
+                      onClick={()=>setFotoAmpliada({src:`data:${f.tipo};base64,${f.dados}`,titulo:`RAC #${r.numero}`})}
+                      className="w-full h-24 sm:h-20 object-cover rounded-lg cursor-zoom-in"/>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* Bloco: ação de correção */}
+            <div className="border-2 border-slate-200 rounded-2xl p-4">
+              <p className="text-xs font-black text-slate-700 uppercase tracking-wider">1. Ação de correção</p>
+              <p className="text-[11px] text-slate-400 mb-2">O que foi feito na peça que já está errada</p>
+              {campo(r.acao_correcao,v=>salvarBlocoRac(r,{acao_correcao:v},'Registrou a ação de correção.'))}
+              <div className="grid grid-cols-2 gap-3 mt-2">
+                <Field label="Responsável">
+                  <Inp defaultValue={r.acao_correcao_responsavel||''} disabled={bloqueado}
+                    onBlur={e=>e.target.value!==(r.acao_correcao_responsavel||'')&&salvarBlocoRac(r,{acao_correcao_responsavel:e.target.value})}/>
+                </Field>
+                <Field label="Data realizada">
+                  <Inp type="date" defaultValue={s(r.acao_correcao_data).slice(0,10)} disabled={bloqueado}
+                    onBlur={e=>e.target.value!==s(r.acao_correcao_data).slice(0,10)&&salvarBlocoRac(r,{acao_correcao_data:e.target.value||null})}/>
+                </Field>
+              </div>
+            </div>
+
+            {/* Bloco: causa raiz */}
+            <div className="border-2 border-slate-200 rounded-2xl p-4">
+              <p className="text-xs font-black text-slate-700 uppercase tracking-wider">2. Causa raiz</p>
+              <p className="text-[11px] text-slate-400 mb-2">Por que aconteceu</p>
+              {campo(r.causa_raiz,v=>salvarBlocoRac(r,{causa_raiz:v},'Registrou a causa raiz.'))}
+              <div className="grid grid-cols-2 gap-3 mt-2">
+                <Field label="Responsável">
+                  <Inp defaultValue={r.causa_raiz_responsavel||''} disabled={bloqueado}
+                    onBlur={e=>e.target.value!==(r.causa_raiz_responsavel||'')&&salvarBlocoRac(r,{causa_raiz_responsavel:e.target.value})}/>
+                </Field>
+                <Field label="Data">
+                  <Inp type="date" defaultValue={s(r.causa_raiz_data).slice(0,10)} disabled={bloqueado}
+                    onBlur={e=>e.target.value!==s(r.causa_raiz_data).slice(0,10)&&salvarBlocoRac(r,{causa_raiz_data:e.target.value||null})}/>
+                </Field>
+              </div>
+            </div>
+
+            {/* Bloco: ação sobre a causa */}
+            <div className="border-2 border-slate-200 rounded-2xl p-4">
+              <p className="text-xs font-black text-slate-700 uppercase tracking-wider">3. Ação sobre a causa raiz</p>
+              <p className="text-[11px] text-slate-400 mb-2">O que impede de acontecer de novo</p>
+              {campo(r.acao_causa,v=>salvarBlocoRac(r,{acao_causa:v},'Registrou a ação sobre a causa.'))}
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mt-2">
+                <Field label="Responsável">
+                  <Inp defaultValue={r.acao_causa_responsavel||''} disabled={bloqueado}
+                    onBlur={e=>e.target.value!==(r.acao_causa_responsavel||'')&&salvarBlocoRac(r,{acao_causa_responsavel:e.target.value})}/>
+                </Field>
+                <Field label="Prevista">
+                  <Inp type="date" defaultValue={s(r.acao_causa_data_prevista).slice(0,10)} disabled={bloqueado}
+                    onBlur={e=>e.target.value!==s(r.acao_causa_data_prevista).slice(0,10)&&salvarBlocoRac(r,{acao_causa_data_prevista:e.target.value||null})}/>
+                </Field>
+                <Field label="Realizada">
+                  <Inp type="date" defaultValue={s(r.acao_causa_data_realizada).slice(0,10)} disabled={bloqueado}
+                    onBlur={e=>e.target.value!==s(r.acao_causa_data_realizada).slice(0,10)&&salvarBlocoRac(r,{acao_causa_data_realizada:e.target.value||null})}/>
+                </Field>
+              </div>
+            </div>
+
+            {/* Bloco: eficácia */}
+            <div className="border-2 border-slate-200 rounded-2xl p-4">
+              <p className="text-xs font-black text-slate-700 uppercase tracking-wider">4. Análise da eficácia</p>
+              <p className="text-[11px] text-slate-400 mb-2">Evidências de que a ação funcionou</p>
+              {campo(r.evidencias,v=>salvarBlocoRac(r,{evidencias:v},'Registrou as evidências.'),2)}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mt-3">
+                <div>
+                  <p className="text-[11px] font-bold text-slate-500 mb-1.5">As ações foram eficazes?</p>
+                  <div className="grid grid-cols-2 gap-2">
+                    {[{v:true,l:'Sim'},{v:false,l:'Não'}].map(o=>(
+                      <button key={String(o.v)} disabled={bloqueado}
+                        onClick={()=>salvarBlocoRac(r,{eficaz:o.v},`Eficácia: ${o.l}.`)}
+                        className={`text-sm font-bold rounded-xl py-2.5 border-2 ${r.eficaz===o.v?(o.v?'bg-emerald-50 border-emerald-400 text-emerald-700':'bg-red-50 border-red-400 text-red-700'):'bg-white border-slate-200 text-slate-400'} disabled:opacity-50`}>
+                        {o.l}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <div>
+                  <p className="text-[11px] font-bold text-slate-500 mb-1.5">Necessário novo RNC?</p>
+                  <div className="grid grid-cols-2 gap-2">
+                    {[{v:true,l:'Sim'},{v:false,l:'Não'}].map(o=>(
+                      <button key={String(o.v)} disabled={bloqueado}
+                        onClick={()=>salvarBlocoRac(r,{novo_rnc:o.v})}
+                        className={`text-sm font-bold rounded-xl py-2.5 border-2 ${r.novo_rnc===o.v?'bg-slate-900 border-slate-900 text-white':'bg-white border-slate-200 text-slate-400'} disabled:opacity-50`}>
+                        {o.l}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+              {r.eficaz===false&&(
+                <p className="text-[11px] text-red-700 bg-red-50 border border-red-200 rounded-lg px-3 py-2 mt-3">
+                  Ação não eficaz: a causa raiz provavelmente não era essa. Vale reabrir a análise antes de concluir.
+                </p>
+              )}
+              {r.data_fechamento&&(
+                <p className="text-[11px] text-slate-500 mt-3">
+                  Fechada em {s(r.data_fechamento).slice(0,10).split('-').reverse().join('/')} por {s(r.responsavel_gestao)}
+                </p>
+              )}
+            </div>
+
+            {hist.length>0&&(
+              <div className="border-t border-slate-100 pt-4">
+                <p className="text-[10px] font-black text-slate-400 uppercase tracking-wider mb-2">Histórico</p>
+                <div className="space-y-1.5 max-h-48 overflow-y-auto custom-scrollbar">
+                  {hist.map(h=>(
+                    <div key={h.id} className="text-[11px] text-slate-500">
+                      <span className="text-slate-400">{new Date(h.criado_em).toLocaleString('pt-BR')}</span>
+                      {' · '}<strong className="text-slate-600">{s(h.autor)}</strong>{' — '}{s(h.mensagem)}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+          );
+        })()}
+      </Modal>
 
       <div className="fixed top-5 right-5 z-[999] space-y-3" style={{minWidth:'280px'}}>{toasts.map(t=><Toast key={t.id} message={t.message} type={t.type} onClose={()=>removeToast(t.id)}/>)}</div>
       {sidebarOpen&&<div className="fixed inset-0 bg-slate-900/60 z-40 lg:hidden backdrop-blur-sm" onClick={()=>setSidebarOpen(false)}/>}
@@ -11128,6 +11561,126 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
                     </div>
                   </div>
                 )}
+              </div>
+              );
+            })()}
+
+            {/* ── NÃO CONFORMIDADES INTERNAS (RAC — KdB 123) ───────────────
+                Tratativa conforme ISO 9001. A Qualidade constata e aponta o
+                setor; Daniel, Diogo ou Arthur tratam. A tela segue os blocos
+                do formulário em papel, porque é assim que a auditoria lê. */}
+            {aba==='RAC'&&(()=>{
+              const abertas=racDb.filter(r=>['ABERTA','EM_TRATATIVA','AGUARDANDO_VERIFICACAO'].includes(s(r.status)));
+              const hoje=new Date().toISOString().slice(0,10);
+              const vencidas=abertas.filter(r=>r.prazo_tratativa&&s(r.prazo_tratativa).slice(0,10)<hoje);
+              const porSetor={};
+              racDb.forEach(r=>{const k=s(r.setor_responsavel)||'—';
+                if(!porSetor[k])porSetor[k]={setor:k,total:0,abertas:0};
+                porSetor[k].total++;
+                if(['ABERTA','EM_TRATATIVA','AGUARDANDO_VERIFICACAO'].includes(s(r.status)))porSetor[k].abertas++;});
+              const corStatus=st=>st==='ABERTA'?'bg-red-100 text-red-700'
+                :st==='EM_TRATATIVA'?'bg-amber-100 text-amber-700'
+                :st==='AGUARDANDO_VERIFICACAO'?'bg-sky-100 text-sky-700'
+                :st==='CONCLUIDA'?'bg-emerald-100 text-emerald-700':'bg-slate-100 text-slate-500';
+              const dBR=v=>{const x=s(v).slice(0,10);return x?x.split('-').reverse().join('/'):'—';};
+
+              return(
+              <div className="space-y-5 pb-10" style={{animation:'fadeIn 0.2s ease'}}>
+                <div className="flex flex-wrap items-end justify-between gap-3">
+                  <SectionHeader title="⚠️ Não Conformidades Internas"
+                    subtitle="Relatório de Ações Corretivas (KdB 123) — tratativa conforme ISO 9001"/>
+                  {podeAbrirRAC&&(
+                    <Btn variant="primary" onClick={()=>setModalNovoRac(true)}>
+                      <Plus className="w-4 h-4"/>Abrir RAC
+                    </Btn>
+                  )}
+                </div>
+
+                <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+                  {[
+                    {l:'Em aberto',v:abertas.length,destaque:abertas.length>0},
+                    {l:'Prazo vencido',v:vencidas.length,alerta:vencidas.length>0},
+                    {l:'Concluídas',v:racDb.filter(r=>s(r.status)==='CONCLUIDA').length},
+                    {l:'Total registrado',v:racDb.length},
+                  ].map(c2=>(
+                    <div key={c2.l} className={`rounded-2xl border-2 p-4 ${c2.alerta?'bg-red-50 border-red-300':c2.destaque?'bg-amber-50 border-amber-300':'bg-white border-slate-200'}`}>
+                      <p className="text-[10px] font-black text-slate-400 uppercase tracking-wider">{c2.l}</p>
+                      <p className={`text-2xl font-black mt-1 ${c2.alerta?'text-red-600':c2.destaque?'text-amber-700':'text-slate-800'}`}>{c2.v}</p>
+                    </div>
+                  ))}
+                </div>
+
+                {Object.keys(porSetor).length>0&&(
+                  <div className="bg-white rounded-2xl border border-slate-200 p-5">
+                    <p className="text-xs font-black text-slate-600 uppercase tracking-wider mb-3">Por setor</p>
+                    <div className="flex flex-wrap gap-2">
+                      {Object.values(porSetor).sort((a2,b2)=>b2.abertas-a2.abertas).map(x=>(
+                        <div key={x.setor} className={`rounded-xl px-4 py-2.5 border-2 ${x.abertas>0?'bg-amber-50 border-amber-200':'bg-slate-50 border-slate-200'}`}>
+                          <p className="text-sm font-bold text-slate-700">{x.setor}</p>
+                          <p className="text-[11px] text-slate-500">
+                            {x.abertas>0?<span className="font-black text-amber-700">{x.abertas} em aberto</span>:'nenhuma em aberto'}
+                            <span className="text-slate-400"> · {x.total} no total</span>
+                          </p>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                <div className="flex flex-wrap gap-2">
+                  <Inp placeholder="Buscar por número, setor, projeto ou descrição..." value={racBusca}
+                    onChange={e=>setRacBusca(e.target.value)} className="flex-1 min-w-[240px]"/>
+                  <Sel value={racFiltroStatus} onChange={e=>setRacFiltroStatus(e.target.value)} className="w-56">
+                    <option value="ABERTAS">Todas em aberto</option>
+                    <option value="ABERTA">Aberta</option>
+                    <option value="EM_TRATATIVA">Em tratativa</option>
+                    <option value="AGUARDANDO_VERIFICACAO">Aguardando verificação</option>
+                    <option value="CONCLUIDA">Concluída</option>
+                    <option value="CANCELADA">Cancelada</option>
+                    <option value="">Tudo</option>
+                  </Sel>
+                </div>
+
+                <div className="space-y-3">
+                  {racFiltradas.map(r=>{
+                    const venceu=r.prazo_tratativa&&s(r.prazo_tratativa).slice(0,10)<hoje
+                      &&!['CONCLUIDA','CANCELADA'].includes(s(r.status));
+                    return(
+                      <button key={r.id} onClick={()=>{setRacSel(r);buscarHistRac(r.id);}}
+                        className={`w-full text-left bg-white rounded-2xl border-2 p-4 hover:shadow-md transition-shadow ${venceu?'border-red-300':'border-slate-200'}`}>
+                        <div className="flex flex-wrap items-start justify-between gap-3">
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-center gap-2 flex-wrap mb-1">
+                              <span className="text-base font-black text-slate-900">RAC #{r.numero}</span>
+                              <span className="text-xs font-bold text-slate-600 bg-slate-100 px-2.5 py-0.5 rounded-lg">{s(r.setor_responsavel)}</span>
+                              <span className={`text-[10px] font-black px-2 py-0.5 rounded-full ${corStatus(s(r.status))}`}>
+                                {s(r.status).replace(/_/g,' ')}
+                              </span>
+                              {venceu&&<span className="text-[10px] font-black px-2 py-0.5 rounded-full bg-red-500 text-white">PRAZO VENCIDO</span>}
+                            </div>
+                            <p className="text-sm text-slate-600 line-clamp-2">{s(r.descricao_observacao)}</p>
+                            <div className="flex flex-wrap gap-x-4 gap-y-1 mt-1.5 text-[11px] text-slate-400">
+                              <span>aberta {dBR(r.aberta_em)} por {s(r.inspetor)}</span>
+                              {r.br&&<span>{s(r.br)}</span>}
+                              {r.prazo_tratativa&&<span className={venceu?'text-red-600 font-bold':''}>prazo {dBR(r.prazo_tratativa)}</span>}
+                            </div>
+                          </div>
+                          {Array.isArray(r.fotos)&&r.fotos.length>0&&(
+                            <img src={`data:${r.fotos[0].tipo};base64,${r.fotos[0].dados}`} alt=""
+                              className="w-16 h-16 object-cover rounded-xl border border-slate-200 flex-shrink-0"/>
+                          )}
+                        </div>
+                      </button>
+                    );
+                  })}
+                  {racFiltradas.length===0&&(
+                    <div className="bg-white rounded-2xl border-2 border-dashed border-slate-200 py-16 text-center">
+                      <p className="text-base text-slate-400">
+                        {racDb.length===0?'Nenhuma não conformidade registrada ainda.':'Nenhuma com esse filtro.'}
+                      </p>
+                    </div>
+                  )}
+                </div>
               </div>
               );
             })()}
