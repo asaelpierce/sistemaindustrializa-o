@@ -1544,6 +1544,15 @@ export default function App(){
     setor_responsavel:'',descricao_observacao:'',br:'',op:'',cod_produto:'',quantidade:''});
   const [fotosRac,setFotosRac]=useState([]);
 
+  // Link direto do aviso: ?rac=12 abre a RAC assim que os dados carregam.
+  // Sem isso o responsável recebe o aviso e ainda precisa achar a demanda
+  // na lista, que é justamente o atrito que faz a tratativa demorar.
+  const [racDoLink,setRacDoLink]=useState(()=>{
+    if(typeof window==='undefined')return null;
+    const n=new URLSearchParams(window.location.search).get('rac');
+    return n&&/^\d+$/.test(n)?Number(n):null;
+  });
+
   const fetchRac=useCallback(async()=>{
     if(!supabase)return;
     try{
@@ -1552,6 +1561,22 @@ export default function App(){
       setRacDb(data||[]);
     }catch(e){console.warn('Erro ao buscar RAC:',e);}
   },[supabase]);
+
+  // Assim que a lista chega, abre a RAC do link e limpa o parâmetro para
+  // que um F5 depois não reabra o modal sozinho.
+  useEffect(()=>{
+    if(!racDoLink||racDb.length===0)return;
+    const alvo=racDb.find(r=>Number(r.numero)===racDoLink);
+    if(alvo){
+      setAba('RAC');setRacSel(alvo);buscarHistRac(alvo.id);
+    }else{
+      addToast(`RAC #${racDoLink} não encontrada.`,'error');
+    }
+    setRacDoLink(null);
+    const u=new URL(window.location.href);
+    u.searchParams.delete('rac');
+    window.history.replaceState({},'',u.toString());
+  },[racDoLink,racDb,buscarHistRac]);
 
   const racAbertasCount=useMemo(()=>
     racDb.filter(r=>['ABERTA','EM_TRATATIVA','AGUARDANDO_VERIFICACAO'].includes(s(r.status))).length,
@@ -6602,7 +6627,7 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
             `Inspetor: ${s(usuarioLogado?.nome)}`,
             `Prazo para tratativa: ${prazo.split('-').reverse().join('/')}`].filter(Boolean).join('\n'),
           modulo:'QUALIDADE',prioridade:'ALTA',
-          link:'https://sistemaindustrializa-o.vercel.app/',
+          link:`https://sistemaindustrializa-o.vercel.app/?rac=${data.numero}`,
         })
       }).catch(()=>{});
       addToast(`RAC #${data.numero} aberta. Responsáveis avisados.`);
