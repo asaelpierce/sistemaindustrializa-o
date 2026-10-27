@@ -261,3 +261,18 @@ venderiam a mesma peça.
 
 Cada aviso só sai quando há o que avisar. Aviso diário dizendo "está tudo bem"
 é aviso que ninguém lê — e no dia que importa, passa batido.
+
+## Verificações antes de subir
+
+Além do build, duas armadilhas que o build NÃO pega:
+
+**Ordem de declaração.** Um `const` referenciado numa lista de dependências de
+`useEffect`/`useMemo` antes de ser declarado derruba o portal inteiro com
+"Cannot access before initialization". O build compila e o teste de
+carregamento passa — a falha só aparece ao renderizar. Rodar
+`python3 verificar-ordem.py`; deve imprimir "nenhum".
+
+**`.catch` em consulta Supabase.** O construtor de consulta é *thenable* mas não
+é Promise: tem `.then` e não tem `.catch`. Encadear `.catch` falha com
+"is not a function" em tempo de execução. Para engolir erro de operação
+secundária, usar `try/catch` com `await`.

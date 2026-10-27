@@ -6564,9 +6564,15 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
   };
 
   // ── RAC: ações ──────────────────────────────────────────────────────────
+  // O construtor de consulta do Supabase é "thenable", mas NÃO é uma Promise:
+  // tem .then e não tem .catch. Encadear .catch quebra com "is not a function".
+  // O histórico é secundário, então a falha é engolida de propósito — mas pelo
+  // try/catch, que funciona com await.
   const registrarHistRac=async(racId,tipo,mensagem)=>{
-    await supabase.from('rac_historico').insert([{rac_id:racId,tipo,
-      autor:s(usuarioLogado?.nome)||'—',mensagem}]).catch(()=>{});
+    try{
+      await supabase.from('rac_historico').insert([{rac_id:racId,tipo,
+        autor:s(usuarioLogado?.nome)||'—',mensagem}]);
+    }catch(e){console.warn('Falha ao registrar histórico da RAC:',e);}
   };
 
   const buscarHistRac=useCallback(async racId=>{
@@ -6884,7 +6890,9 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
 
   const cancelarBloqueio=async()=>{
     if(bloqueioAtivo){
-      await supabase.from('estoque_reservas').delete().eq('id',bloqueioAtivo.id).catch(()=>{});
+      try{
+        await supabase.from('estoque_reservas').delete().eq('id',bloqueioAtivo.id);
+      }catch(e){console.warn('Falha ao liberar o bloqueio:',e);}
       fetchEstoqueVendas();
     }
     setBloqueioAtivo(null);setModalReserva(null);
