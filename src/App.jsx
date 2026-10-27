@@ -11591,7 +11591,7 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
                     subtitle="Relatório de Ações Corretivas (KdB 123) — tratativa conforme ISO 9001"/>
                   {podeAbrirRAC&&(
                     <Btn variant="primary" onClick={()=>setModalNovoRac(true)}>
-                      <Plus className="w-4 h-4"/>Abrir RAC
+                      <AlertOctagon className="w-4 h-4"/>Abrir RAC
                     </Btn>
                   )}
                 </div>
