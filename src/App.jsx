@@ -8139,7 +8139,7 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
         return(
         <div className="fixed inset-0 bg-slate-900/95 z-[300] flex flex-col"
           onClick={()=>setFotoAmpliada(null)}
-          onWheel={e=>{if(e.ctrlKey||true){setZoom(zoom+(e.deltaY<0?0.3:-0.3));}}}>
+          onWheel={e=>setZoom(zoom+(e.deltaY<0?0.3:-0.3))}>
 
           {/* Barra superior */}
           <div className="flex items-center justify-between gap-3 px-4 py-3 flex-shrink-0"
