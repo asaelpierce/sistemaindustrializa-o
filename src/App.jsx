@@ -196,10 +196,20 @@ export function PieChart({children,containerWidth=300,containerHeight=300}){
     const x4=cx+iR*Math.cos(-sA*r),y4=cy+iR*Math.sin(-sA*r);
     return`M ${x1} ${y1} A ${oR} ${oR} 0 ${Math.abs(eA-sA)>180?1:0} 1 ${x2} ${y2} L ${x3} ${y3} A ${iR} ${iR} 0 ${Math.abs(eA-sA)>180?1:0} 0 ${x4} ${y4} Z`;
   }
-  let cum=pie.props.startAngle||0;
+  // Ângulo acumulado calculado ANTES do map, em vez de mutar uma variável
+  // externa dentro dele. Mutação durante a renderização é o que o compilador
+  // do React aponta: com memoização, o map pode rodar de novo a partir de um
+  // acumulador já alterado e as fatias saem erradas.
+  const inicio=pie.props.startAngle||0;
+  const angulos=[];
+  data.reduce((acc,item)=>{
+    const span=(total>0?(parseFloat(item[dk])||0)/total:0)*360;
+    angulos.push(acc);
+    return acc-span;
+  },inicio);
   const slices=data.map((item,i)=>{
     const v=parseFloat(item[dk])||0;const pct=total>0?v/total:0;const span=pct*360;
-    const sA=cum;const eA=cum-span;cum=eA;
+    const sA=angulos[i];const eA=sA-span;
     const mid=sA-span/2;const rad=Math.PI/180;const lR=iR+(oR-iR)*.6;
     let fill=ENT_COLORS[i%ENT_COLORS.length];
     if(pie.props.children){const cells=React.Children.toArray(pie.props.children).filter(c=>c.type===Cell);if(cells[i])fill=cells[i].props.fill;}
@@ -6970,6 +6980,10 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
     try{
       const{error}=await supabase.from('estoque_lotes').update({
         quantidade:novo,
+        // Os dois voltaram a ser gravados: a tela pedia e o valor era
+        // descartado em silêncio desde a reestruturação por lote.
+        qtd_produzida:Number(f.qtd_produzida)||0,
+        estoque_minimo:Number(f.estoque_minimo)||0,
         observacao:s(f.observacao)||null,
         atualizado_em:new Date().toISOString(),
         atualizado_por:s(usuarioLogado?.nome),
