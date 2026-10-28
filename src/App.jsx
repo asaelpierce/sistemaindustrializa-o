@@ -714,7 +714,7 @@ function AcompanhamentoPublicoManutencao({supabase,token}){
           {Array.isArray(sol.fotos)&&sol.fotos.length>0&&(
             <div>
               <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Fotos</p>
-              <div className="grid grid-cols-4 gap-2">
+              <div className="grid grid-cols-3 sm:grid-cols-4 gap-2">
                 {sol.fotos.map((f,i)=><img key={i} src={`data:${f.tipo};base64,${f.dados}`} className="w-full h-16 object-cover rounded-lg border border-slate-200"/>)}
               </div>
             </div>
@@ -964,7 +964,7 @@ function FormularioPublicoManutencao({supabase}){
             <input type="file" multiple accept="image/*" capture="environment" className="hidden" onChange={e=>anexarFotos(e.target.files)}/>
           </label>
           {fotos.length>0&&(
-            <div className="grid grid-cols-4 gap-2 mt-2">
+            <div className="grid grid-cols-3 sm:grid-cols-4 gap-2 mt-2">
               {fotos.map((f,i)=>(
                 <div key={i} className="relative group">
                   <img src={`data:${f.tipo};base64,${f.dados}`} className="w-full h-20 object-cover rounded-lg border border-slate-200"/>
@@ -978,7 +978,7 @@ function FormularioPublicoManutencao({supabase}){
 
         <div>
           <label className="text-xs font-black text-slate-500 uppercase tracking-wider">Urgência</label>
-          <div className="grid grid-cols-4 gap-1.5 mt-1.5">
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5 mt-1.5">
             {[{v:'BAIXA',l:'Baixa',cls:'bg-slate-50 border-slate-500 text-slate-700'},{v:'NORMAL',l:'Normal',cls:'bg-blue-50 border-blue-500 text-blue-700'},{v:'ALTA',l:'Alta',cls:'bg-amber-50 border-amber-500 text-amber-700'},{v:'URGENTE',l:'Urgente',cls:'bg-red-50 border-red-500 text-red-700'}].map(o=>(
               <button key={o.v} type="button" onClick={()=>setForm({...form,urgencia:o.v})}
                 className={`text-[11px] font-bold rounded-lg py-2 border-2 ${form.urgencia===o.v?o.cls:'bg-slate-50 border-slate-200 text-slate-400'}`}>
@@ -12233,7 +12233,7 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
                           </button>
                         </div>
 
-                        <div className="grid grid-cols-7 gap-1.5 mb-1.5">
+                        <div className="grid grid-cols-7 gap-0.5 sm:gap-1.5 mb-1.5">
                           {['Domingo','Segunda','Terça','Quarta','Quinta','Sexta','Sábado'].map(d=>(
                             <div key={d} className="text-xs font-black text-slate-500 uppercase text-center py-1.5">
                               <span className="hidden sm:inline">{d}</span><span className="sm:hidden">{d.slice(0,3)}</span>
@@ -12241,14 +12241,14 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
                           ))}
                         </div>
 
-                        <div className="grid grid-cols-7 gap-1.5">
+                        <div className="grid grid-cols-7 gap-0.5 sm:gap-1.5">
                           {semanas.flat().map((d,i)=>{
-                            if(d===null)return <div key={`v${i}`} className="min-h-[104px] rounded-xl bg-slate-50/50"/>;
+                            if(d===null)return <div key={`v${i}`} className="min-h-[64px] sm:min-h-[104px] rounded-xl bg-slate-50/50"/>;
                             const dIso=iso(d);
                             const evs=eventos[dIso]||[];
                             const ehHoje=dIso===hojeIso;
                             return(
-                              <div key={dIso} className={`min-h-[104px] rounded-xl border-2 p-2 ${ehHoje?'border-indigo-400 bg-indigo-50/40':'border-slate-100 bg-white'}`}>
+                              <div key={dIso} className={`min-h-[64px] sm:min-h-[104px] rounded-xl border-2 p-1 sm:p-2 ${ehHoje?'border-indigo-400 bg-indigo-50/40':'border-slate-100 bg-white'}`}>
                                 <p className={`text-base font-black mb-1 ${ehHoje?'text-indigo-700':'text-slate-600'}`}>{d}</p>
                                 <div className="space-y-1">
                                   {evs.slice(0,3).map((e,j)=>(
@@ -12425,7 +12425,7 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
                     <p className="text-xs font-black text-slate-600 uppercase tracking-wider mb-3">Tempo no fornecedor</p>
                     {R.totalComRetorno===0?<p className="text-xs text-slate-300 py-6 text-center">Nenhuma remessa retornada no período.</p>:(
                     <>
-                      <div className="grid grid-cols-4 gap-2 mb-3">
+                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-3">
                         {[{l:'Média',v:R.mediaDias?.toFixed(1)},{l:'Mediana',v:R.medianaDias},{l:'Mínimo',v:R.minDias},{l:'Máximo',v:R.maxDias}].map(x=>(
                           <div key={x.l} className="bg-slate-50 rounded-xl p-2.5 text-center">
                             <p className="text-xl font-black text-slate-800">{x.v}</p>
@@ -13291,7 +13291,7 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
                             className="w-10 h-10 rounded-xl border border-slate-200 hover:bg-slate-50 flex items-center justify-center"><ArrowRight className="w-5 h-5 text-slate-600"/></button>
                         </div>
 
-                        <div className="grid grid-cols-7 gap-1.5 mb-1.5">
+                        <div className="grid grid-cols-7 gap-0.5 sm:gap-1.5 mb-1.5">
                           {['Domingo','Segunda','Terça','Quarta','Quinta','Sexta','Sábado'].map(d=>(
                             <div key={d} className="text-xs font-black text-slate-500 uppercase text-center py-1.5">
                               <span className="hidden sm:inline">{d}</span><span className="sm:hidden">{d.slice(0,3)}</span>
@@ -13299,14 +13299,14 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
                           ))}
                         </div>
 
-                        <div className="grid grid-cols-7 gap-1.5">
+                        <div className="grid grid-cols-7 gap-0.5 sm:gap-1.5">
                           {semanas.flat().map((d,i)=>{
-                            if(d===null)return <div key={`v${i}`} className="min-h-[104px] rounded-xl bg-slate-50/50"/>;
+                            if(d===null)return <div key={`v${i}`} className="min-h-[64px] sm:min-h-[104px] rounded-xl bg-slate-50/50"/>;
                             const dIso=iso(d);
                             const evs=eventos[dIso]||[];
                             const ehHoje=dIso===hojeIso;
                             return(
-                              <div key={dIso} className={`min-h-[104px] rounded-xl border-2 p-2 ${ehHoje?'border-indigo-400 bg-indigo-50/40':'border-slate-100 bg-white'}`}>
+                              <div key={dIso} className={`min-h-[64px] sm:min-h-[104px] rounded-xl border-2 p-1 sm:p-2 ${ehHoje?'border-indigo-400 bg-indigo-50/40':'border-slate-100 bg-white'}`}>
                                 <p className={`text-base font-black mb-1 ${ehHoje?'text-indigo-700':'text-slate-600'}`}>{d}</p>
                                 <div className="space-y-1">
                                   {evs.slice(0,3).map((e,j)=>(
@@ -14480,7 +14480,7 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
                           className="w-10 h-10 rounded-xl border border-slate-200 hover:bg-slate-50 flex items-center justify-center"><ArrowRight className="w-5 h-5 text-slate-600"/></button>
                       </div>
 
-                      <div className="grid grid-cols-7 gap-1.5 mb-1.5">
+                      <div className="grid grid-cols-7 gap-0.5 sm:gap-1.5 mb-1.5">
                         {['Domingo','Segunda','Terça','Quarta','Quinta','Sexta','Sábado'].map(d=>(
                           <div key={d} className="text-xs font-black text-slate-500 uppercase text-center py-1.5">
                             <span className="hidden sm:inline">{d}</span><span className="sm:hidden">{d.slice(0,3)}</span>
@@ -14522,9 +14522,9 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
 
                           return(
                             <div key={si} className="relative">
-                              <div className="grid grid-cols-7 gap-1.5">
+                              <div className="grid grid-cols-7 gap-0.5 sm:gap-1.5">
                                 {sem.map((d,di)=>{
-                                  if(d===null)return <div key={`v${di}`} className="min-h-[110px] rounded-xl bg-slate-50/50"/>;
+                                  if(d===null)return <div key={`v${di}`} className="min-h-[70px] sm:min-h-[110px] rounded-xl bg-slate-50/50"/>;
                                   const dIso=iso(d);
                                   const ehHoje=dIso===hojeStr;
                                   const qtd=comPeriodo.filter(({p})=>dIso>=p.ini&&dIso<=p.fim).length;
@@ -14550,7 +14550,7 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
                                   const largura=b.ate-b.de+1;
                                   const hora=horaDe(b.m);
                                   return(
-                                    <div key={`${b.m.id}-${bi}`} className="grid grid-cols-7 gap-1.5 absolute left-0 right-0"
+                                    <div key={`${b.m.id}-${bi}`} className="grid grid-cols-7 gap-0.5 sm:gap-1.5 absolute left-0 right-0"
                                       style={{top:`${b.faixa*26}px`}}>
                                       <div style={{gridColumn:`${b.de+1} / span ${largura}`}} className="px-1">
                                         <div onClick={e=>{e.stopPropagation();setManutencaoSel(b.m);buscarHistoricoManutencao(b.m.id);buscarItensCompra(b.m.id);setFotosManutencaoUpload([]);}}
@@ -14563,7 +14563,7 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
                                   );
                                 })}
                                 {faixas.length>4&&(
-                                  <div className="grid grid-cols-7 gap-1.5 absolute left-0 right-0" style={{top:`${4*26}px`}}>
+                                  <div className="grid grid-cols-7 gap-0.5 sm:gap-1.5 absolute left-0 right-0" style={{top:`${4*26}px`}}>
                                     <div style={{gridColumn:'1 / span 7'}} className="px-1">
                                       <p className="text-[11px] font-bold text-slate-400 px-2">+{faixas.length-4} demanda(s) a mais nesta semana</p>
                                     </div>
@@ -16120,7 +16120,7 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
 
           <div>
             <label className="text-xs font-black text-slate-500 uppercase tracking-wider">Urgência</label>
-            <div className="grid grid-cols-4 gap-1.5 mt-1.5">
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5 mt-1.5">
               {[{v:'BAIXA',l:'Baixa',cls:'bg-slate-50 border-slate-500 text-slate-700'},{v:'NORMAL',l:'Normal',cls:'bg-blue-50 border-blue-500 text-blue-700'},{v:'ALTA',l:'Alta',cls:'bg-amber-50 border-amber-500 text-amber-700'},{v:'URGENTE',l:'Urgente',cls:'bg-red-50 border-red-500 text-red-700'}].map(o=>(
                 <button key={o.v} onClick={()=>setFormRotina({...formRotina,urgencia:o.v})}
                   className={`text-[11px] font-bold rounded-lg py-2 border-2 ${formRotina.urgencia===o.v?o.cls:'bg-slate-50 border-slate-200 text-slate-400'}`}>
@@ -16421,7 +16421,7 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
 
                         {/* Fotos do item */}
                         {Array.isArray(item.fotos)&&item.fotos.length>0&&(
-                          <div className="grid grid-cols-5 gap-1 mt-2">
+                          <div className="grid grid-cols-3 sm:grid-cols-5 gap-1 mt-2">
                             {item.fotos.map((f,i)=>(
                               <img key={i} src={`data:${f.tipo};base64,${f.dados}`} className="w-full h-12 object-cover rounded border border-slate-200 cursor-pointer hover:opacity-80"
                                 onClick={()=>{const w=window.open('');w.document.write(`<img src="data:${f.tipo};base64,${f.dados}" style="max-width:100%"/>`);}}/>
