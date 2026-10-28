@@ -1289,6 +1289,15 @@ function Toast({message,type='success',onClose}){
 // MAIN APP — STATE, LOGIC, DATA
 // ============================================================================
 export default function App(){
+  // Utilitários de formatação ficam no TOPO de propósito: são usados dentro de
+  // useMemo, cujo corpo roda DURANTE a renderização. Declarados mais abaixo,
+  // qualquer useMemo anterior quebra com "Cannot access before initialization"
+  // e derruba o portal inteiro — já aconteceu duas vezes.
+  const s=v=>(v===null||v===undefined)?'':String(v);
+  const fmtD=(v,u='')=>{if(v===undefined||v===null||isNaN(v)||v==='')return'—';const n=parseFloat(v);const st=Number.isInteger(n)?n.toString():n.toFixed(2).replace('.',',');return u?`${st} ${u}`:st;};
+  const fmtMoeda=v=>{const n=Number(v)||0;return n.toLocaleString('pt-BR',{style:'currency',currency:'BRL',maximumFractionDigits:0});};
+  const fmtDt=v=>{if(!v)return'—';const m=String(v).match(/^(\d{4})-(\d{2})-(\d{2})/);return m?`${m[3]}/${m[2]}/${m[1]}`:new Date(v).toLocaleDateString('pt-BR');};
+
   const [supabase,setSupa]=useState(null);
   // Portal Supply Chain (tocyzucfgwhvpfihakvj) não é mais usado — compras_pendentes
   // agora sincroniza direto do Sankhya com credenciais próprias (compras-pendentes-sync).
@@ -1825,10 +1834,6 @@ export default function App(){
     }
   };
 
-  const s=v=>(v===null||v===undefined)?'':String(v);
-  const fmtD=(v,u='')=>{if(v===undefined||v===null||isNaN(v)||v==='')return'—';const n=parseFloat(v);const st=Number.isInteger(n)?n.toString():n.toFixed(2).replace('.',',');return u?`${st} ${u}`:st;};
-  const fmtMoeda=v=>{const n=Number(v)||0;return n.toLocaleString('pt-BR',{style:'currency',currency:'BRL',maximumFractionDigits:0});};
-  const fmtDt=v=>{if(!v)return'—';const m=String(v).match(/^(\d{4})-(\d{2})-(\d{2})/);return m?`${m[3]}/${m[2]}/${m[1]}`:new Date(v).toLocaleDateString('pt-BR');};
   // Semana ISO do ano (padrão europeu, mesmo usado pelo Excel) — pra bater com a
   // granularidade "SEMANA 02, 03..." que o PCP usa na planilha de programação.
   const semanaISODoAno=iso=>{
