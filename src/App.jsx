@@ -971,7 +971,7 @@ function FormularioPublicoManutencao({supabase}){
             <Camera className="w-6 h-6 text-slate-400 mb-1"/>
             <span className="text-sm font-bold text-slate-500">Tirar foto ou escolher</span>
             <span className="text-[11px] text-slate-400">Até 4 fotos</span>
-            <input type="file" multiple accept="image/*" capture="environment" className="hidden" onChange={e=>anexarFotos(e.target.files)}/>
+            <input type="file" multiple accept="image/*,video/*" capture="environment" className="hidden" onChange={e=>anexarFotos(e.target.files)}/>
           </label>
           {fotos.length>0&&(
             <div className="grid grid-cols-3 sm:grid-cols-4 gap-2 mt-2">
@@ -6074,7 +6074,56 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
   //    a tela simplesmente não mostrava nada, sem erro no console.
   //  - tempo limite de 20s, para o mesmo motivo por qualquer outra causa.
   //  - devolve o motivo da falha, para a tela poder avisar.
-  const reduzirImagem=(file,maxPx=1280,qualidade=0.75)=>new Promise(resolve=>{
+  // Limite por arquivo. Vídeo de celular passa fácil de 50 MB, e isso vai
+  // para o banco em base64 (que infla ~37%). 20 MB já cobre um vídeo curto
+  // de registro sem travar a tela de quem abrir a demanda depois.
+  const LIMITE_ARQUIVO=20*1024*1024;
+
+  // Lê o arquivo inteiro, sem processar. Usado para vídeo e para imagem que o
+  // navegador não sabe decodificar (HEIC do iPhone no Windows é o caso comum).
+  const lerArquivoCru=file=>new Promise(resolve=>{
+    const limite=setTimeout(()=>resolve({erro:'demorou demais'}),60000);
+    const r=new FileReader();
+    r.onload=e=>{clearTimeout(limite);resolve({dataUrl:e.target.result,
+      b64:String(e.target.result).split(',')[1],tipo:file.type||'application/octet-stream'});};
+    r.onerror=()=>{clearTimeout(limite);resolve({erro:'falha ao ler o arquivo'});};
+    r.onabort=()=>{clearTimeout(limite);resolve({erro:'leitura cancelada'});};
+    try{r.readAsDataURL(file);}catch(e){clearTimeout(limite);resolve({erro:'arquivo inválido'});}
+  });
+
+  // Decide o que fazer com cada arquivo:
+  //  imagem que o navegador decodifica -> reduz e vira JPEG leve
+  //  HEIC/HEIF e vídeo                 -> guarda como veio, sem processar
+  // Antes qualquer coisa que não fosse imagem decodificável era descartada em
+  // silêncio, e foto de iPhone caía exatamente nesse buraco.
+  const processarArquivo=async(file,maxPx=1280,qualidade=0.75)=>{
+    const nome=s(file.name);
+    const ext=(nome.split('.').pop()||'').toLowerCase();
+    const ehVideo=s(file.type).startsWith('video/')||['mov','mp4','m4v','3gp','avi','mkv','webm'].includes(ext);
+    const ehHeic=['heic','heif'].includes(ext)||/hei[cf]/i.test(s(file.type));
+
+    if(file.size>LIMITE_ARQUIVO)
+      return{erro:`arquivo grande demais (${(file.size/1048576).toFixed(0)} MB, máximo 20 MB)`};
+
+    if(ehVideo||ehHeic){
+      const r=await lerArquivoCru(file);
+      if(r.erro)return r;
+      // Sem extensão reconhecida o navegador não sabe o que fazer depois.
+      const tipo=s(file.type)||(ehHeic?'image/heic':'video/'+(ext||'mp4'));
+      return{b64:r.b64,dataUrl:r.dataUrl,tipo,nome,
+             video:ehVideo,semPreview:ehHeic,cru:true};
+    }
+
+    const r=await reduzirImagemBase(file,maxPx,qualidade);
+    if(r.b64)return{...r,tipo:'image/jpeg',nome};
+    // Imagem que o navegador não decodificou: guarda como veio em vez de
+    // perder o registro. O técnico pode baixar e abrir no computador.
+    const cru=await lerArquivoCru(file);
+    if(cru.b64)return{b64:cru.b64,dataUrl:cru.dataUrl,tipo:cru.tipo,nome,semPreview:true,cru:true};
+    return{erro:r.erro||cru.erro||'não foi possível ler'};
+  };
+
+  const reduzirImagemBase=(file,maxPx=1280,qualidade=0.75)=>new Promise(resolve=>{
     let encerrado=false;
     const terminar=r=>{if(!encerrado){encerrado=true;resolve(r);}};
     const limite=setTimeout(()=>terminar({erro:'demorou demais'}),20000);
@@ -6106,9 +6155,9 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
     if(!arr.length)return;
     const processadas=[];const falhas=[];
     for(const file of arr){
-      if(!file.type.startsWith('image/')){falhas.push(`${file.name}: não é imagem`);continue;}
-      const r=await reduzirImagem(file);
-      if(r.b64)processadas.push({name:file.name,type:'image/jpeg',b64:r.b64,preview:r.dataUrl});
+      const r=await processarArquivo(file);
+      if(r.b64)processadas.push({name:r.nome||file.name,type:r.tipo,b64:r.b64,
+        preview:r.dataUrl,video:!!r.video,semPreview:!!r.semPreview});
       else falhas.push(`${file.name}: ${r.erro}`);
     }
     if(processadas.length)setFotosManutencaoUpload(p=>[...p,...processadas].slice(0,5));
@@ -6210,6 +6259,7 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
       await supabase.from('manutencao_historico').insert([{solicitacao_id:sol.id,tipo:'AGENDAMENTO',
         autor:s(usuarioLogado?.nome),
         mensagem:`Definiu o horário: ${dia.split('-').reverse().join('/')} das ${inicio} às ${fim}.`}]);
+      setManutencaoSel(p=>p&&p.id===sol.id?{...p,hora_oficial_inicio:inicio,hora_oficial_fim:fim}:p);
       addToast(`Horário definido: ${inicio}–${fim}.`);
       fetchManutencao();buscarHistoricoManutencao(sol.id);
     }catch(e){addToast('Erro ao definir horário: '+e.message,'error');}
@@ -6252,6 +6302,7 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
       await supabase.from('manutencao_historico').insert([{solicitacao_id:sol.id,tipo:'REPROGRAMACAO',
         autor:s(usuarioLogado?.nome),
         mensagem:`Reprogramou de ${oficialBR} para ${p.split('-').reverse().join('/')}. Motivo: ${s(motivo).trim()}`}]);
+      setManutencaoSel(x=>x&&x.id===sol.id?{...x,prazo_reprogramado:p,motivo_reprogramacao:s(motivo).trim(),reprogramado_por:s(usuarioLogado?.nome)}:x);
       addToast('Reprogramação registrada. O prazo oficial continua valendo como compromisso.');
       fetchManutencao();buscarHistoricoManutencao(sol.id);
     }catch(e){addToast('Erro ao reprogramar: '+e.message,'error');}
@@ -6322,6 +6373,7 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
       const{error}=await supabase.from('manutencao_solicitacoes').update({status:'CANCELADA',motivo_recusa:motivo,atualizado_em:new Date().toISOString()}).eq('id',sol.id);
       if(error)throw error;
       await supabase.from('manutencao_historico').insert([{solicitacao_id:sol.id,tipo:'STATUS_ALTERADO',autor:s(usuarioLogado?.nome),mensagem:`Cancelou: ${motivo}`}]);
+      setManutencaoSel(x=>x&&x.id===sol.id?{...x,status:'CANCELADA'}:x);
       addToast('Solicitação cancelada.');
       fetchManutencao();buscarHistoricoManutencao(sol.id);
     }catch(e){addToast('Erro ao cancelar: '+e.message,'error');}
@@ -6336,6 +6388,10 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
       const{error}=await supabase.from('manutencao_solicitacoes').update(patch).eq('id',sol.id);
       if(error)throw error;
       await supabase.from('manutencao_historico').insert([{solicitacao_id:sol.id,tipo:'STATUS_ALTERADO',autor:s(usuarioLogado?.nome),mensagem:`Mudou o status para ${novoStatus.replace('_',' ')}.`}]);
+      // O modal aberto também precisa refletir a mudança na hora. Sem isto a
+      // gravação acontecia mas o botão continuava no status antigo até
+      // fechar e reabrir — parecia que o clique não tinha funcionado.
+      setManutencaoSel(p=>p&&p.id===sol.id?{...p,...patch}:p);
       addToast('Status atualizado.');
       fetchManutencao();buscarHistoricoManutencao(sol.id);
     }catch(e){addToast('Erro ao atualizar status: '+e.message,'error');}
@@ -6349,6 +6405,7 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
     try{
       const{error}=await supabase.from('manutencao_solicitacoes').update({...campos,atualizado_em:new Date().toISOString()}).eq('id',sol.id);
       if(error)throw error;
+      setManutencaoSel(p=>p&&p.id===sol.id?{...p,...campos}:p);
       addToast('Salvo.');
       fetchManutencao();
     }catch(e){addToast('Erro ao salvar: '+e.message,'error');}
@@ -6755,9 +6812,9 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
     if(!arr.length)return;
     const proc=[];const falhas=[];
     for(const file of arr){
-      if(!file.type.startsWith('image/')){falhas.push(`${file.name}: não é imagem`);continue;}
-      const r=await reduzirImagem(file);
-      if(r.b64)proc.push({name:file.name,type:'image/jpeg',b64:r.b64,preview:r.dataUrl});
+      const r=await processarArquivo(file);
+      if(r.b64)proc.push({name:r.nome||file.name,type:r.tipo,b64:r.b64,
+        preview:r.dataUrl,video:!!r.video,semPreview:!!r.semPreview});
       else falhas.push(`${file.name}: ${r.erro}`);
     }
     if(proc.length)setFotosRac(p=>[...p,...proc].slice(0,6));
@@ -7045,7 +7102,7 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
     try{
       // 320px basta para miniatura de catálogo, e a foto da câmera tem vários
       // MB. Mesma rotina das outras telas, com tempo limite e erro informado.
-      const r=await reduzirImagem(arquivo,320,0.72);
+      const r=await processarArquivo(arquivo,320,0.72);
       if(!r.dataUrl)throw new Error(r.erro||'não foi possível processar a imagem');
       const dataUrl=r.dataUrl;
       const fotoId=`lote-${lote.id}`;
@@ -8139,13 +8196,14 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
         return(
         <div className="fixed inset-0 bg-slate-900/95 z-[300] flex flex-col"
           onClick={()=>setFotoAmpliada(null)}
-          onWheel={e=>setZoom(zoom+(e.deltaY<0?0.3:-0.3))}>
+          onWheel={e=>{if(!atual.video&&!atual.semPreview)setZoom(zoom+(e.deltaY<0?0.3:-0.3));}}>
 
           {/* Barra superior */}
           <div className="flex items-center justify-between gap-3 px-4 py-3 flex-shrink-0"
             onClick={e=>e.stopPropagation()}>
             <p className="text-white text-sm font-bold truncate">{s(atual.titulo)}</p>
             <div className="flex items-center gap-1.5 flex-shrink-0">
+              {!atual.video&&!atual.semPreview&&(<>
               <button onClick={()=>setZoom(zoom-0.5)} disabled={zoom<=1}
                 className="w-11 h-11 rounded-xl bg-white/10 hover:bg-white/20 text-white flex items-center justify-center disabled:opacity-30"
                 title="Diminuir"><Minimize2 className="w-5 h-5"/></button>
@@ -8153,6 +8211,7 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
               <button onClick={()=>setZoom(zoom+0.5)} disabled={zoom>=5}
                 className="w-11 h-11 rounded-xl bg-white/10 hover:bg-white/20 text-white flex items-center justify-center disabled:opacity-30"
                 title="Ampliar"><Maximize2 className="w-5 h-5"/></button>
+              </>)}
               <button onClick={baixar}
                 className="w-11 h-11 rounded-xl bg-white/10 hover:bg-white/20 text-white flex items-center justify-center"
                 title="Baixar"><Save className="w-5 h-5"/></button>
@@ -8162,14 +8221,35 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
             </div>
           </div>
 
-          {/* Imagem. Clicar nela amplia; clicar fora fecha. */}
+          {/* Conteúdo: imagem com zoom, vídeo com controles, ou cartão de
+              download para o que o navegador não exibe (HEIC no Windows). */}
           <div className="flex-1 overflow-auto flex items-center justify-center p-2 custom-scrollbar"
             onClick={e=>e.stopPropagation()}>
-            <img src={atual.src} alt={s(atual.titulo)}
-              onClick={()=>setZoom(zoom>=2.5?1:zoom+1)}
-              style={{transform:`scale(${zoom})`,transformOrigin:'center center',
-                      transition:'transform 0.15s ease',cursor:zoom>1?'zoom-out':'zoom-in'}}
-              className="max-w-full max-h-full object-contain rounded-lg select-none"/>
+            {atual.video?(
+              <video src={atual.src} controls playsInline
+                className="max-w-full max-h-full rounded-lg"/>
+            ):atual.semPreview?(
+              <div className="text-center px-6">
+                <div className="w-20 h-20 rounded-2xl bg-white/10 flex items-center justify-center mx-auto mb-4">
+                  <Camera className="w-9 h-9 text-white/50"/>
+                </div>
+                <p className="text-white font-bold text-sm">{s(atual.nome)||'Arquivo'}</p>
+                <p className="text-white/50 text-xs mt-1 max-w-xs">
+                  Este navegador não exibe esse formato. O arquivo está guardado —
+                  baixe para abrir no computador ou no celular.
+                </p>
+                <button onClick={baixar}
+                  className="mt-4 h-11 px-6 rounded-xl bg-white text-slate-900 font-bold text-sm inline-flex items-center gap-2">
+                  <Save className="w-4 h-4"/>Baixar arquivo
+                </button>
+              </div>
+            ):(
+              <img src={atual.src} alt={s(atual.titulo)}
+                onClick={()=>setZoom(zoom>=2.5?1:zoom+1)}
+                style={{transform:`scale(${zoom})`,transformOrigin:'center center',
+                        transition:'transform 0.15s ease',cursor:zoom>1?'zoom-out':'zoom-in'}}
+                className="max-w-full max-h-full object-contain rounded-lg select-none"/>
+            )}
           </div>
 
           {/* Navegação, só quando há mais de uma */}
@@ -8281,18 +8361,22 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
             <div className="grid grid-cols-2 gap-2">
               <label className="h-12 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-sm flex items-center justify-center gap-2 cursor-pointer active:scale-[0.98]">
                 <Camera className="w-5 h-5"/>Tirar foto
-                <input type="file" accept="image/*" capture="environment" className="hidden" onChange={e=>{const el=e.target;handleFotoRac(el.files).finally(()=>{el.value='';});}}/>
+                <input type="file" accept="image/*,video/*" capture="environment" className="hidden" onChange={e=>{const el=e.target;handleFotoRac(el.files).finally(()=>{el.value='';});}}/>
               </label>
               <label className="h-12 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-sm flex items-center justify-center gap-2 cursor-pointer active:scale-[0.98]">
                 <Upload className="w-5 h-5"/>Da galeria
-                <input type="file" multiple accept="image/*" className="hidden" onChange={e=>{const el=e.target;handleFotoRac(el.files).finally(()=>{el.value='';});}}/>
+                <input type="file" multiple accept="image/*,video/*,.heic,.heif,.mov" className="hidden" onChange={e=>{const el=e.target;handleFotoRac(el.files).finally(()=>{el.value='';});}}/>
               </label>
             </div>
             {fotosRac.length>0&&(
               <div className="grid grid-cols-3 gap-2 mt-3">
                 {fotosRac.map((f,i)=>(
                   <div key={i} className="relative">
-                    <img src={f.preview} className="w-full h-24 object-cover rounded-lg"/>
+                    {f.video||f.semPreview?(
+                      <div className="w-full h-24 rounded-lg bg-slate-800 flex items-center justify-center">
+                        <span className="text-[10px] text-white/70 font-bold">{f.video?'vídeo':'arquivo'}</span>
+                      </div>
+                    ):<img src={f.preview} className="w-full h-24 object-cover rounded-lg"/>}
                     <button onClick={()=>setFotosRac(p=>p.filter((_,x)=>x!==i))}
                       className="absolute -top-1.5 -right-1.5 bg-red-500 text-white rounded-full w-7 h-7 flex items-center justify-center shadow-md"><X className="w-4 h-4"/></button>
                   </div>
@@ -8370,7 +8454,7 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
                 <div className="grid grid-cols-3 sm:grid-cols-4 gap-2 mt-3">
                   {r.fotos.map((f,i)=>(
                     <img key={i} src={`data:${f.tipo};base64,${f.dados}`} alt={f.nome}
-                      onClick={()=>abrirVisualizador(r.fotos.map((x,j)=>({src:`data:${x.tipo};base64,${x.dados}`,titulo:`RAC #${r.numero} — foto ${j+1} de ${r.fotos.length}`,nome:x.nome})),i)}
+                      onClick={()=>abrirVisualizador(r.fotos.map((x,j)=>({src:`data:${x.tipo};base64,${x.dados}`,titulo:`RAC #${r.numero} — ${j+1} de ${r.fotos.length}`,nome:x.nome,video:!!x.video,semPreview:!!x.semPreview})),i)}
                       className="w-full h-24 sm:h-20 object-cover rounded-lg cursor-zoom-in"/>
                   ))}
                 </div>
@@ -15495,7 +15579,7 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
                 <UploadCloud className="w-7 h-7 text-slate-300"/>
                 <p className="text-sm text-slate-400 font-medium">Clique ou arraste fotos aqui</p>
                 <p className="text-[10px] text-slate-400">JPG, PNG, WEBP — máx 5MB cada</p>
-                <input type="file" multiple accept="image/*" className="hidden" onChange={e=>handleFotoUpload(e.target.files)}/>
+                <input type="file" multiple accept="image/*,video/*,.heic,.heif,.mov" className="hidden" onChange={e=>handleFotoUpload(e.target.files)}/>
               </label>
               {fotosUpload.length>0&&(
                 <div className="grid grid-cols-3 sm:grid-cols-4 gap-2 mt-3">
@@ -16433,23 +16517,35 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
                   <div className="grid grid-cols-2 gap-2 mb-3">
                     <label className="h-12 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-sm flex items-center justify-center gap-2 cursor-pointer active:scale-[0.98] transition-transform">
                       <Camera className="w-5 h-5"/>Tirar foto
-                      <input type="file" accept="image/*" capture="environment" className="hidden"
+                      <input type="file" accept="image/*,video/*" capture="environment" className="hidden"
                         onChange={e=>{const el=e.target;handleFotoManutencao(el.files).finally(()=>{el.value='';});}}/>
                     </label>
                     <label className="h-12 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-sm flex items-center justify-center gap-2 cursor-pointer active:scale-[0.98] transition-transform">
                       <Upload className="w-5 h-5"/>Da galeria
-                      <input type="file" multiple accept="image/*" className="hidden"
+                      <input type="file" multiple accept="image/*,video/*,.heic,.heif,.mov" className="hidden"
                         onChange={e=>{const el=e.target;handleFotoManutencao(el.files).finally(()=>{el.value='';});}}/>
                     </label>
                   </div>
                 )}
                 {(Array.isArray(sol.fotos)&&sol.fotos.length>0)?(
                   <div className="grid grid-cols-3 sm:grid-cols-4 gap-2">
-                    {sol.fotos.map((f,i)=>(
-                      <img key={i} src={`data:${f.tipo};base64,${f.dados}`} alt={f.nome}
-                        className="w-full h-20 object-cover rounded-lg border border-slate-200 cursor-pointer hover:opacity-80"
-                        onClick={()=>abrirVisualizador(sol.fotos.map((x,j)=>({src:`data:${x.tipo};base64,${x.dados}`,titulo:`#${sol.numero} — foto ${j+1} de ${sol.fotos.length}`,nome:x.nome})),i)}/>
-                    ))}
+                    {sol.fotos.map((f,i)=>{
+                      const abrir=()=>abrirVisualizador(sol.fotos.map((x,j)=>({src:`data:${x.tipo};base64,${x.dados}`,titulo:`#${sol.numero} — ${j+1} de ${sol.fotos.length}`,nome:x.nome,video:!!x.video,semPreview:!!x.semPreview})),i);
+                      // Vídeo e HEIC não renderizam em <img>: sem isto a
+                      // miniatura ficava um quadrado quebrado.
+                      if(f.video||f.semPreview)return(
+                        <button key={i} onClick={abrir}
+                          className="w-full h-20 rounded-lg border border-slate-200 bg-slate-800 flex flex-col items-center justify-center gap-1 hover:opacity-80">
+                          <Camera className="w-5 h-5 text-white/70"/>
+                          <span className="text-[9px] text-white/60 px-1 truncate max-w-full">{f.video?'vídeo':'arquivo'}</span>
+                        </button>
+                      );
+                      return(
+                        <img key={i} src={`data:${f.tipo};base64,${f.dados}`} alt={f.nome}
+                          className="w-full h-20 object-cover rounded-lg border border-slate-200 cursor-pointer hover:opacity-80"
+                          onClick={abrir}/>
+                      );
+                    })}
                   </div>
                 ):<p className="text-xs text-slate-300">Nenhuma foto anexada.</p>}
                 {/* Fotos pendentes de salvar */}
@@ -16461,7 +16557,11 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
                     <div className="grid grid-cols-3 sm:grid-cols-4 gap-2 mb-3">
                       {fotosManutencaoUpload.map((f,i)=>(
                         <div key={i} className="relative">
-                          <img src={f.preview} className="w-full h-24 sm:h-16 object-cover rounded-lg"/>
+                          {f.video||f.semPreview?(
+                            <div className="w-full h-24 sm:h-16 rounded-lg bg-slate-800 flex items-center justify-center">
+                              <span className="text-[10px] text-white/70 font-bold">{f.video?'vídeo':'arquivo'}</span>
+                            </div>
+                          ):<img src={f.preview} className="w-full h-24 sm:h-16 object-cover rounded-lg"/>}
                           <button onClick={()=>setFotosManutencaoUpload(p=>p.filter((_,idx)=>idx!==i))}
                             className="absolute -top-1.5 -right-1.5 bg-red-500 text-white rounded-full w-7 h-7 flex items-center justify-center shadow-md active:scale-90"><X className="w-4 h-4"/></button>
                         </div>
@@ -16517,7 +16617,7 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
                           <div className="grid grid-cols-3 sm:grid-cols-5 gap-1 mt-2">
                             {item.fotos.map((f,i)=>(
                               <img key={i} src={`data:${f.tipo};base64,${f.dados}`} className="w-full h-12 object-cover rounded border border-slate-200 cursor-pointer hover:opacity-80"
-                                onClick={()=>abrirVisualizador(item.fotos.map((x,j)=>({src:`data:${x.tipo};base64,${x.dados}`,titulo:`${s(item.descricao)} — foto ${j+1} de ${item.fotos.length}`,nome:x.nome})),i)}/>
+                                onClick={()=>abrirVisualizador(item.fotos.map((x,j)=>({src:`data:${x.tipo};base64,${x.dados}`,titulo:`${s(item.descricao)} — ${j+1} de ${item.fotos.length}`,nome:x.nome,video:!!x.video,semPreview:!!x.semPreview})),i)}/>
                             ))}
                           </div>
                         )}
@@ -16565,7 +16665,7 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
                     <div className="flex items-center justify-between gap-2">
                       <label className="text-[10px] font-black text-indigo-600 hover:underline cursor-pointer flex items-center gap-1">
                         <Camera className="w-3 h-3"/>{fotosManutencaoUpload.length>0?`${fotosManutencaoUpload.length} foto(s) selecionada(s)`:'Adicionar foto'}
-                        <input type="file" multiple accept="image/*" capture="environment" className="hidden" onChange={e=>handleFotoManutencao(e.target.files)}/>
+                        <input type="file" multiple accept="image/*,video/*" capture="environment" className="hidden" onChange={e=>handleFotoManutencao(e.target.files)}/>
                       </label>
                       <Btn variant="dark" size="sm" onClick={()=>adicionarItemCompra(sol)} disabled={!novoItemCompra.descricao.trim()}>
                         <PackageOpen className="w-3.5 h-3.5"/>Adicionar
