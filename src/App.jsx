@@ -7025,7 +7025,11 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
   // separada e reduzida antes de subir — a lista é carregada inteira toda vez
   // que a tela abre, e imagem grande deixaria tudo lento.
   const [fotosLotes,setFotosLotes]=useState({});
-  const [fotoAmpliada,setFotoAmpliada]=useState(null);
+  // Visualizador de fotos: lista + posição, para poder navegar entre elas.
+  // Antes abria uma aba about:blank com document.write — sem zoom, sem
+  // download, e com cara de página quebrada.
+  const [fotoAmpliada,setFotoAmpliada]=useState(null); // {fotos:[{src,titulo}], i}
+  const abrirVisualizador=(fotos,i=0)=>setFotoAmpliada({fotos,i});
   const carregarFotos=useCallback(async()=>{
     if(!supabase)return;
     try{
@@ -8113,14 +8117,82 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
         );
       })()}
 
-      {fotoAmpliada&&(
-        <div className="fixed inset-0 bg-slate-900/80 z-[60] flex items-center justify-center p-6" onClick={()=>setFotoAmpliada(null)}>
-          <div onClick={e=>e.stopPropagation()} className="max-w-xl">
-            <img src={fotoAmpliada.src} alt={fotoAmpliada.titulo} className="rounded-2xl max-h-[75vh] w-auto"/>
-            <p className="text-center text-white text-sm font-bold mt-3">{fotoAmpliada.titulo}</p>
+      {/* ── VISUALIZADOR DE FOTOS ─────────────────────────────────────────
+          Abre sobre a tela, não em outra aba. A versão anterior usava
+          window.open + document.write, que gerava uma página about:blank
+          com a imagem solta — sem zoom, sem download e com cara de erro.
+          Aqui dá para ampliar, arrastar quando ampliado, passar entre as
+          fotos e baixar. */}
+      {fotoAmpliada&&(()=>{
+        const lista=fotoAmpliada.fotos||[];
+        const i=Math.max(0,Math.min(fotoAmpliada.i||0,lista.length-1));
+        const atual=lista[i];
+        if(!atual)return null;
+        const ir=d=>setFotoAmpliada(f=>({...f,i:(f.i+d+lista.length)%lista.length,zoom:1,dx:0,dy:0}));
+        const zoom=fotoAmpliada.zoom||1;
+        const setZoom=z=>setFotoAmpliada(f=>({...f,zoom:Math.max(1,Math.min(5,z)),
+          ...(z<=1?{dx:0,dy:0}:{})}));
+        const baixar=()=>{
+          const a=document.createElement('a');
+          a.href=atual.src;a.download=s(atual.nome)||'foto.jpg';a.click();
+        };
+        return(
+        <div className="fixed inset-0 bg-slate-900/95 z-[300] flex flex-col"
+          onClick={()=>setFotoAmpliada(null)}
+          onWheel={e=>{if(e.ctrlKey||true){setZoom(zoom+(e.deltaY<0?0.3:-0.3));}}}>
+
+          {/* Barra superior */}
+          <div className="flex items-center justify-between gap-3 px-4 py-3 flex-shrink-0"
+            onClick={e=>e.stopPropagation()}>
+            <p className="text-white text-sm font-bold truncate">{s(atual.titulo)}</p>
+            <div className="flex items-center gap-1.5 flex-shrink-0">
+              <button onClick={()=>setZoom(zoom-0.5)} disabled={zoom<=1}
+                className="w-11 h-11 rounded-xl bg-white/10 hover:bg-white/20 text-white flex items-center justify-center disabled:opacity-30"
+                title="Diminuir"><Minimize2 className="w-5 h-5"/></button>
+              <span className="text-white/70 text-xs font-bold w-12 text-center">{Math.round(zoom*100)}%</span>
+              <button onClick={()=>setZoom(zoom+0.5)} disabled={zoom>=5}
+                className="w-11 h-11 rounded-xl bg-white/10 hover:bg-white/20 text-white flex items-center justify-center disabled:opacity-30"
+                title="Ampliar"><Maximize2 className="w-5 h-5"/></button>
+              <button onClick={baixar}
+                className="w-11 h-11 rounded-xl bg-white/10 hover:bg-white/20 text-white flex items-center justify-center"
+                title="Baixar"><Save className="w-5 h-5"/></button>
+              <button onClick={()=>setFotoAmpliada(null)}
+                className="w-11 h-11 rounded-xl bg-white/10 hover:bg-white/20 text-white flex items-center justify-center"
+                title="Fechar"><X className="w-6 h-6"/></button>
+            </div>
           </div>
+
+          {/* Imagem. Clicar nela amplia; clicar fora fecha. */}
+          <div className="flex-1 overflow-auto flex items-center justify-center p-2 custom-scrollbar"
+            onClick={e=>e.stopPropagation()}>
+            <img src={atual.src} alt={s(atual.titulo)}
+              onClick={()=>setZoom(zoom>=2.5?1:zoom+1)}
+              style={{transform:`scale(${zoom})`,transformOrigin:'center center',
+                      transition:'transform 0.15s ease',cursor:zoom>1?'zoom-out':'zoom-in'}}
+              className="max-w-full max-h-full object-contain rounded-lg select-none"/>
+          </div>
+
+          {/* Navegação, só quando há mais de uma */}
+          {lista.length>1&&(
+            <div className="flex items-center justify-center gap-3 px-4 py-3 flex-shrink-0"
+              onClick={e=>e.stopPropagation()}>
+              <button onClick={()=>ir(-1)}
+                className="h-11 px-5 rounded-xl bg-white/10 hover:bg-white/20 text-white font-bold text-sm flex items-center gap-2">
+                <ArrowRight className="w-4 h-4 rotate-180"/>Anterior
+              </button>
+              <span className="text-white/70 text-sm font-bold">{i+1} / {lista.length}</span>
+              <button onClick={()=>ir(1)}
+                className="h-11 px-5 rounded-xl bg-white/10 hover:bg-white/20 text-white font-bold text-sm flex items-center gap-2">
+                Próxima<ArrowRight className="w-4 h-4"/>
+              </button>
+            </div>
+          )}
+          <p className="text-center text-white/40 text-[11px] pb-3">
+            Toque na imagem para ampliar · role para dar zoom · toque fora para fechar
+          </p>
         </div>
-      )}
+        );
+      })()}
 
       {/* ── MODAL: ABRIR RAC ──────────────────────────────────────────────
           O inspetor registra o que viu. Data e hora não são digitadas: o
@@ -8298,7 +8370,7 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
                 <div className="grid grid-cols-3 sm:grid-cols-4 gap-2 mt-3">
                   {r.fotos.map((f,i)=>(
                     <img key={i} src={`data:${f.tipo};base64,${f.dados}`} alt={f.nome}
-                      onClick={()=>setFotoAmpliada({src:`data:${f.tipo};base64,${f.dados}`,titulo:`RAC #${r.numero}`})}
+                      onClick={()=>abrirVisualizador(r.fotos.map((x,j)=>({src:`data:${x.tipo};base64,${x.dados}`,titulo:`RAC #${r.numero} — foto ${j+1} de ${r.fotos.length}`,nome:x.nome})),i)}
                       className="w-full h-24 sm:h-20 object-cover rounded-lg cursor-zoom-in"/>
                   ))}
                 </div>
@@ -12011,7 +12083,7 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
                               <div className="flex-shrink-0">
                                 {p.foto_id&&fotosLotes[p.foto_id]?(
                                   <img src={fotosLotes[p.foto_id]} alt={s(p.descricao)}
-                                    onClick={()=>setFotoAmpliada({src:fotosLotes[p.foto_id],titulo:`${s(p.codigo_produto)} · ${s(p.dimensao)}`})}
+                                    onClick={()=>abrirVisualizador([{src:fotosLotes[p.foto_id],titulo:`${s(p.codigo_produto)} · ${s(p.dimensao)}`,nome:`${s(p.codigo_produto)}.jpg`}])}
                                     className="w-24 h-24 object-cover rounded-xl border-2 border-slate-200 cursor-zoom-in hover:border-indigo-400"/>
                                 ):(
                                   <label className={`w-24 h-24 rounded-xl border-2 border-dashed flex flex-col items-center justify-center gap-1 ${podeAtualizarEstoqueVendas?'border-slate-300 hover:border-indigo-400 cursor-pointer':'border-slate-200'}`}>
@@ -16376,7 +16448,7 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
                     {sol.fotos.map((f,i)=>(
                       <img key={i} src={`data:${f.tipo};base64,${f.dados}`} alt={f.nome}
                         className="w-full h-20 object-cover rounded-lg border border-slate-200 cursor-pointer hover:opacity-80"
-                        onClick={()=>{const w=window.open('');w.document.write(`<img src="data:${f.tipo};base64,${f.dados}" style="max-width:100%"/>`);}}/>
+                        onClick={()=>abrirVisualizador(sol.fotos.map((x,j)=>({src:`data:${x.tipo};base64,${x.dados}`,titulo:`#${sol.numero} — foto ${j+1} de ${sol.fotos.length}`,nome:x.nome})),i)}/>
                     ))}
                   </div>
                 ):<p className="text-xs text-slate-300">Nenhuma foto anexada.</p>}
@@ -16445,7 +16517,7 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
                           <div className="grid grid-cols-3 sm:grid-cols-5 gap-1 mt-2">
                             {item.fotos.map((f,i)=>(
                               <img key={i} src={`data:${f.tipo};base64,${f.dados}`} className="w-full h-12 object-cover rounded border border-slate-200 cursor-pointer hover:opacity-80"
-                                onClick={()=>{const w=window.open('');w.document.write(`<img src="data:${f.tipo};base64,${f.dados}" style="max-width:100%"/>`);}}/>
+                                onClick={()=>abrirVisualizador(item.fotos.map((x,j)=>({src:`data:${x.tipo};base64,${x.dados}`,titulo:`${s(item.descricao)} — foto ${j+1} de ${item.fotos.length}`,nome:x.nome})),i)}/>
                             ))}
                           </div>
                         )}
