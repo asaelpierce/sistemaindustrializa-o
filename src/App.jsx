@@ -6066,26 +6066,54 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
 
   // Upload de fotos genérico pro módulo de manutenção (comprime pra não
   // estourar o tamanho do registro — mesma preocupação já tratada na Qualidade).
+  // Reduz uma imagem para base64. Usada por manutenção, RAC e estoque.
+  //
+  // Três proteções que faltavam e faziam a foto sumir em silêncio:
+  //  - onerror no FileReader: sem ele, falha na leitura não disparava NEM
+  //    onload nem img.onerror, e a promessa ficava pendente para sempre —
+  //    a tela simplesmente não mostrava nada, sem erro no console.
+  //  - tempo limite de 20s, para o mesmo motivo por qualquer outra causa.
+  //  - devolve o motivo da falha, para a tela poder avisar.
+  const reduzirImagem=(file,maxPx=1280,qualidade=0.75)=>new Promise(resolve=>{
+    let encerrado=false;
+    const terminar=r=>{if(!encerrado){encerrado=true;resolve(r);}};
+    const limite=setTimeout(()=>terminar({erro:'demorou demais'}),20000);
+    const fim=r=>{clearTimeout(limite);terminar(r);};
+
+    const img=new Image();
+    img.onload=()=>{
+      try{
+        const cv=document.createElement('canvas');
+        const esc=Math.min(1,maxPx/Math.max(img.width,img.height));
+        cv.width=Math.max(1,Math.round(img.width*esc));
+        cv.height=Math.max(1,Math.round(img.height*esc));
+        cv.getContext('2d').drawImage(img,0,0,cv.width,cv.height);
+        const url=cv.toDataURL('image/jpeg',qualidade);
+        fim({b64:url.split(',')[1],dataUrl:url});
+      }catch(e){fim({erro:'não foi possível processar'});}
+    };
+    img.onerror=()=>fim({erro:'formato não suportado pelo navegador'});
+
+    const r=new FileReader();
+    r.onload=e=>{img.src=e.target.result;};
+    r.onerror=()=>fim({erro:'falha ao ler o arquivo'});
+    r.onabort=()=>fim({erro:'leitura cancelada'});
+    try{r.readAsDataURL(file);}catch(e){fim({erro:'arquivo inválido'});}
+  });
+
   const handleFotoManutencao=async files=>{
     const arr=Array.from(files||[]).slice(0,5);
-    const processadas=[];
+    if(!arr.length)return;
+    const processadas=[];const falhas=[];
     for(const file of arr){
-      if(!file.type.startsWith('image/'))continue;
-      const b64=await new Promise(res=>{
-        const img=new Image();
-        img.onload=()=>{
-          const canvas=document.createElement('canvas');
-          const escala=Math.min(1,1280/Math.max(img.width,img.height));
-          canvas.width=img.width*escala;canvas.height=img.height*escala;
-          canvas.getContext('2d').drawImage(img,0,0,canvas.width,canvas.height);
-          res(canvas.toDataURL('image/jpeg',0.75).split(',')[1]);
-        };
-        img.onerror=()=>res(null);
-        const r=new FileReader();r.onload=e=>{img.src=e.target.result;};r.readAsDataURL(file);
-      });
-      if(b64)processadas.push({name:file.name,type:'image/jpeg',b64,preview:`data:image/jpeg;base64,${b64}`});
+      if(!file.type.startsWith('image/')){falhas.push(`${file.name}: não é imagem`);continue;}
+      const r=await reduzirImagem(file);
+      if(r.b64)processadas.push({name:file.name,type:'image/jpeg',b64:r.b64,preview:r.dataUrl});
+      else falhas.push(`${file.name}: ${r.erro}`);
     }
-    setFotosManutencaoUpload(p=>[...p,...processadas].slice(0,5));
+    if(processadas.length)setFotosManutencaoUpload(p=>[...p,...processadas].slice(0,5));
+    // Antes a falha era muda: a pessoa escolhia a foto e nada acontecia.
+    if(falhas.length)addToast(`Não deu para usar ${falhas.length} foto(s) — ${falhas[0]}`,'error');
   };
 
   const salvarFotosNaDemanda=async sol=>{
@@ -6723,24 +6751,17 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
   };
 
   const handleFotoRac=async files=>{
-    const arr=Array.from(files||[]);const proc=[];
+    const arr=Array.from(files||[]);
+    if(!arr.length)return;
+    const proc=[];const falhas=[];
     for(const file of arr){
-      if(!file.type.startsWith('image/'))continue;
-      const b64=await new Promise(res=>{
-        const img=new Image();
-        img.onload=()=>{
-          const cv=document.createElement('canvas');
-          const esc=Math.min(1,1280/Math.max(img.width,img.height));
-          cv.width=img.width*esc;cv.height=img.height*esc;
-          cv.getContext('2d').drawImage(img,0,0,cv.width,cv.height);
-          res(cv.toDataURL('image/jpeg',0.75).split(',')[1]);
-        };
-        img.onerror=()=>res(null);
-        const r=new FileReader();r.onload=e=>{img.src=e.target.result;};r.readAsDataURL(file);
-      });
-      if(b64)proc.push({name:file.name,type:'image/jpeg',b64,preview:`data:image/jpeg;base64,${b64}`});
+      if(!file.type.startsWith('image/')){falhas.push(`${file.name}: não é imagem`);continue;}
+      const r=await reduzirImagem(file);
+      if(r.b64)proc.push({name:file.name,type:'image/jpeg',b64:r.b64,preview:r.dataUrl});
+      else falhas.push(`${file.name}: ${r.erro}`);
     }
-    setFotosRac(p=>[...p,...proc].slice(0,6));
+    if(proc.length)setFotosRac(p=>[...p,...proc].slice(0,6));
+    if(falhas.length)addToast(`Não deu para usar ${falhas.length} foto(s) — ${falhas[0]}`,'error');
   };
 
   const racFiltradas=useMemo(()=>{
@@ -7018,25 +7039,11 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
     if(!arquivo)return;
     if(!arquivo.type.startsWith('image/'))return addToast('Selecione uma imagem.','error');
     try{
-      // Reduz para 320px no navegador: a foto da câmera tem vários MB e não
-      // faz diferença nenhuma numa miniatura de catálogo.
-      const dataUrl=await new Promise((ok,erro)=>{
-        const fr=new FileReader();
-        fr.onload=()=>{
-          const img=new Image();
-          img.onload=()=>{
-            const esc=Math.min(1,320/Math.max(img.width,img.height));
-            const cv=document.createElement('canvas');
-            cv.width=Math.round(img.width*esc);cv.height=Math.round(img.height*esc);
-            cv.getContext('2d').drawImage(img,0,0,cv.width,cv.height);
-            ok(cv.toDataURL('image/jpeg',0.72));
-          };
-          img.onerror=()=>erro(new Error('Imagem inválida'));
-          img.src=fr.result;
-        };
-        fr.onerror=()=>erro(new Error('Falha ao ler o arquivo'));
-        fr.readAsDataURL(arquivo);
-      });
+      // 320px basta para miniatura de catálogo, e a foto da câmera tem vários
+      // MB. Mesma rotina das outras telas, com tempo limite e erro informado.
+      const r=await reduzirImagem(arquivo,320,0.72);
+      if(!r.dataUrl)throw new Error(r.erro||'não foi possível processar a imagem');
+      const dataUrl=r.dataUrl;
       const fotoId=`lote-${lote.id}`;
       const{error:e1}=await supabase.from('estoque_fotos')
         .upsert([{id:fotoId,imagem:dataUrl}],{onConflict:'id'});
@@ -8202,11 +8209,11 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
             <div className="grid grid-cols-2 gap-2">
               <label className="h-12 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-sm flex items-center justify-center gap-2 cursor-pointer active:scale-[0.98]">
                 <Camera className="w-5 h-5"/>Tirar foto
-                <input type="file" accept="image/*" capture="environment" className="hidden" onChange={e=>{handleFotoRac(e.target.files);e.target.value='';}}/>
+                <input type="file" accept="image/*" capture="environment" className="hidden" onChange={e=>{const el=e.target;handleFotoRac(el.files).finally(()=>{el.value='';});}}/>
               </label>
               <label className="h-12 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-sm flex items-center justify-center gap-2 cursor-pointer active:scale-[0.98]">
                 <Upload className="w-5 h-5"/>Da galeria
-                <input type="file" multiple accept="image/*" className="hidden" onChange={e=>{handleFotoRac(e.target.files);e.target.value='';}}/>
+                <input type="file" multiple accept="image/*" className="hidden" onChange={e=>{const el=e.target;handleFotoRac(el.files).finally(()=>{el.value='';});}}/>
               </label>
             </div>
             {fotosRac.length>0&&(
@@ -16355,12 +16362,12 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
                     <label className="h-12 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-sm flex items-center justify-center gap-2 cursor-pointer active:scale-[0.98] transition-transform">
                       <Camera className="w-5 h-5"/>Tirar foto
                       <input type="file" accept="image/*" capture="environment" className="hidden"
-                        onChange={e=>{handleFotoManutencao(e.target.files);e.target.value='';}}/>
+                        onChange={e=>{const el=e.target;handleFotoManutencao(el.files).finally(()=>{el.value='';});}}/>
                     </label>
                     <label className="h-12 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-sm flex items-center justify-center gap-2 cursor-pointer active:scale-[0.98] transition-transform">
                       <Upload className="w-5 h-5"/>Da galeria
                       <input type="file" multiple accept="image/*" className="hidden"
-                        onChange={e=>{handleFotoManutencao(e.target.files);e.target.value='';}}/>
+                        onChange={e=>{const el=e.target;handleFotoManutencao(el.files).finally(()=>{el.value='';});}}/>
                     </label>
                   </div>
                 )}
