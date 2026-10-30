@@ -1307,6 +1307,15 @@ export default function App(){
   const fmtD=(v,u='')=>{if(v===undefined||v===null||isNaN(v)||v==='')return'—';const n=parseFloat(v);const st=Number.isInteger(n)?n.toString():n.toFixed(2).replace('.',',');return u?`${st} ${u}`:st;};
   const fmtMoeda=v=>{const n=Number(v)||0;return n.toLocaleString('pt-BR',{style:'currency',currency:'BRL',maximumFractionDigits:0});};
   const fmtDt=v=>{if(!v)return'—';const m=String(v).match(/^(\d{4})-(\d{2})-(\d{2})/);return m?`${m[3]}/${m[2]}/${m[1]}`:new Date(v).toLocaleDateString('pt-BR');};
+  // Onde a peça ESTÁ, que é diferente de quem é o cliente. "cliente" guarda o
+  // dono do projeto (Ternium, Usiminas); a peça está no fornecedor que presta o
+  // serviço (RS Soluções, DNG). Para cobrar retorno é o segundo que importa —
+  // usar o primeiro fazia a tela mandar ligar para a Usiminas quando o
+  // material estava na DNG. O destinatário vem do registro da expedição.
+  const ondeEsta=r=>{
+    const dest=s(r?.expedicao?.destinatario).trim()||s(r?.fornecedor_destino).trim();
+    return dest?dest.toUpperCase():'';
+  };
 
   const [supabase,setSupa]=useState(null);
   // Portal Supply Chain (tocyzucfgwhvpfihakvj) não é mais usado — compras_pendentes
@@ -6905,9 +6914,12 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
       if(!['ENVIADO','RETORNO_PARCIAL','PENDENTE_EXPEDICAO'].includes(s(r.status)))return;
       const saiu=!!r.data_envio;
       const prazo=s(saiu?r.data_retorno_desejada:r.data_envio_prevista).slice(0,10);
-      const destino=s(r.cliente||r.fornecedor_destino).trim()||'—';
+      // Saiu: o que importa é onde está. Ainda não saiu: não há onde, então
+      // mostra o destino planejado ou o cliente.
+      const destino=(saiu&&ondeEsta(r))||s(r.fornecedor_destino).trim()||s(r.cliente).trim()||'—';
+      const cliente=s(r.cliente).trim();
       const k=`${s(r.projeto)}|${destino.toUpperCase()}|${prazo}|${saiu}`;
-      if(!gruposRem[k])gruposRem[k]={projeto:s(r.projeto),destino,prazo,saiu,servicos:new Set(),qtd:0};
+      if(!gruposRem[k])gruposRem[k]={projeto:s(r.projeto),destino,cliente,prazo,saiu,servicos:new Set(),qtd:0};
       gruposRem[k].qtd++;
       if(s(r.observacao))gruposRem[k].servicos.add(s(r.observacao));
     });
@@ -6917,7 +6929,8 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
       itens.push({
         grupo:g.saiu?'Material fora':'Aguardando expedição',aba:'FORNECEDORES',perfil:'logistica',
         titulo:`${g.projeto||'sem BR'} — ${g.destino}`,
-        sub:[g.qtd>1?`${g.qtd} remessas`:'',[...g.servicos].join(', ')].filter(Boolean).join(' · '),
+        sub:[g.cliente&&g.cliente.toUpperCase()!==g.destino.toUpperCase()?`cliente ${g.cliente}`:'',
+             g.qtd>1?`${g.qtd} remessas`:'',[...g.servicos].join(', ')].filter(Boolean).join(' · '),
         prazo:g.prazo,atraso:atrasado?Math.abs(d):0,
         urgencia:atrasado?(Math.abs(d)>15?3:2):1,
         nota:d===null?'sem prazo':(d<0?`${Math.abs(d)} dia(s) de atraso`:(g.saiu?`retorno em ${d} dia(s)`:`sai em ${d} dia(s)`)),
@@ -13653,7 +13666,8 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
                   P.linhas.forEach(r=>{
                     // O campo é 'cliente'/'fornecedor_destino', não
                     // 'destinatario' — este não existe na tabela e saía vazio.
-                    const rotulo=`${s(r.projeto)||'sem BR'}${s(r.cliente||r.fornecedor_destino)?` · ${s(r.cliente||r.fornecedor_destino)}`:''}`;
+                    const onde=ondeEsta(r)||s(r.fornecedor_destino)||s(r.cliente);
+                    const rotulo=`${s(r.projeto)||'sem BR'}${onde?` · ${onde}`:''}`;
                     if(r.prevEnvio&&!r.saiu) add(r.prevEnvio,{tipo:'SAIDA',rotulo,r,atrasado:r.envioAtrasado});
                     if(r.prevEnvio&&r.saiu)  add(r.prevEnvio,{tipo:'SAIU',rotulo,r});
                     if(r.prevRetorno)        add(r.prevRetorno,{tipo:'RETORNO',rotulo,r,atrasado:r.retornoAtrasado,ok:r.voltou});
