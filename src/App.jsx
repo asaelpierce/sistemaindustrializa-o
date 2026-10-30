@@ -4915,10 +4915,33 @@ export default function App(){
     setIsLoading(true);
     try{
       // 1. Atualizar status no banco (todas as remessas do grupo, se agrupado)
+      //
+      // Se a saída atrasou, o prazo de retorno anda junto. O combinado com o
+      // fornecedor é o TEMPO de serviço: planejado sair 14 e voltar 15 é um
+      // dia de serviço, e sair 16 dá retorno 17. Sem isto a remessa já nascia
+      // atrasada — foi o que aconteceu com o BR14501/26 da TECBOR.
+      // A data original fica guardada, para o atraso da expedição continuar
+      // visível em vez de ser absorvido pelo fornecedor.
+      const hojeIso=new Date().toISOString().slice(0,10);
+      const somaDias=(iso,n)=>{const d=new Date(iso+'T12:00:00');d.setDate(d.getDate()+n);return d.toISOString().slice(0,10);};
+      let ajustadas=0;
       for(const id of idsGrupo){
-        const{error}=await supabase.from('remessas').update({status:'ENVIADO',data_envio:new Date().toISOString(),enviado_por:s(usuarioLogado?.nome),expedicao:formExp,grupo_expedicao:idsGrupo.length>1?idsGrupo:null}).eq('id',id);
+        const rem=(remessasDb||[]).find(x=>x.id===id)||{};
+        const prevEnvio=s(rem.data_envio_prevista).slice(0,10);
+        const prevRetorno=s(rem.data_retorno_desejada).slice(0,10);
+        const campos={status:'ENVIADO',data_envio:new Date().toISOString(),enviado_por:s(usuarioLogado?.nome),expedicao:formExp,grupo_expedicao:idsGrupo.length>1?idsGrupo:null};
+        if(prevEnvio&&prevRetorno&&hojeIso>prevEnvio){
+          const atraso=Math.round((new Date(hojeIso+'T12:00:00')-new Date(prevEnvio+'T12:00:00'))/864e5);
+          if(atraso>0){
+            campos.data_retorno_original=rem.data_retorno_original||prevRetorno;
+            campos.data_retorno_desejada=somaDias(prevRetorno,atraso);
+            ajustadas++;
+          }
+        }
+        const{error}=await supabase.from('remessas').update(campos).eq('id',id);
         if(error)throw error;
       }
+      if(ajustadas)addToast(`Saída atrasada: o prazo de retorno de ${ajustadas} remessa(s) foi ajustado pelo mesmo tempo.`,'info');
 
       // 2. Gerar planilha SGQ
       const wb=new window.ExcelJS.Workbook();await wb.xlsx.load(templateBuf);const ws=wb.worksheets[0];
@@ -6874,19 +6897,30 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
     });
 
     // ── Remessas: material fora da empresa
+    // Agrupadas por projeto + destino + prazo. Um mesmo BR costuma ter várias
+    // remessas — um produto por remessa — que saem juntas na mesma nota. Sem
+    // agrupar, o BR14501/26 da TECBOR aparecia duas vezes e parecia duplicata.
+    const gruposRem={};
     (remessasDb||[]).forEach(r=>{
       if(!['ENVIADO','RETORNO_PARCIAL','PENDENTE_EXPEDICAO'].includes(s(r.status)))return;
       const saiu=!!r.data_envio;
       const prazo=s(saiu?r.data_retorno_desejada:r.data_envio_prevista).slice(0,10);
-      const d=prazo?dias(prazo):null;
+      const destino=s(r.cliente||r.fornecedor_destino).trim()||'—';
+      const k=`${s(r.projeto)}|${destino.toUpperCase()}|${prazo}|${saiu}`;
+      if(!gruposRem[k])gruposRem[k]={projeto:s(r.projeto),destino,prazo,saiu,servicos:new Set(),qtd:0};
+      gruposRem[k].qtd++;
+      if(s(r.observacao))gruposRem[k].servicos.add(s(r.observacao));
+    });
+    Object.values(gruposRem).forEach(g=>{
+      const d=g.prazo?dias(g.prazo):null;
       const atrasado=d!==null&&d<0;
       itens.push({
-        grupo:saiu?'Material fora':'Aguardando expedição',aba:'FORNECEDORES',perfil:'logistica',
-        titulo:`${s(r.projeto)||'sem BR'} — ${s(r.cliente||r.fornecedor_destino)||'—'}`,
-        sub:s(r.observacao),
-        prazo,atraso:atrasado?Math.abs(d):0,
+        grupo:g.saiu?'Material fora':'Aguardando expedição',aba:'FORNECEDORES',perfil:'logistica',
+        titulo:`${g.projeto||'sem BR'} — ${g.destino}`,
+        sub:[g.qtd>1?`${g.qtd} remessas`:'',[...g.servicos].join(', ')].filter(Boolean).join(' · '),
+        prazo:g.prazo,atraso:atrasado?Math.abs(d):0,
         urgencia:atrasado?(Math.abs(d)>15?3:2):1,
-        nota:d===null?'sem prazo':(d<0?`${Math.abs(d)} dia(s) de atraso`:(saiu?`retorno em ${d} dia(s)`:`sai em ${d} dia(s)`)),
+        nota:d===null?'sem prazo':(d<0?`${Math.abs(d)} dia(s) de atraso`:(g.saiu?`retorno em ${d} dia(s)`:`sai em ${d} dia(s)`)),
         acao:()=>setAba('FORNECEDORES'),
       });
     });
