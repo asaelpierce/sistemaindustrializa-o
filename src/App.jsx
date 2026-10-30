@@ -1326,7 +1326,7 @@ export default function App(){
   const [chatInternoDb,setChatInternoDb]=useState([]);
   const [relatoriosIaDb,setRelatoriosIaDb]=useState([]);
 
-  const [aba,setAba]=useState('DASHBOARD');
+  const [aba,setAba]=useState('INICIO');
   const [isLoading,setIsLoading]=useState(false);
   const [uploadProgress,setUploadProgress]=useState(0);
   const [toasts,setToasts]=useState([]);
@@ -6832,6 +6832,111 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
     });
   },[racDb,racBusca,racFiltroStatus]);
 
+  // ── PAINEL DE PENDÊNCIAS ────────────────────────────────────────────────
+  // Reúne numa tela só o que hoje está espalhado por cinco. Cada item sabe
+  // para onde levar, então o clique resolve em vez de só informar.
+  // Fica depois de todas as fontes de dados de propósito: useMemo roda
+  // durante a renderização e referenciar algo declarado abaixo quebra a tela.
+  const pendencias=useMemo(()=>{
+    const hoje=new Date();hoje.setHours(0,0,0,0);
+    const dias=d=>{const x=s(d).slice(0,10);return x?Math.round((new Date(x+'T12:00:00')-hoje)/864e5):null;};
+    const itens=[];
+
+    // ── Manutenção
+    (manutencaoDb||[]).forEach(m=>{
+      if(['CONCLUIDA','CANCELADA'].includes(s(m.status)))return;
+      const prazo=s(m.prazo_reprogramado||m.prazo_oficial).slice(0,10);
+      const d=prazo?dias(prazo):null;
+      itens.push({
+        grupo:'Manutenção',aba:'MANUTENCAO',perfil:'manutencao',
+        titulo:`#${m.numero} — ${s(m.titulo)}`,
+        sub:[s(m.local),s(m.responsavel)].filter(Boolean).join(' · '),
+        prazo,atraso:d!==null&&d<0?Math.abs(d):0,
+        urgencia:(d!==null&&d<0)?3:(s(m.urgencia)==='URGENTE'?2:1),
+        nota:d===null?'sem prazo':(d<0?`${Math.abs(d)} dia(s) de atraso`:(d===0?'vence hoje':`faltam ${d} dia(s)`)),
+        acao:()=>{setAba('MANUTENCAO');setManutencaoSel(m);buscarHistoricoManutencao(m.id);},
+      });
+    });
+
+    // ── RAC
+    (racDb||[]).forEach(r=>{
+      if(['CONCLUIDA','CANCELADA'].includes(s(r.status)))return;
+      const d=r.prazo_tratativa?dias(r.prazo_tratativa):null;
+      itens.push({
+        grupo:'Não conformidade',aba:'RAC',perfil:'qualidade',
+        titulo:`RAC #${r.numero} — ${s(r.setor_responsavel)}`,
+        sub:s(r.descricao_observacao).slice(0,70),
+        prazo:s(r.prazo_tratativa).slice(0,10),atraso:d!==null&&d<0?Math.abs(d):0,
+        urgencia:(d!==null&&d<0)?3:2,
+        nota:d===null?'sem prazo':(d<0?`${Math.abs(d)} dia(s) de atraso`:`faltam ${d} dia(s)`),
+        acao:()=>{setAba('RAC');setRacSel(r);buscarHistRac(r.id);},
+      });
+    });
+
+    // ── Remessas: material fora da empresa
+    (remessasDb||[]).forEach(r=>{
+      if(!['ENVIADO','RETORNO_PARCIAL','PENDENTE_EXPEDICAO'].includes(s(r.status)))return;
+      const saiu=!!r.data_envio;
+      const prazo=s(saiu?r.data_retorno_desejada:r.data_envio_prevista).slice(0,10);
+      const d=prazo?dias(prazo):null;
+      const atrasado=d!==null&&d<0;
+      itens.push({
+        grupo:saiu?'Material fora':'Aguardando expedição',aba:'FORNECEDORES',perfil:'logistica',
+        titulo:`${s(r.projeto)||'sem BR'} — ${s(r.cliente||r.fornecedor_destino)||'—'}`,
+        sub:s(r.observacao),
+        prazo,atraso:atrasado?Math.abs(d):0,
+        urgencia:atrasado?(Math.abs(d)>15?3:2):1,
+        nota:d===null?'sem prazo':(d<0?`${Math.abs(d)} dia(s) de atraso`:(saiu?`retorno em ${d} dia(s)`:`sai em ${d} dia(s)`)),
+        acao:()=>setAba('FORNECEDORES'),
+      });
+    });
+
+    // ── Produção que fica pronta e já foi prometida
+    (estVendasDb||[]).forEach(l=>{
+      if(l.situacao!=='EM_PRODUCAO'||l.vendido||!l.previsao_termino)return;
+      const d=dias(l.previsao_termino);
+      if(d===null||d>7)return;   // só o que é da semana
+      itens.push({
+        grupo:'Produção chegando',aba:'ESTOQUE_VENDAS',perfil:'comercial',
+        titulo:`${s(l.codigo_produto)} ${s(l.dimensao)} — ${fmtD(l.quantidade)} pç`,
+        sub:s(l.op)?`OP ${s(l.op)}`:'',
+        prazo:s(l.previsao_termino).slice(0,10),atraso:d<0?Math.abs(d):0,
+        urgencia:d<0?3:1,
+        nota:d<0?`${Math.abs(d)} dia(s) atrasado`:(d===0?'fica pronto hoje':`pronto em ${d} dia(s)`),
+        acao:()=>setAba('ESTOQUE_VENDAS'),
+      });
+    });
+
+    // ── Reservas de venda vencendo
+    (reservasDb||[]).forEach(r=>{
+      if(s(r.status)!=='RESERVADO')return;
+      const d=dias(r.validade);
+      if(d===null||d>3)return;
+      itens.push({
+        grupo:'Reserva vencendo',aba:'ESTOQUE_VENDAS',perfil:'comercial',
+        titulo:`${s(r.numero)} — ${s(r.cliente)}`,
+        sub:`${fmtD(r.quantidade)} pç · ${s(r.vendedor)}`,
+        prazo:s(r.validade).slice(0,10),atraso:d<0?Math.abs(d):0,
+        urgencia:d<0?3:2,
+        nota:d<0?'vencida':(d===0?'vence hoje':`vence em ${d} dia(s)`),
+        acao:()=>setAba('ESTOQUE_VENDAS'),
+      });
+    });
+
+    itens.sort((a2,b2)=>b2.urgencia-a2.urgencia||b2.atraso-a2.atraso||s(a2.prazo).localeCompare(s(b2.prazo)));
+    return itens;
+  },[manutencaoDb,racDb,remessasDb,estVendasDb,reservasDb,buscarHistoricoManutencao,buscarHistRac]);
+
+  // Mostra a cada um o que é dele. Admin e coordenação veem tudo.
+  const pendenciasVisiveis=useMemo(()=>{
+    if(isAdmin||isCoordenador)return pendencias;
+    return pendencias.filter(p=>
+      (p.perfil==='manutencao'&&isManutencao)||
+      (p.perfil==='qualidade'&&(isQual||podeTratarRAC))||
+      (p.perfil==='logistica'&&(isExp||isPCP))||
+      (p.perfil==='comercial'&&(isComercial||isPCP)));
+  },[pendencias,isAdmin,isCoordenador,isManutencao,isQual,podeTratarRAC,isExp,isPCP,isComercial]);
+
   // ── Prazos das remessas: saída e retorno ────────────────────────────────
   // Uma regra só, usada no calendário e nos avisos, pra não existirem duas
   // noções diferentes de "atrasado".
@@ -7808,6 +7913,9 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
   }),[projAgrup,filtC]);
 
   const navItems=[
+    // Primeira do menu e primeira a abrir: reúne o que está espalhado pelas
+    // outras telas, e é o que a pessoa precisa ver antes de qualquer coisa.
+    {id:'INICIO',label:'Início',icon:Bell,group:'Visão Geral',badge:pendenciasVisiveis.filter(p=>p.atraso>0).length||null},
     ...(isAdmin?[{id:'DASHBOARD',label:'Painel Executivo',icon:LayoutDashboard,group:'Visão Geral'}]:[]),
     ...((isAdmin||isPCP)?[{id:'PLANILHA_MESTRE',label:'Planilha Mestre',icon:FileSpreadsheet,group:'Visão Geral'},{id:'PLANEJAMENTO',label:'Planejamento',icon:Calendar,group:'Visão Geral'},{id:'ORDENS_PRODUCAO_SK',label:'OPs (Sankhya)',icon:Factory,group:'Visão Geral'}]:[]),
     // Planejamento (OOH) removido do menu a pedido do PCP: a lógica dele não batia com
@@ -11836,6 +11944,101 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
                         </tbody>
                       </table>
                     </div>
+                  </div>
+                )}
+              </div>
+              );
+            })()}
+
+            {/* ── INÍCIO: O QUE PRECISA DE OLHO ────────────────────────────
+                Reúne o que está espalhado por cinco telas. Cada cartão leva
+                direto ao item, então serve para resolver, não só informar. */}
+            {aba==='INICIO'&&(()=>{
+              const lista=pendenciasVisiveis;
+              const atrasados=lista.filter(p=>p.atraso>0);
+              const hoje=lista.filter(p=>p.atraso===0&&p.urgencia>=2);
+              const resto=lista.filter(p=>p.atraso===0&&p.urgencia<2);
+              const porGrupo={};
+              lista.forEach(p=>{porGrupo[p.grupo]=(porGrupo[p.grupo]||0)+1;});
+              const agora=new Date();
+              const saudacao=agora.getHours()<12?'Bom dia':agora.getHours()<18?'Boa tarde':'Boa noite';
+
+              const Cartao=({p,i})=>(
+                <button key={i} onClick={p.acao}
+                  className={`w-full text-left rounded-2xl border-2 p-4 hover:shadow-md transition-shadow ${
+                    p.atraso>0?'border-red-200 bg-red-50/40':p.urgencia>=2?'border-amber-200 bg-amber-50/30':'border-slate-200 bg-white'}`}>
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-2 flex-wrap mb-0.5">
+                        <span className="text-[10px] font-black uppercase tracking-wider text-slate-400">{p.grupo}</span>
+                      </div>
+                      <p className="text-base font-bold text-slate-800 leading-snug">{p.titulo}</p>
+                      {p.sub&&<p className="text-xs text-slate-500 mt-0.5 truncate">{p.sub}</p>}
+                    </div>
+                    <div className="text-right flex-shrink-0">
+                      <p className={`text-sm font-black ${p.atraso>0?'text-red-600':p.urgencia>=2?'text-amber-700':'text-slate-400'}`}>
+                        {p.nota}
+                      </p>
+                      {p.prazo&&<p className="text-[11px] text-slate-400">{p.prazo.split('-').reverse().join('/')}</p>}
+                    </div>
+                  </div>
+                </button>
+              );
+
+              return(
+              <div className="space-y-5 pb-10" style={{animation:'fadeIn 0.2s ease'}}>
+                <div>
+                  <h2 className="text-2xl font-black text-slate-900">{saudacao}, {s(usuarioLogado?.nome).split(' ')[0]}</h2>
+                  <p className="text-sm text-slate-500 mt-0.5">
+                    {lista.length===0
+                      ?'Nada pendente no que é seu. Bom trabalho.'
+                      :`${lista.length} ${lista.length===1?'item pede':'itens pedem'} atenção${atrasados.length?` — ${atrasados.length} em atraso`:''}.`}
+                  </p>
+                </div>
+
+                {lista.length>0&&(
+                  <div className="flex flex-wrap gap-2">
+                    {Object.entries(porGrupo).sort((a2,b2)=>b2[1]-a2[1]).map(([g,n])=>(
+                      <div key={g} className="bg-white rounded-xl border border-slate-200 px-4 py-2">
+                        <p className="text-xl font-black text-slate-800">{n}</p>
+                        <p className="text-[11px] text-slate-500">{g}</p>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {atrasados.length>0&&(
+                  <div>
+                    <p className="text-xs font-black text-red-600 uppercase tracking-wider mb-2">
+                      Em atraso ({atrasados.length})
+                    </p>
+                    <div className="space-y-2">{atrasados.map((p,i)=><Cartao key={`a${i}`} p={p} i={i}/>)}</div>
+                  </div>
+                )}
+
+                {hoje.length>0&&(
+                  <div>
+                    <p className="text-xs font-black text-amber-600 uppercase tracking-wider mb-2">
+                      Para os próximos dias ({hoje.length})
+                    </p>
+                    <div className="space-y-2">{hoje.map((p,i)=><Cartao key={`h${i}`} p={p} i={i}/>)}</div>
+                  </div>
+                )}
+
+                {resto.length>0&&(
+                  <div>
+                    <p className="text-xs font-black text-slate-400 uppercase tracking-wider mb-2">
+                      Acompanhando ({resto.length})
+                    </p>
+                    <div className="space-y-2">{resto.map((p,i)=><Cartao key={`r${i}`} p={p} i={i}/>)}</div>
+                  </div>
+                )}
+
+                {lista.length===0&&(
+                  <div className="bg-white rounded-2xl border-2 border-dashed border-slate-200 py-20 text-center">
+                    <CheckCircle className="w-12 h-12 text-emerald-300 mx-auto mb-3"/>
+                    <p className="text-base text-slate-500 font-bold">Sem pendências</p>
+                    <p className="text-sm text-slate-400 mt-1">Quando algo precisar de atenção, aparece aqui.</p>
                   </div>
                 )}
               </div>
