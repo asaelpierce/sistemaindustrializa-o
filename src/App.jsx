@@ -1598,6 +1598,8 @@ export default function App(){
   // ── Estoque p/ Vendas ───────────────────────────────────────────────────
   const [estVendasDb,setEstVendasDb]=useState([]);
   const [reservasDb,setReservasDb]=useState([]);
+  // Saldo do Sankhya por produto, só para conferência — a planilha manda.
+  const [paSankhya,setPaSankhya]=useState({});
   const [evAba,setEvAba]=useState('PAINEL');           // PAINEL | ESTOQUE | RESERVAS | HISTORICO
   const [evBusca,setEvBusca]=useState('');
   const [evFamilia,setEvFamilia]=useState('');
@@ -1621,6 +1623,9 @@ export default function App(){
       ]);
       if(ev.data)setEstVendasDb(ev.data);
       if(res.data)setReservasDb(res.data);
+      const{data:sk}=await supabase.from('estoque_pa_sankhya').select('*');
+      const m={};(sk||[]).forEach(x=>{m[s(x.codigo_produto)]=x;});
+      setPaSankhya(m);
     }catch(e){console.warn('Erro ao buscar estoque de vendas:',e);}
   },[supabase]);
   // Apontamento de mão de obra na OP (Sankhya AD_TPRFUNC) — substitui a
@@ -7061,6 +7066,27 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
     };
   },[estVendasDb,reservasDb]);
 
+  // Conferência planilha × Sankhya, POR PRODUTO. O Sankhya não conhece lote,
+  // então somam-se os lotes prontos (finalizados e não vendidos) de cada
+  // código. Em produção não entra: ainda não deu entrada no estoque do ERP.
+  const conferenciaSankhya=useMemo(()=>{
+    const m={};
+    estVendasDb.forEach(l=>{
+      const cod=s(l.codigo_produto);
+      if(!/^\d+$/.test(cod))return;
+      if(!m[cod])m[cod]={planilha:0};
+      if(l.situacao==='FINALIZADO'&&!l.vendido)m[cod].planilha+=Number(l.quantidade||0);
+    });
+    Object.entries(m).forEach(([cod,v])=>{
+      const sk=paSankhya[cod];
+      v.sankhya=sk?Number(sk.saldo_1001||0)+Number(sk.saldo_1002_nosso||0):null;
+      v.sincronizado=sk?.sincronizado_em||null;
+      v.diferenca=v.sankhya===null?null:v.sankhya-v.planilha;
+    });
+    return m;
+  },[estVendasDb,paSankhya]);
+  const divergentes=Object.values(conferenciaSankhya).filter(v=>v.diferenca!==null&&Math.abs(v.diferenca)>0.0001).length;
+
   const evFiltrados=useMemo(()=>{
     const t=s(evBusca).toLowerCase();
     const ordem={FINALIZADO:0,EM_PRODUCAO:1,FORA_ESTOQUE:2};
@@ -12379,6 +12405,16 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
                     explícitas em cada linha. */}
                 {evAba==='ESTOQUE'&&(
                   <div className="space-y-4">
+                    {divergentes>0&&(
+                      <div className="bg-amber-50 border border-amber-200 rounded-xl px-4 py-3">
+                        <p className="text-sm font-bold text-amber-800">
+                          {divergentes} produto(s) com saldo diferente do Sankhya
+                        </p>
+                        <p className="text-xs text-amber-700 mt-0.5">
+                          A planilha continua valendo. A diferença aparece em cada cartão para conferência.
+                        </p>
+                      </div>
+                    )}
                     <div className="flex flex-wrap gap-2.5">
                       <Inp placeholder="Buscar por código, descrição, dimensão ou OP..." value={evBusca}
                         onChange={e=>{setEvBusca(e.target.value);setEvPagina(1);}}
@@ -12446,6 +12482,18 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
                                   )}
                                 </div>
                                 <p className="text-sm text-slate-600 leading-snug">{s(p.descricao)}</p>
+                                {pronto&&conferenciaSankhya[s(p.codigo_produto)]?.sankhya!=null&&(()=>{
+                                  const cf=conferenciaSankhya[s(p.codigo_produto)];
+                                  const bate=Math.abs(cf.diferenca)<0.0001;
+                                  return(
+                                    <div className={`inline-flex items-center gap-2 mt-2 text-[11px] font-bold px-2.5 py-1 rounded-lg ${bate?'bg-emerald-50 text-emerald-700':'bg-amber-100 text-amber-800'}`}
+                                      title="Saldo do produto no Sankhya (depósitos 1001 e 1002 nosso), só para conferência. A planilha é quem vale.">
+                                      {bate
+                                        ?<>Confere com o Sankhya ({fmtD(cf.sankhya)} pç)</>
+                                        :<>Sankhya: {fmtD(cf.sankhya)} pç · planilha: {fmtD(cf.planilha)} pç ({cf.diferenca>0?'+':''}{fmtD(cf.diferenca)})</>}
+                                    </div>
+                                  );
+                                })()}
                                 <div className="flex flex-wrap gap-x-4 gap-y-1 mt-2 text-xs text-slate-500">
                                   {p.op&&<span>OP <strong className="text-slate-700">{s(p.op)}</strong></span>}
                                   {p.br&&<span>{s(p.br)}</span>}
