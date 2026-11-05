@@ -1556,13 +1556,21 @@ export default function App(){
   const [manutencaoDb,setManutencaoDb]=useState([]);
 
   // ── RAC ─────────────────────────────────────────────────────────────────
-  const SETORES_RAC=['Vulcanização','Revestimento','Caldeiraria','Pintura','Corte'];
+  const SETORES_RAC=['Vulcanização','Revestimento','Caldeiraria','Pintura','Corte','Engenharia'];
+  // Quem responde depende do setor: Engenharia vai para o Edson, os demais
+  // (produção) para Daniel, Diogo e Arthur. Lido de configuracoes.rac_papeis,
+  // para trocar responsável sem mexer em código.
+  const SETOR_ENGENHARIA='Engenharia';
   const ORIGENS_RAC=[
     {v:'QUALIDADE',l:'Qualidade'},{v:'PRODUCAO',l:'Produção'},
     {v:'AUDITORIA',l:'Auditoria'},{v:'INDICADORES',l:'Indicadores'},
     {v:'PRODUTO',l:'Produto'},{v:'PROCESSO',l:'Processo'},
   ];
   const [racDb,setRacDb]=useState([]);
+  const [racPapeis,setRacPapeis]=useState({
+    producao:['daniel.toledo@kalenborn.com.br','diogo.ribeiro@kalenborn.com.br','arthur.silva@kalenborn.com.br'],
+    engenharia:[],
+  });
   const [racHist,setRacHist]=useState({});
   const [racSel,setRacSel]=useState(null);
   const [racBusca,setRacBusca]=useState('');
@@ -1588,6 +1596,13 @@ export default function App(){
       const{data,error}=await supabase.from('rac').select('*').order('aberta_em',{ascending:false});
       if(error)throw error;
       setRacDb(data||[]);
+      const{data:cfg}=await supabase.from('configuracoes').select('valor_json').eq('chave','rac_papeis').maybeSingle();
+      const v=cfg?.valor_json||{};
+      const lista=x=>(Array.isArray(x)?x:[]).map(e=>String(e).trim().toLowerCase()).filter(Boolean);
+      setRacPapeis({
+        producao:lista(v.responsaveis_producao||v.responsaveis),
+        engenharia:lista(v.responsaveis_engenharia),
+      });
     }catch(e){console.warn('Erro ao buscar RAC:',e);}
   },[supabase]);
 
@@ -1816,10 +1831,18 @@ export default function App(){
   //  abrir    -> só a Qualidade (é o inspetor que constata)
   //  tratar   -> Daniel, Diogo e Arthur; qualquer um deles, qualquer RAC
   //  ver      -> Qualidade e quem acompanha
-  const RAC_RESPONSAVEIS=['daniel.toledo@kalenborn.com.br','diogo.ribeiro@kalenborn.com.br','arthur.silva@kalenborn.com.br'];
   const emailUsuario=String(usuarioLogado?.email??'').trim().toLowerCase();
+  // Quem responde vem da configuração e depende do setor da RAC.
+  const responsaveisDoSetor=setor=>s(setor)===SETOR_ENGENHARIA?racPapeis.engenharia:racPapeis.producao;
+  const RAC_RESPONSAVEIS=racPapeis.producao;   // mantido: usado em outros pontos
+  const ehRespProducao=racPapeis.producao.includes(emailUsuario);
+  const ehRespEngenharia=racPapeis.engenharia.includes(emailUsuario);
   const podeAbrirRAC=isQual;
-  const podeTratarRAC=isAdmin||RAC_RESPONSAVEIS.includes(emailUsuario);
+  // Visão geral: pode tratar ALGUMA RAC (libera a aba e a tela Início).
+  const podeTratarRAC=isAdmin||ehRespProducao||ehRespEngenharia;
+  // Por RAC: o Edson responde só as de Engenharia, e os três de produção não
+  // respondem as de Engenharia. Cada um mexe no que é seu.
+  const podeTratarEsta=r=>isAdmin||(s(r?.setor_responsavel)===SETOR_ENGENHARIA?ehRespEngenharia:ehRespProducao);
   const veRAC=isQual||podeTratarRAC||isCoordenador;
   const podeAtualizarEstoqueVendas=isPCP||isAdmin;
   const veEstoqueVendas=isComercial||podeAtualizarEstoqueVendas||isCoordenador;
@@ -6737,6 +6760,32 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
     window.history.replaceState({},'',u.toString());
   },[racDoLink,racDb,buscarHistRac]);
 
+  // Avisa por E-MAIL quem responde a RAC. Canal e-mail de propósito: além de
+  // ser o pedido, fica registro formal na caixa de entrada — e funciona mesmo
+  // com o Teams pausado. O link abre a RAC direto no portal.
+  const avisarRespostaRac=({numero,setor,descricao,br,motivo})=>{
+    const para=responsaveisDoSetor(setor);
+    if(!para.length)return 0;
+    fetch(`${SUPABASE_URL}/functions/v1/notificar`,{
+      method:'POST',headers:{'Content-Type':'application/json','apikey':SUPABASE_KEY},
+      body:JSON.stringify({
+        destinatarios:para,canal:'email',
+        titulo:`RAC #${numero} — ${s(setor)} — resposta necessária`,
+        mensagem:[
+          motivo||'Foi aberta uma não conformidade que precisa da sua tratativa.','',
+          `Setor: ${s(setor)}`,
+          br?`Projeto: ${s(br)}`:null,
+          `O que foi observado: ${s(descricao).trim()}`,
+          `Registrado por: ${s(usuarioLogado?.nome)}`,'',
+          'Responda pelo portal, no link abaixo:',
+        ].filter(x=>x!==null).join('\n'),
+        modulo:'QUALIDADE',prioridade:'ALTA',
+        link:`https://sistemaindustrializa-o.vercel.app/?rac=${numero}`,
+      })
+    }).catch(()=>{});
+    return para.length;
+  };
+
   const abrirRac=async()=>{
     const f=formRac;
     if(!s(f.setor_responsavel))return addToast('Aponte o setor responsável.','error');
@@ -6762,22 +6811,13 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
       if(error)throw error;
       await registrarHistRac(id,'ABERTURA',
         `RAC aberta por ${s(usuarioLogado?.nome)} — setor ${s(f.setor_responsavel)}.`);
-      // Avisa quem precisa tratar.
-      fetch(`${SUPABASE_URL}/functions/v1/notificar`,{
-        method:'POST',headers:{'Content-Type':'application/json','apikey':SUPABASE_KEY},
-        body:JSON.stringify({
-          destinatarios:RAC_RESPONSAVEIS,
-          titulo:`⚠️ RAC #${data.numero} aberta — ${s(f.setor_responsavel)}`,
-          mensagem:[s(f.descricao_observacao).trim(),'',
-            `Setor: ${s(f.setor_responsavel)}`,
-            f.br?`Projeto: ${s(f.br)}`:null,
-            `Inspetor: ${s(usuarioLogado?.nome)}`,
-            `Prazo para tratativa: ${prazo.split('-').reverse().join('/')}`].filter(Boolean).join('\n'),
-          modulo:'QUALIDADE',prioridade:'ALTA',
-          link:`https://sistemaindustrializa-o.vercel.app/?rac=${data.numero}`,
-        })
-      }).catch(()=>{});
-      addToast(`RAC #${data.numero} aberta. Responsáveis avisados.`);
+      // E-mail para quem responde ESTE setor (produção ou engenharia).
+      const avisados=avisarRespostaRac({numero:data.numero,setor:f.setor_responsavel,
+        descricao:f.descricao_observacao,br:f.br});
+      addToast(avisados
+        ?`RAC #${data.numero} aberta. ${avisados} responsável(is) avisado(s) por e-mail.`
+        :`RAC #${data.numero} aberta. Atenção: nenhum responsável cadastrado para ${s(f.setor_responsavel)}.`,
+        avisados?'success':'warning');
       setModalNovoRac(false);setFotosRac([]);
       setFormRac({origem:'INTERNA',dados_origem:'QUALIDADE',processo:'',setor_responsavel:'',
         descricao_observacao:'',br:'',op:'',cod_produto:'',produto_descricao:'',quantidade:''});
@@ -6785,9 +6825,36 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
     }catch(e){addToast('Erro ao abrir RAC: '+e.message,'error');}
   };
 
+  // Direciona a RAC para outro setor — ex.: a Qualidade percebe que a causa é
+  // de projeto e manda para a Engenharia. Quem passa a responder recebe o
+  // e-mail com o link; quem respondia antes deixa de poder mexer.
+  const direcionarRac=async(rac,novoSetor)=>{
+    if(!podeAbrirRAC&&!isAdmin)return addToast('Só a Qualidade direciona a RAC.','error');
+    if(!novoSetor||novoSetor===s(rac.setor_responsavel))return;
+    const anterior=s(rac.setor_responsavel);
+    try{
+      const campos={setor_responsavel:novoSetor,atualizado_em:new Date().toISOString()};
+      // Volta para ABERTA: o novo responsável começa a tratativa do zero.
+      if(!['CONCLUIDA','CANCELADA'].includes(s(rac.status)))campos.status='ABERTA';
+      const{error}=await supabase.from('rac').update(campos).eq('id',rac.id);
+      if(error)throw error;
+      await registrarHistRac(rac.id,'DIRECIONAMENTO',
+        `${s(usuarioLogado?.nome)} direcionou de ${anterior} para ${novoSetor}.`);
+      const avisados=avisarRespostaRac({numero:rac.numero,setor:novoSetor,
+        descricao:rac.descricao_observacao,br:rac.br,
+        motivo:`A RAC #${rac.numero} foi direcionada para ${novoSetor} e precisa da sua tratativa.`});
+      setRacSel(x=>x&&x.id===rac.id?{...x,...campos}:x);
+      addToast(avisados
+        ?`Direcionada para ${novoSetor}. ${avisados} responsável(is) avisado(s) por e-mail.`
+        :`Direcionada para ${novoSetor}, mas não há responsável cadastrado para esse setor.`,
+        avisados?'success':'warning');
+      fetchRac();buscarHistRac(rac.id);
+    }catch(e){addToast('Erro ao direcionar: '+e.message,'error');}
+  };
+
   // Salva um bloco do formulário (correção, causa, ação) e registra quem fez.
   const salvarBlocoRac=async(rac,campos,descricaoHist)=>{
-    if(!podeTratarRAC)return addToast('Só Daniel, Diogo ou Arthur podem tratar a RAC.','error');
+    if(!podeTratarEsta(rac))return addToast(`Esta RAC é de ${s(rac.setor_responsavel)} — só o responsável desse setor pode tratar.`,'error');
     try{
       const{error}=await supabase.from('rac')
         .update({...campos,atualizado_em:new Date().toISOString()}).eq('id',rac.id);
@@ -6800,7 +6867,7 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
   };
 
   const mudarStatusRac=async(rac,novo)=>{
-    if(!podeTratarRAC&&!isQual)return addToast('Sem permissão para alterar.','error');
+    if(!podeTratarEsta(rac)&&!isQual)return addToast('Sem permissão para alterar.','error');
     try{
       const campos={status:novo,atualizado_em:new Date().toISOString()};
       if(novo==='CONCLUIDA'){
@@ -6900,7 +6967,7 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
       if(['CONCLUIDA','CANCELADA'].includes(s(r.status)))return;
       const d=r.prazo_tratativa?dias(r.prazo_tratativa):null;
       itens.push({
-        grupo:'Não conformidade',aba:'RAC',perfil:'qualidade',
+        grupo:'Não conformidade',aba:'RAC',perfil:'qualidade',rac:r,
         titulo:`RAC #${r.numero} — ${s(r.setor_responsavel)}`,
         sub:s(r.descricao_observacao).slice(0,70),
         prazo:s(r.prazo_tratativa).slice(0,10),atraso:d!==null&&d<0?Math.abs(d):0,
@@ -6984,10 +7051,12 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
     if(isAdmin||isCoordenador)return pendencias;
     return pendencias.filter(p=>
       (p.perfil==='manutencao'&&isManutencao)||
-      (p.perfil==='qualidade'&&(isQual||podeTratarRAC))||
+      // RAC: a Qualidade vê todas; o responsável vê só as do seu setor
+      // (Edson não recebe as de produção, e vice-versa).
+      (p.perfil==='qualidade'&&(isQual||podeTratarEsta(p.rac)))||
       (p.perfil==='logistica'&&(isExp||isPCP))||
       (p.perfil==='comercial'&&(isComercial||isPCP)));
-  },[pendencias,isAdmin,isCoordenador,isManutencao,isQual,podeTratarRAC,isExp,isPCP,isComercial]);
+  },[pendencias,isAdmin,isCoordenador,isManutencao,isQual,racPapeis,emailUsuario,isExp,isPCP,isComercial]);
 
   // ── Prazos das remessas: saída e retorno ────────────────────────────────
   // Uma regra só, usada no calendário e nos avisos, pra não existirem duas
@@ -8591,7 +8660,7 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
         {racSel&&(()=>{
           const r=racSel;
           const hist=racHist[r.id]||[];
-          const bloqueado=!podeTratarRAC;
+          const bloqueado=!podeTratarEsta(r);
           const campo=(valor,onBlur,rows=3,ph='')=>(
             <textarea rows={rows} defaultValue={valor||''} disabled={bloqueado} placeholder={ph}
               onBlur={e=>e.target.value!==(valor||'')&&onBlur(e.target.value)}
@@ -8602,7 +8671,9 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
             {bloqueado&&(
               <div className="bg-slate-100 rounded-xl px-4 py-2.5 flex items-center gap-2">
                 <Lock className="w-4 h-4 text-slate-400"/>
-                <p className="text-xs text-slate-600">Somente leitura. A tratativa é de Daniel, Diogo ou Arthur.</p>
+                <p className="text-xs text-slate-600">
+                  Somente leitura. A tratativa é de {s(r.setor_responsavel)===SETOR_ENGENHARIA?'Engenharia (Edson)':'Daniel, Diogo ou Arthur'}.
+                </p>
               </div>
             )}
 
@@ -8616,6 +8687,29 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
                 </button>
               ))}
             </div>
+
+            {/* Direcionar: a Qualidade troca o setor responsável. Quem passa a
+                responder recebe o e-mail com o link para a RAC. */}
+            {(podeAbrirRAC||isAdmin)&&!['CONCLUIDA','CANCELADA'].includes(s(r.status))&&(
+              <div className="bg-indigo-50 border border-indigo-200 rounded-2xl p-4">
+                <p className="text-xs font-black text-indigo-700 uppercase tracking-wider mb-1">Direcionar para</p>
+                <p className="text-[11px] text-indigo-600 mb-2.5">
+                  Hoje com <strong>{s(r.setor_responsavel)}</strong>. Ao mudar, o novo responsável recebe e-mail com o link.
+                </p>
+                <div className="flex flex-wrap gap-2">
+                  {SETORES_RAC.filter(st=>st!==s(r.setor_responsavel)).map(st=>(
+                    <button key={st}
+                      onClick={()=>{if(window.confirm(`Direcionar a RAC #${r.numero} para ${st}?`))direcionarRac(r,st);}}
+                      className={`text-xs font-bold px-3.5 py-2 rounded-xl border-2 ${st===SETOR_ENGENHARIA?'bg-white border-indigo-400 text-indigo-700':'bg-white border-slate-200 text-slate-600 hover:border-slate-300'}`}>
+                      {st}
+                    </button>
+                  ))}
+                </div>
+                {racPapeis.engenharia.length===0&&(
+                  <p className="text-[11px] text-amber-700 mt-2">Engenharia ainda sem responsável cadastrado — o e-mail não sairá até isso ser configurado.</p>
+                )}
+              </div>
+            )}
 
             {/* O que foi observado */}
             <div className="bg-red-50 border border-red-200 rounded-2xl p-4">
