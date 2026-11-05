@@ -1851,6 +1851,10 @@ export default function App(){
   // acessos em vez de olhar o perfil direto, assim quem tiver Manutenção
   // somada a outro perfil continua vendo tudo o que o outro perfil dá.
   const soManutencao=isManutencao&&!isAdmin&&!isPCP&&!isExp&&!isQual&&!isCompras&&!isCoordenador;
+  // Engenharia entra no portal para responder RAC. Mesmo enxugamento da
+  // manutenção: sem Apontar Produção nem Chat, que não lhe dizem respeito.
+  const soEngenharia=temPerfil('ENGENHARIA')&&!isManutencao&&!isAdmin&&!isPCP&&!isExp&&!isQual&&!isCompras&&!isCoordenador;
+  const acessoEnxuto=soManutencao||soEngenharia;
 
   // Cada natureza gera o texto que a fiscal lê — vai no assunto do e-mail e na
   // observação do SGQ. É por ele que ela sabe se é devolução, conserto ou
@@ -8069,10 +8073,10 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
     ...(isCompras?[{id:'REMESSA_COMPRAS',label:'Nova Remessa',icon:Repeat,group:'Compras'}]:[]),
     ...(veEstoqueVendas?[{id:'ESTOQUE_VENDAS',label:'Estoque p/ Vendas',icon:PackageOpen,group:'Comercial',badge:evResumo.semAtualizacao||null}]:[]),
     ...(isPCP?[{id:'APONTAMENTO_HORAS',label:'Horas por OP',icon:Clock,group:'PCP'}]:[]),
-    ...(soManutencao?[]:[{id:'APONTAR_PRODUCAO',label:'Apontar Produção',icon:Factory,group:'Produção'}]),
+    ...(acessoEnxuto?[]:[{id:'APONTAR_PRODUCAO',label:'Apontar Produção',icon:Factory,group:'Produção'}]),
     ...(isExp?[{id:'EXPEDICAO',label:'Fila de Expedição',icon:Truck,group:'Logística',badge:remPend.length||null},{id:'FORNECEDORES',label:'Retorno de Peças',icon:RotateCcw,group:'Logística',badge:notasRemessaPendentesCount||null},{id:'CONTROLE_GERAL',label:'Controle Geral',icon:ListChecks,group:'Logística'},{id:'RELATORIO_REMESSAS',label:'Relatório de Remessas',icon:FileSearch,group:'Logística'}]:[]),
     ...(isAdmin?[{id:'IA_ANALISTA',label:'Analista IA',icon:Bot,group:'Inteligência'},{id:'AUDITORIA',label:'Auditoria BOM',icon:FileSearch,group:'Inteligência'},{id:'GESTAO_USUARIOS',label:'Gestão de Acessos',icon:Users,group:'Sistema'}]:[]),
-    ...(soManutencao?[]:[{id:'CHAT_INTERNO',label:'Chat da Equipe',icon:MessageSquare,group:'Comunicação',badge:chatNaoLidos||null}]),
+    ...(acessoEnxuto?[]:[{id:'CHAT_INTERNO',label:'Chat da Equipe',icon:MessageSquare,group:'Comunicação',badge:chatNaoLidos||null}]),
     ...(isQual?[{id:'QUALIDADE',label:'Qualidade',icon:ShieldAlert,group:'Qualidade'},{id:'RNCS',label:'Registro de RNCs',icon:AlertOctagon,group:'Qualidade'}]:[]),
     ...(veRAC?[{id:'RAC',label:'Não Conformidades',icon:FileSearch,group:'Qualidade',badge:racAbertasCount||null}]:[]),
     {id:'MANUTENCAO',label:'Manutenção',icon:Wrench,group:'Manutenção',badge:manutencaoPendentesCount||null},
@@ -14465,6 +14469,7 @@ Na rua: ${fmtD(saldoMP)} ${mp.um}`} className="group relative flex items-center 
                             {v:'COMPRAS',l:'Compras — Devolução, conserto, triangulação'},
                             {v:'COORDENADOR',l:'Coordenador — Compras + todas as remessas'},
                             {v:'COMERCIAL',l:'Comercial — consulta e reserva estoque'},
+                            {v:'ENGENHARIA',l:'Engenharia — responde RAC direcionada'},
                             {v:'QUALIDADE',l:'Qualidade'},
                             {v:'MANUTENCAO',l:'Manutenção'},
                             {v:'ADMIN',l:'Administrador — acesso total'},
