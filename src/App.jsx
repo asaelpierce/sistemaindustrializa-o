@@ -3,6 +3,7 @@
 // Sistema de Industrialização Cloud — Nível Corporativo
 // ============================================================================
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
+import { LOGO_KALENBORN_PNG } from './logoKalenborn';
 import {
   Search, Upload, Trash2, Database, AlertCircle, FileSpreadsheet,
   CheckCircle, RefreshCcw, Loader2, Cloud, CloudOff, Truck, MapPin, Check, Maximize2, Minimize2,
@@ -1304,6 +1305,8 @@ export default function App(){
   // qualquer useMemo anterior quebra com "Cannot access before initialization"
   // e derruba o portal inteiro — já aconteceu duas vezes.
   const s=v=>(v===null||v===undefined)?'':String(v);
+  // Número da RAC com dois dígitos (01, 02…), como no formulário KdB 123.
+  const numRac=n=>String(n??'').padStart(2,'0');
   const fmtD=(v,u='')=>{if(v===undefined||v===null||isNaN(v)||v==='')return'—';const n=parseFloat(v);const st=Number.isInteger(n)?n.toString():n.toFixed(2).replace('.',',');return u?`${st} ${u}`:st;};
   const fmtMoeda=v=>{const n=Number(v)||0;return n.toLocaleString('pt-BR',{style:'currency',currency:'BRL',maximumFractionDigits:0});};
   const fmtDt=v=>{if(!v)return'—';const m=String(v).match(/^(\d{4})-(\d{2})-(\d{2})/);return m?`${m[3]}/${m[2]}/${m[1]}`:new Date(v).toLocaleDateString('pt-BR');};
@@ -6756,7 +6759,7 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
     if(alvo){
       setAba('RAC');setRacSel(alvo);buscarHistRac(alvo.id);
     }else{
-      addToast(`RAC #${racDoLink} não encontrada.`,'error');
+      addToast(`RAC ${numRac(racDoLink)} não encontrada.`,'error');
     }
     setRacDoLink(null);
     const u=new URL(window.location.href);
@@ -6774,7 +6777,7 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
       method:'POST',headers:{'Content-Type':'application/json','apikey':SUPABASE_KEY},
       body:JSON.stringify({
         destinatarios:para,canal:'email',
-        titulo:`RAC #${numero} — ${s(setor)} — resposta necessária`,
+        titulo:`RAC ${numRac(numero)} — ${s(setor)} — resposta necessária`,
         mensagem:[
           motivo||'Foi aberta uma não conformidade que precisa da sua tratativa.','',
           `Setor: ${s(setor)}`,
@@ -6819,14 +6822,163 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
       const avisados=avisarRespostaRac({numero:data.numero,setor:f.setor_responsavel,
         descricao:f.descricao_observacao,br:f.br});
       addToast(avisados
-        ?`RAC #${data.numero} aberta. ${avisados} responsável(is) avisado(s) por e-mail.`
-        :`RAC #${data.numero} aberta. Atenção: nenhum responsável cadastrado para ${s(f.setor_responsavel)}.`,
+        ?`RAC ${numRac(data.numero)} aberta. ${avisados} responsável(is) avisado(s) por e-mail.`
+        :`RAC ${numRac(data.numero)} aberta. Atenção: nenhum responsável cadastrado para ${s(f.setor_responsavel)}.`,
         avisados?'success':'warning');
       setModalNovoRac(false);setFotosRac([]);
       setFormRac({origem:'INTERNA',dados_origem:'QUALIDADE',processo:'',setor_responsavel:'',
         descricao_observacao:'',br:'',op:'',cod_produto:'',produto_descricao:'',quantidade:''});
       fetchRac();
     }catch(e){addToast('Erro ao abrir RAC: '+e.message,'error');}
+  };
+
+  // ── KdB 123 preenchido ────────────────────────────────────────────────
+  // Gera o formulário oficial (Relatório de Ações Corretivas) com os dados da
+  // RAC e as fotos embutidas, no próprio navegador — as fotos já estão aqui,
+  // então não precisam ir e voltar do servidor. Mesma grade do modelo em papel
+  // (colunas A–H, blocos na mesma ordem, rodapé SGQ 123/02), para circular
+  // como o documento de sempre.
+  const gerarKdb123=async rac=>{
+    if(!window.ExcelJS)return addToast('Gerador de Excel não carregado. Recarregue a página.','error');
+    try{
+      const wb=new window.ExcelJS.Workbook();
+      const ws=wb.addWorksheet('KdB123',{
+        pageSetup:{paperSize:9,orientation:'portrait',fitToPage:true,fitToWidth:1,fitToHeight:1,
+          margins:{left:0.4,right:0.4,top:0.4,bottom:0.5,header:0.2,footer:0.2}},
+        headerFooter:{oddFooter:'&RSGQ 123/02'},
+      });
+      [18.3,10,10,10,13,12.4,10,10.6].forEach((w,i)=>{ws.getColumn(i+1).width=w;});
+      const fino={style:'thin',color:{argb:'FF808080'}};
+      const borda={top:fino,left:fino,bottom:fino,right:fino};
+      const F=(o={})=>({name:'Arial',size:9,...o});
+      const cel=(ref,valor,o={})=>{
+        const c2=ws.getCell(ref);c2.value=valor;
+        c2.font=F(o.font);c2.alignment={vertical:'middle',wrapText:true,...(o.align||{})};
+        if(o.fill)c2.fill={type:'pattern',pattern:'solid',fgColor:{argb:o.fill}};
+        return c2;
+      };
+      const caixa=(intervalo)=>{
+        const [a1,b1]=intervalo.split(':');
+        const col=s2=>s2.replace(/\d+/g,'').charCodeAt(0)-64, lin=s2=>Number(s2.replace(/\D/g,''));
+        for(let r=lin(a1);r<=lin(b1||a1);r++)for(let k=col(a1);k<=col(b1||a1);k++)
+          ws.getCell(r,k).border=borda;
+      };
+      const mesclar=(intervalo,valor,o={})=>{ws.mergeCells(intervalo);cel(intervalo.split(':')[0],valor,o);caixa(intervalo);};
+      const titulo=(intervalo,texto)=>mesclar(intervalo,texto,{font:{bold:true,size:10},fill:'FFD9E1F2',align:{horizontal:'left'}});
+      const marca=(sim)=>sim?'( X )':'(    )';
+      const dBR=v=>{const x=s(v).slice(0,10);return x?x.split('-').reverse().join('/'):'';};
+
+      // Cabeçalho
+      ws.mergeCells('A1:A3');caixa('A1:A3');
+      try{
+        const logo=wb.addImage({base64:LOGO_KALENBORN_PNG,extension:'png'});
+        ws.addImage(logo,{tl:{col:0.1,row:0.25},ext:{width:120,height:36}});
+      }catch(_){}
+      mesclar('B1:F3','RELATÓRIO DE AÇÕES CORRETIVAS',{font:{bold:true,size:14},align:{horizontal:'center'}});
+      mesclar('G1:H1','Nº R.A.C',{font:{bold:true},align:{horizontal:'center'}});
+      mesclar('G2:H2',numRac(rac.numero),{font:{bold:true,size:14,color:{argb:'FFC00000'}},align:{horizontal:'center'}});
+      cel('G3','DATA:',{font:{bold:true}});cel('H3',dBR(rac.aberta_em));caixa('G3:H3');
+      [1,2,3].forEach(r=>{ws.getRow(r).height=18;});
+
+      // Origem
+      titulo('A4:H4','Origem');
+      mesclar('A5:H5',`${marca(s(rac.origem)!=='EXTERNA')} INTERNA          ${marca(s(rac.origem)==='EXTERNA')} EXTERNA`);
+      ws.getRow(6).height=6;
+      const ORIG=[['QUALIDADE','QUALIDADE'],['PRODUCAO','PRODUÇÃO'],['AUDITORIA','AUDITORIA'],
+                  ['INDICADORES','INDICADORES'],['PRODUTO','PRODUTO'],['PROCESSO','PROCESSO']];
+      mesclar('A7:H7',ORIG.map(([v,l])=>`${marca(s(rac.dados_origem)===v)} ${l}`).join('     '),{font:{size:8}});
+      titulo('A8:H8','Dados de Origem');
+      cel('A9','Processo:',{font:{bold:true}});caixa('A9');
+      const dadosProc=[s(rac.setor_responsavel),
+        rac.br?`Projeto ${s(rac.br)}`:'',rac.op?`OP ${s(rac.op)}`:'',
+        rac.cod_produto?`Produto ${s(rac.cod_produto)}`:'',
+        rac.quantidade?`${fmtD(rac.quantidade)} pç`:''].filter(Boolean).join('  ·  ');
+      mesclar('B9:H9',dadosProc);
+      ws.getRow(9).height=23.25;
+
+      // Descrição
+      titulo('A10:H10','Descrição da Observação');
+      const desc=[s(rac.descricao_observacao),rac.produto_descricao?`Produto: ${s(rac.produto_descricao)}`:'',
+        `Registrado por ${s(rac.inspetor)} em ${new Date(rac.aberta_em).toLocaleString('pt-BR')}`].filter(Boolean).join('\n');
+      mesclar('A11:H13',desc,{align:{vertical:'top'}});
+      [11,12,13].forEach(r=>{ws.getRow(r).height=22;});
+
+      // Fotos: até 4 no quadro, em grade 2x2; as demais numa aba à parte.
+      titulo('A14:H14','Fotos da Anomalia (Quando Possível) Retrabalhada');
+      ws.mergeCells('A15:H22');caixa('A15:H22');
+      for(let r=15;r<=22;r++)ws.getRow(r).height=24;
+      const fotos=(Array.isArray(rac.fotos)?rac.fotos:[]).filter(f=>s(f.tipo).startsWith('image/')&&!f.semPreview&&!f.video);
+      const ext=t=>s(t).includes('png')?'png':'jpeg';
+      const posicoes=[{col:0.15,row:14.15},{col:4.1,row:14.15},{col:0.15,row:18.1},{col:4.1,row:18.1}];
+      fotos.slice(0,4).forEach((f,i)=>{
+        try{
+          const id=wb.addImage({base64:f.dados,extension:ext(f.tipo)});
+          ws.addImage(id,{tl:posicoes[i],ext:{width:250,height:118}});
+        }catch(_){}
+      });
+      if(!fotos.length)cel('A15','Sem fotos registradas no portal.',{font:{italic:true,color:{argb:'FF808080'}}});
+
+      // Ação de correção
+      titulo('A23:H23','Ação de Correção');
+      mesclar('A24:E24','Ação de Correção',{font:{bold:true},align:{horizontal:'center'}});
+      cel('F24','Responsável',{font:{bold:true},align:{horizontal:'center'}});caixa('F24');
+      mesclar('G24:H24','Data\nRealizada',{font:{bold:true},align:{horizontal:'center'}});
+      ws.getRow(24).height=25.5;
+      mesclar('A25:E27',s(rac.acao_correcao),{align:{vertical:'top'}});
+      mesclar('F25:F27',s(rac.acao_correcao_responsavel),{align:{horizontal:'center'}});
+      mesclar('G25:H27',dBR(rac.acao_correcao_data),{align:{horizontal:'center'}});
+
+      // Causa raiz
+      titulo('A28:H28','Causa(s) Raiz');
+      mesclar('A29:E29','Descrição das Causas',{font:{bold:true},align:{horizontal:'center'}});
+      cel('F29','Responsável',{font:{bold:true},align:{horizontal:'center'}});caixa('F29');
+      mesclar('G29:H29','Data',{font:{bold:true},align:{horizontal:'center'}});
+      ws.getRow(29).height=24;
+      mesclar('A30:E33',s(rac.causa_raiz),{align:{vertical:'top'}});
+      mesclar('F30:F33',s(rac.causa_raiz_responsavel),{align:{horizontal:'center'}});
+      mesclar('G30:H33',dBR(rac.causa_raiz_data),{align:{horizontal:'center'}});
+
+      // Ação sobre a causa
+      titulo('A34:H34','Ação a ser tomada na Causa Raiz da Não Conformidade');
+      mesclar('A35:E35','Descrição das Ações',{font:{bold:true},align:{horizontal:'center'}});
+      cel('F35','Responsável',{font:{bold:true},align:{horizontal:'center'}});caixa('F35');
+      cel('G35','Data\nPrevista',{font:{bold:true},align:{horizontal:'center'}});caixa('G35');
+      cel('H35','Data\nRealizada',{font:{bold:true},align:{horizontal:'center'}});caixa('H35');
+      ws.getRow(35).height=25.5;
+      mesclar('A36:E42',s(rac.acao_causa),{align:{vertical:'top'}});
+      mesclar('F36:F42',s(rac.acao_causa_responsavel),{align:{horizontal:'center'}});
+      mesclar('G36:G42',dBR(rac.acao_causa_data_prevista),{align:{horizontal:'center'}});
+      mesclar('H36:H42',dBR(rac.acao_causa_data_realizada),{align:{horizontal:'center'}});
+
+      // Eficácia
+      titulo('A43:H43','Análise Crítica da Eficácia das Ações');
+      mesclar('A44:H44','Evidências Coletadas:',{font:{bold:true}});
+      mesclar('A45:H48',s(rac.evidencias),{align:{vertical:'top'}});
+      mesclar('A49:C49',`Eficaz:   ${marca(rac.eficaz===true)} SIM   ${marca(rac.eficaz===false)} NÃO`);
+      mesclar('D49:H49',`Necessário novo RNC?   ${marca(rac.novo_rnc===true)} SIM   ${marca(rac.novo_rnc===false)} NÃO`);
+      mesclar('A50:C50',`Data Fechamento: ${dBR(rac.data_fechamento)||'____/____/______'}`);
+      mesclar('D50:H50',`Responsável Gestão: ${s(rac.responsavel_gestao)||'______________________'}`);
+
+      // Fotos que não couberam no quadro
+      if(fotos.length>4){
+        const w2=wb.addWorksheet('Fotos adicionais');
+        w2.getColumn(1).width=60;
+        fotos.slice(4).forEach((f,i)=>{
+          try{
+            const id=wb.addImage({base64:f.dados,extension:ext(f.tipo)});
+            w2.addImage(id,{tl:{col:0,row:i*16},ext:{width:420,height:300}});
+          }catch(_){}
+        });
+      }
+
+      const buf=await wb.xlsx.writeBuffer();
+      const blob=new Blob([buf],{type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'});
+      const a3=document.createElement('a');
+      a3.href=URL.createObjectURL(blob);
+      a3.download=`KdB_123_RAC_${numRac(rac.numero)}_${s(rac.setor_responsavel).replace(/\s+/g,'_')}.xlsx`;
+      a3.click();
+      addToast(`KdB 123 da RAC ${numRac(rac.numero)} gerado.`);
+    }catch(e){addToast('Erro ao gerar o KdB 123: '+e.message,'error');}
   };
 
   // Direciona a RAC para outro setor — ex.: a Qualidade percebe que a causa é
@@ -6846,7 +6998,7 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
         `${s(usuarioLogado?.nome)} direcionou de ${anterior} para ${novoSetor}.`);
       const avisados=avisarRespostaRac({numero:rac.numero,setor:novoSetor,
         descricao:rac.descricao_observacao,br:rac.br,
-        motivo:`A RAC #${rac.numero} foi direcionada para ${novoSetor} e precisa da sua tratativa.`});
+        motivo:`A RAC ${numRac(rac.numero)} foi direcionada para ${novoSetor} e precisa da sua tratativa.`});
       setRacSel(x=>x&&x.id===rac.id?{...x,...campos}:x);
       addToast(avisados
         ?`Direcionada para ${novoSetor}. ${avisados} responsável(is) avisado(s) por e-mail.`
@@ -6972,7 +7124,7 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
       const d=r.prazo_tratativa?dias(r.prazo_tratativa):null;
       itens.push({
         grupo:'Não conformidade',aba:'RAC',perfil:'qualidade',rac:r,
-        titulo:`RAC #${r.numero} — ${s(r.setor_responsavel)}`,
+        titulo:`RAC ${numRac(r.numero)} — ${s(r.setor_responsavel)}`,
         sub:s(r.descricao_observacao).slice(0,70),
         prazo:s(r.prazo_tratativa).slice(0,10),atraso:d!==null&&d<0?Math.abs(d):0,
         urgencia:(d!==null&&d<0)?3:2,
@@ -8658,7 +8810,7 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
           são campos SEPARADOS de propósito: a ISO cobra as duas, e juntar
           num campo só é o erro clássico que a auditoria aponta. */}
       <Modal open={!!racSel} onClose={()=>setRacSel(null)}
-        title={racSel?`RAC #${racSel.numero} — ${s(racSel.setor_responsavel)}`:''}
+        title={racSel?`RAC ${numRac(racSel.numero)} — ${s(racSel.setor_responsavel)}`:''}
         subtitle={racSel?`Aberta em ${new Date(racSel.aberta_em).toLocaleString('pt-BR')} por ${s(racSel.inspetor)}`:''}
         maxWidth="max-w-3xl">
         {racSel&&(()=>{
@@ -8692,6 +8844,13 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
               ))}
             </div>
 
+            {/* Formulário oficial preenchido, com as fotos — para anexar em
+                e-mail ou arquivar junto da documentação da ISO. */}
+            <button onClick={()=>gerarKdb123(r)}
+              className="w-full h-11 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-sm flex items-center justify-center gap-2">
+              <FileSpreadsheet className="w-4 h-4"/>Baixar KdB 123 preenchido (Excel)
+            </button>
+
             {/* Direcionar: a Qualidade troca o setor responsável. Quem passa a
                 responder recebe o e-mail com o link para a RAC. */}
             {(podeAbrirRAC||isAdmin)&&!['CONCLUIDA','CANCELADA'].includes(s(r.status))&&(
@@ -8703,7 +8862,7 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
                 <div className="flex flex-wrap gap-2">
                   {SETORES_RAC.filter(st=>st!==s(r.setor_responsavel)).map(st=>(
                     <button key={st}
-                      onClick={()=>{if(window.confirm(`Direcionar a RAC #${r.numero} para ${st}?`))direcionarRac(r,st);}}
+                      onClick={()=>{if(window.confirm(`Direcionar a RAC ${numRac(r.numero)} para ${st}?`))direcionarRac(r,st);}}
                       className={`text-xs font-bold px-3.5 py-2 rounded-xl border-2 ${st===SETOR_ENGENHARIA?'bg-white border-indigo-400 text-indigo-700':'bg-white border-slate-200 text-slate-600 hover:border-slate-300'}`}>
                       {st}
                     </button>
@@ -8733,7 +8892,7 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
                 <div className="grid grid-cols-3 sm:grid-cols-4 gap-2 mt-3">
                   {r.fotos.map((f,i)=>(
                     <img key={i} src={`data:${f.tipo};base64,${f.dados}`} alt={f.nome}
-                      onClick={()=>abrirVisualizador(r.fotos.map((x,j)=>({src:`data:${x.tipo};base64,${x.dados}`,titulo:`RAC #${r.numero} — ${j+1} de ${r.fotos.length}`,nome:x.nome,video:!!x.video,semPreview:!!x.semPreview})),i)}
+                      onClick={()=>abrirVisualizador(r.fotos.map((x,j)=>({src:`data:${x.tipo};base64,${x.dados}`,titulo:`RAC ${numRac(r.numero)} — ${j+1} de ${r.fotos.length}`,nome:x.nome,video:!!x.video,semPreview:!!x.semPreview})),i)}
                       className="w-full h-24 sm:h-20 object-cover rounded-lg cursor-zoom-in"/>
                   ))}
                 </div>
@@ -12302,7 +12461,7 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
                         <div className="flex flex-wrap items-start justify-between gap-3">
                           <div className="min-w-0 flex-1">
                             <div className="flex items-center gap-2 flex-wrap mb-1">
-                              <span className="text-base font-black text-slate-900">RAC #{r.numero}</span>
+                              <span className="text-base font-black text-slate-900">RAC {numRac(r.numero)}</span>
                               <span className="text-xs font-bold text-slate-600 bg-slate-100 px-2.5 py-0.5 rounded-lg">{s(r.setor_responsavel)}</span>
                               <span className={`text-[10px] font-black px-2 py-0.5 rounded-full ${corStatus(s(r.status))}`}>
                                 {s(r.status).replace(/_/g,' ')}
