@@ -1573,6 +1573,7 @@ export default function App(){
   const [racPapeis,setRacPapeis]=useState({
     producao:['daniel.toledo@kalenborn.com.br','diogo.ribeiro@kalenborn.com.br','arthur.silva@kalenborn.com.br'],
     engenharia:[],
+    copia:[],
   });
   const [racHist,setRacHist]=useState({});
   const [racSel,setRacSel]=useState(null);
@@ -1605,6 +1606,8 @@ export default function App(){
       setRacPapeis({
         producao:lista(v.responsaveis_producao||v.responsaveis),
         engenharia:lista(v.responsaveis_engenharia),
+        // Quem acompanha: vai em cópia quando a RAC é enviada por e-mail.
+        copia:lista(v.visualizacao),
       });
     }catch(e){console.warn('Erro ao buscar RAC:',e);}
   },[supabase]);
@@ -6838,7 +6841,7 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
   // então não precisam ir e voltar do servidor. Mesma grade do modelo em papel
   // (colunas A–H, blocos na mesma ordem, rodapé SGQ 123/02), para circular
   // como o documento de sempre.
-  const gerarKdb123=async rac=>{
+  const gerarKdb123=async(rac,{retornarBase64=false}={})=>{
     if(!window.ExcelJS)return addToast('Gerador de Excel não carregado. Recarregue a página.','error');
     try{
       const wb=new window.ExcelJS.Workbook();
@@ -6972,13 +6975,68 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
       }
 
       const buf=await wb.xlsx.writeBuffer();
+      const nomeArq=`KdB_123_RAC_${numRac(rac.numero)}_${s(rac.setor_responsavel).replace(/\s+/g,'_')}.xlsx`;
+      if(retornarBase64){
+        // Para anexar no e-mail: converte em base64 sem estourar a pilha com
+        // arquivos grandes (fotos), em blocos de 32 KB.
+        const bytes=new Uint8Array(buf);let bin='';
+        for(let i=0;i<bytes.length;i+=32768)bin+=String.fromCharCode.apply(null,bytes.subarray(i,i+32768));
+        return{nome:nomeArq,base64:btoa(bin)};
+      }
       const blob=new Blob([buf],{type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'});
       const a3=document.createElement('a');
       a3.href=URL.createObjectURL(blob);
-      a3.download=`KdB_123_RAC_${numRac(rac.numero)}_${s(rac.setor_responsavel).replace(/\s+/g,'_')}.xlsx`;
+      a3.download=nomeArq;
       a3.click();
       addToast(`KdB 123 da RAC ${numRac(rac.numero)} gerado.`);
-    }catch(e){addToast('Erro ao gerar o KdB 123: '+e.message,'error');}
+    }catch(e){
+      addToast('Erro ao gerar o KdB 123: '+e.message,'error');
+      if(retornarBase64)return null;
+    }
+  };
+
+  // Envia a RAC por e-mail: responsáveis do setor em Para, quem acompanha em
+  // cópia, o KdB 123 preenchido em anexo e o link para responder no portal.
+  // Um e-mail só para todos, como pedido.
+  const enviarRacPorEmail=async rac=>{
+    if(!podeAbrirRAC&&!isAdmin)return addToast('Só a Qualidade envia a RAC por e-mail.','error');
+    const para=responsaveisDoSetor(rac.setor_responsavel);
+    const cc=racPapeis.copia.filter(e=>!para.includes(e));
+    if(!para.length)return addToast(`Nenhum responsável cadastrado para ${s(rac.setor_responsavel)}.`,'error');
+    if(!window.confirm(
+      `Enviar a RAC ${numRac(rac.numero)} por e-mail?\n\n`+
+      `Para: ${para.join(', ')}\n`+
+      (cc.length?`Cópia: ${cc.join(', ')}\n`:'')+
+      `\nVai com o KdB 123 preenchido em anexo e o link para responder no portal.`))return;
+    const arq=await gerarKdb123(rac,{retornarBase64:true});
+    if(!arq)return;
+    const dBR=v=>{const x=s(v).slice(0,10);return x?x.split('-').reverse().join('/'):'—';};
+    try{
+      const res=await fetch(`${SUPABASE_URL}/functions/v1/notificar`,{
+        method:'POST',headers:{'Content-Type':'application/json','apikey':SUPABASE_KEY},
+        body:JSON.stringify({
+          destinatarios:para,cc,canal:'email',modulo:'QUALIDADE',prioridade:'ALTA',sino:false,
+          titulo:`RAC ${numRac(rac.numero)} — ${s(rac.setor_responsavel)}${rac.br?` — ${s(rac.br)}`:''} — resposta até ${dBR(rac.prazo_tratativa)}`,
+          mensagem:[
+            `Foi aberta a RAC ${numRac(rac.numero)} (Relatório de Ações Corretivas — KdB 123) para ${s(rac.setor_responsavel)}, e ela precisa da tratativa de vocês.`,'',
+            `O que foi observado: ${s(rac.descricao_observacao).trim()}`,
+            rac.br?`Projeto: ${s(rac.br)}${rac.quantidade?` — ${fmtD(rac.quantidade)} peças`:''}`:null,
+            `Registrada por: ${s(rac.inspetor)}, em ${dBR(rac.aberta_em)}`,
+            `Prazo para a tratativa: ${dBR(rac.prazo_tratativa)}`,'',
+            'O KdB 123 preenchido, com as fotos da anomalia, segue em anexo.','',
+            'Peço que a resposta seja feita pelo portal, preenchendo os blocos da RAC: ação de correção, causa raiz, ação sobre a causa e análise de eficácia. O link abre a RAC direto:',
+          ].filter(x=>x!==null).join('\n'),
+          link:`https://sistemaindustrializa-o.vercel.app/?rac=${rac.numero}`,
+          anexos:[arq],
+        }),
+      });
+      const r=await res.json().catch(()=>({}));
+      if(!r.aceito_pelo_fluxo)throw new Error(r.motivo||r.erro||'o fluxo não aceitou o envio');
+      await registrarHistRac(rac.id,'ENVIO_EMAIL',
+        `Enviada por e-mail para ${para.join(', ')}${cc.length?`, com cópia para ${cc.join(', ')}`:''}, com o KdB 123 em anexo.`);
+      addToast(`RAC ${numRac(rac.numero)} enviada para ${para.length} responsável(is)${cc.length?` com ${cc.length} em cópia`:''}.`);
+      buscarHistRac(rac.id);
+    }catch(e){addToast('Erro ao enviar: '+e.message,'error');}
   };
 
   // Direciona a RAC para outro setor — ex.: a Qualidade percebe que a causa é
@@ -8846,10 +8904,18 @@ Responda SOMENTE em JSON válido, sem markdown, neste formato exato:
 
             {/* Formulário oficial preenchido, com as fotos — para anexar em
                 e-mail ou arquivar junto da documentação da ISO. */}
-            <button onClick={()=>gerarKdb123(r)}
-              className="w-full h-11 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-sm flex items-center justify-center gap-2">
-              <FileSpreadsheet className="w-4 h-4"/>Baixar KdB 123 preenchido (Excel)
-            </button>
+            <div className={`grid gap-2 ${(podeAbrirRAC||isAdmin)?'grid-cols-1 sm:grid-cols-2':'grid-cols-1'}`}>
+              <button onClick={()=>gerarKdb123(r)}
+                className="h-11 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-sm flex items-center justify-center gap-2">
+                <FileSpreadsheet className="w-4 h-4"/>Baixar KdB 123 (Excel)
+              </button>
+              {(podeAbrirRAC||isAdmin)&&(
+                <button onClick={()=>enviarRacPorEmail(r)}
+                  className="h-11 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-sm flex items-center justify-center gap-2">
+                  <Send className="w-4 h-4"/>Enviar por e-mail com o KdB 123
+                </button>
+              )}
+            </div>
 
             {/* Direcionar: a Qualidade troca o setor responsável. Quem passa a
                 responder recebe o e-mail com o link para a RAC. */}
